@@ -1,11 +1,26 @@
 from uuid import uuid4
 from sqlalchemy import Column, Integer, String, DateTime, Index, ForeignKey
-from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID, ARRAY
 from sqlalchemy.sql import func
 from pgvector.sqlalchemy import Vector
 from database.base import Base
 
 EMBEDDING_DIMENSIONS = 1536  # OpenAI ada-002 / text-embedding-3-small
+
+class Session(Base):
+    __tablename__ = "sessions"
+
+    id = Column(UUID, primary_key=True, default=uuid4)
+    secret_hash = Column(String(64), nullable=False)
+    user_id = Column(UUID, ForeignKey("users.session_id"), nullable=True)
+    scopes = Column(ARRAY(String), nullable=False, default=[])
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
+    expires_at = Column(DateTime, nullable=False)
+
+    __table_args__ = (
+        Index('ix_sessions_expires_at', expires_at),
+    )
+
 
 class User(Base):
     __tablename__ = "users"
