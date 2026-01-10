@@ -1,5 +1,5 @@
 from rq import Worker, Connection, Queue
-from init import init_redis, redis_rq
+from __init__ import init_redis, redis_rq
 
 def main():
     init_redis()
