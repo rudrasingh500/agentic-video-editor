@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Any
 from pydantic import BaseModel
 
 
@@ -13,3 +14,36 @@ class SessionValidateResponse(BaseModel):
     valid: bool
     user_id: str | None = None
     scopes: list[str] = []
+
+
+class ProjectCreateRequest(BaseModel):
+    name: str
+
+
+class ProjectCreateResponse(BaseModel):
+    ok: bool
+    project_id: str
+    project_name: str
+
+
+class ProjectListResponse(BaseModel):
+    ok: bool
+    projects: list[dict[str, Any]]
+
+
+class ProjectGetResponse(BaseModel):
+    ok: bool
+    project_id: str
+    project_name: str
+
+
+class ProjectDeleteResponse(BaseModel):
+    ok: bool
+
+
+class ProjectVideoResponse(BaseModel):
+    ok: bool
+    url: str
+    version: int
+    changes: list[dict[str, Any]]
+    created_at: datetime
