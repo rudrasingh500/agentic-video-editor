@@ -89,5 +89,5 @@ def require_scope(required_scope: str):
                 detail=f"Missing required scope: {required_scope}",
             )
         return session
-    return checker
 
+    return checker

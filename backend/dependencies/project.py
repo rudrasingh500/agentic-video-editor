@@ -12,13 +12,16 @@ def require_project(
     session: SessionData = Depends(get_session),
     db: Session = Depends(get_db),
 ) -> Project:
-    project = db.query(Project).filter(
-        Project.project_id == project_id,
-        Project.owner_id == session.user_id,
-    ).first()
+    project = (
+        db.query(Project)
+        .filter(
+            Project.project_id == project_id,
+            Project.owner_id == session.user_id,
+        )
+        .first()
+    )
 
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
     return project
-

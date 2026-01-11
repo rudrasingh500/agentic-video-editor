@@ -1,5 +1,5 @@
 from uuid import UUID
-from fastapi import APIRouter, Depends, Response, Cookie, HTTPException
+from fastapi import APIRouter, Depends, Response, Cookie
 from sqlalchemy.orm import Session
 
 from database.base import get_db

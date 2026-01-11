@@ -27,7 +27,7 @@ def create_session(
     ttl_seconds: int = SESSION_TTL_SECONDS,
 ) -> tuple[UUID, str, datetime, UUID]:
     now = datetime.now(timezone.utc)
-    
+
     if user_id is None:
         user = User(
             session_id=uuid4(),
@@ -84,27 +84,39 @@ def get_cached_session(session_id: UUID) -> dict | None:
 
 def validate_session(session_id: UUID, secret: str, db: DBSession) -> dict | None:
     secret_hash = hash_secret(secret)
-    
+
     cached = get_cached_session(session_id)
     if cached:
         if secrets.compare_digest(cached["secret_hash"], secret_hash):
             return cached
         return None
 
-    session = db.query(Session).filter(
-        Session.id == session_id,
-        Session.expires_at > datetime.now(timezone.utc),
-    ).first()
-    
+    session = (
+        db.query(Session)
+        .filter(
+            Session.id == session_id,
+            Session.expires_at > datetime.now(timezone.utc),
+        )
+        .first()
+    )
+
     if not session:
         return None
-    
+
     if not secrets.compare_digest(session.secret_hash, secret_hash):
         return None
 
-    remaining_ttl = int((session.expires_at - datetime.now(timezone.utc)).total_seconds())
+    remaining_ttl = int(
+        (session.expires_at - datetime.now(timezone.utc)).total_seconds()
+    )
     if remaining_ttl > 0:
-        cache_session(session_id, session.secret_hash, session.user_id, session.scopes, remaining_ttl)
+        cache_session(
+            session_id,
+            session.secret_hash,
+            session.user_id,
+            session.scopes,
+            remaining_ttl,
+        )
 
     return {
         "secret_hash": session.secret_hash,
@@ -117,4 +129,3 @@ def invalidate_session(session_id: UUID, db: DBSession) -> None:
     redis_auth.delete(f"sess:{session_id}")
     db.query(Session).filter(Session.id == session_id).delete()
     db.commit()
-
