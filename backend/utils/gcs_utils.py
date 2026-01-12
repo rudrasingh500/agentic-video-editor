@@ -1,3 +1,4 @@
+import io
 import json
 import os
 import dotenv
@@ -41,15 +42,21 @@ def init_bucket(bucket_name: str) -> bool:
         return False
 
 
-def upload_file(bucket_name: str, contents: str, destination_blob_name: str) -> bool:
+def upload_file(bucket_name: str, contents: bytes, destination_blob_name: str) -> dict:
     try:
         bucket = _get_bucket(bucket_name)
         blob = bucket.blob(destination_blob_name)
-        blob.upload_from_string(contents)
-        return True
+        blob.upload_from_file(io.BytesIO(contents))
+        blob.reload()
+
+        return {
+            "path": blob.name,
+            "content_type": blob.content_type,
+            "size": blob.size,
+        }
     except Exception as e:
         print(f"Error uploading file: {e}")
-        return False
+        return {}
 
 
 def download_file(bucket_name: str, blob_name: str) -> str:

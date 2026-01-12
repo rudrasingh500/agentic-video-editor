@@ -62,7 +62,6 @@ class Assets(Base):
     project_id = Column(UUID, ForeignKey("projects.project_id"), nullable=False)
 
     asset_transcript = Column(JSONB, nullable=True)
-    asset_metadata = Column(JSONB, nullable=False)
     asset_events = Column(JSONB, nullable=True)
     notable_shots = Column(
         JSONB, nullable=True
@@ -84,7 +83,7 @@ class Assets(Base):
     )
 
     def __repr__(self):
-        return f"<Assets asset_id={self.asset_id} asset_name={self.asset_name} asset_type={self.asset_type} asset_url={self.asset_url} uploaded_at={self.uploaded_at} project_id={self.project_id} asset_transcript={self.asset_transcript} asset_metadata={self.asset_metadata} asset_events={self.asset_events} notable_shots={self.notable_shots} audio_features={self.audio_features} asset_faces={self.asset_faces} asset_summary={self.asset_summary} asset_tags={self.asset_tags} embedding={self.embedding}>"
+        return f"<Assets asset_id={self.asset_id} asset_name={self.asset_name} asset_type={self.asset_type} project_id={self.project_id}>"
 
 
 class VideoOutput(Base):
