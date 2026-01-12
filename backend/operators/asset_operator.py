@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session as DBSession
 from database.models import Assets
 from utils.gcs_utils import delete_file, upload_file
 
-ASSET_BUCKET = os.getenv("GCS_ASSET_BUCKET", "video-editor-assets")
+ASSET_BUCKET = os.getenv("GCS_BUCKET", "video-editor")
 
 
 def upload_asset(db: DBSession, project_id: UUID, asset_name: str, content: bytes) -> Assets:

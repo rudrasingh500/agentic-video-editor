@@ -39,11 +39,3 @@ class ProjectGetResponse(BaseModel):
 
 class ProjectDeleteResponse(BaseModel):
     ok: bool
-
-
-class ProjectVideoResponse(BaseModel):
-    ok: bool
-    url: str
-    version: int
-    changes: list[dict[str, Any]]
-    created_at: datetime

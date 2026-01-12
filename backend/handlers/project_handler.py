@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.orm import Session
 
 from database.base import get_db
@@ -11,7 +11,6 @@ from models.api_models import (
     ProjectDeleteResponse,
     ProjectGetResponse,
     ProjectListResponse,
-    ProjectVideoResponse,
 )
 from operators.project_operator import create_project, list_projects, get_video_output
 
@@ -85,19 +84,18 @@ async def project_delete(
     return ProjectDeleteResponse(ok=True)
 
 
-@router.get("/{project_id}/video", response_model=ProjectVideoResponse)
+@router.get("/{project_id}/video")
 async def project_video_get(
     project: Project = Depends(require_project),
     db: Session = Depends(get_db),
 ):
-    video = get_video_output(project.project_id, db)
-    if not video:
-        raise HTTPException(status_code=404, detail="No video output found")
+    try:
+        video_bytes = get_video_output(project.project_id, db)
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
-    return ProjectVideoResponse(
-        ok=True,
-        url=video.video_url,
-        version=video.version,
-        changes=video.changes or [],
-        created_at=video.created_at,
+    return Response(
+        content=video_bytes,
+        media_type="video/mp4",
+        headers={"Content-Disposition": f"inline; filename={project.project_id}.mp4"},
     )
