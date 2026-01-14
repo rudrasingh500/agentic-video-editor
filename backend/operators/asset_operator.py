@@ -40,7 +40,7 @@ def upload_asset(db: DBSession, project_id: UUID, asset_name: str, content: byte
         process_asset,
         str(asset.asset_id),
         str(project_id),
-        job_timeout=600,  # 10 minutes
+        job_timeout=600,
         retry=Retry(max=3, interval=[10, 30, 60]),
     )
 
@@ -77,12 +77,6 @@ def get_asset(db: DBSession, project_id: UUID, asset_id: UUID) -> Assets | None:
 
 
 def reindex_asset(db: DBSession, project_id: UUID, asset_id: UUID) -> Assets | None:
-    """
-    Trigger a re-index of an asset's metadata.
-
-    Resets the indexing status to pending and enqueues a new processing job.
-    Returns the asset if found, None if not found.
-    """
     asset = (
         db.query(Assets)
         .filter(Assets.project_id == project_id, Assets.asset_id == asset_id)
@@ -92,17 +86,15 @@ def reindex_asset(db: DBSession, project_id: UUID, asset_id: UUID) -> Assets | N
     if not asset:
         return None
 
-    # Reset status to pending (process_asset will set it to processing)
     asset.indexing_status = "pending"
     asset.indexing_error = None
     db.commit()
 
-    # Enqueue the processing job
     rq_queue.enqueue(
         process_asset,
         str(asset_id),
         str(project_id),
-        job_timeout=600,  # 10 minutes
+        job_timeout=600,
         retry=Retry(max=3, interval=[10, 30, 60]),
     )
 

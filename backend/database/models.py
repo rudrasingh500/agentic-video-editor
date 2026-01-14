@@ -1,6 +1,6 @@
 from uuid import uuid4
-from sqlalchemy import Column, Integer, String, DateTime, Index, ForeignKey
-from sqlalchemy.dialects.postgresql import JSONB, UUID, ARRAY
+from sqlalchemy import Column, Integer, String, DateTime, Index, ForeignKey, Computed
+from sqlalchemy.dialects.postgresql import JSONB, UUID, ARRAY, TSVECTOR
 from sqlalchemy.sql import func
 from pgvector.sqlalchemy import Vector
 from database.base import Base
@@ -100,12 +100,27 @@ class Assets(Base):
     # Vector embedding for semantic search
     embedding = Column(Vector(EMBEDDING_DIMENSIONS), nullable=True)
 
+    # Full-text search vector for transcripts (auto-generated)
+    transcript_tsv = Column(
+        TSVECTOR,
+        Computed(
+            "to_tsvector('english', COALESCE(asset_transcript->>'text', ''))",
+            persisted=True,
+        ),
+        nullable=True,
+    )
+
     __table_args__ = (
         Index(
             "ix_assets_embedding",
             embedding,
             postgresql_using="ivfflat",
             postgresql_ops={"embedding": "vector_cosine_ops"},
+        ),
+        Index(
+            "ix_assets_transcript_tsv",
+            transcript_tsv,
+            postgresql_using="gin",
         ),
     )
 

@@ -9,7 +9,7 @@ from database.models import Session, User
 from redis_client import redis_auth
 
 
-SESSION_TTL_SECONDS = 60 * 60 * 24 * 7  # 7 days
+SESSION_TTL_SECONDS = 60 * 60 * 24 * 7
 
 
 def generate_session_secret() -> str:
