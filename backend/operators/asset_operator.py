@@ -2,9 +2,12 @@ import os
 from datetime import datetime, timezone
 from uuid import UUID
 
+from rq import Retry
 from sqlalchemy.orm import Session as DBSession
 
+from agent.asset_processing import process_asset
 from database.models import Assets
+from redis_client import rq_queue
 from utils.gcs_utils import delete_file, upload_file
 
 ASSET_BUCKET = os.getenv("GCS_BUCKET", "video-editor")
@@ -32,6 +35,15 @@ def upload_asset(db: DBSession, project_id: UUID, asset_name: str, content: byte
     db.add(asset)
     db.commit()
     db.refresh(asset)
+
+    rq_queue.enqueue(
+        process_asset,
+        str(asset.asset_id),
+        str(project_id),
+        job_timeout=600,  # 10 minutes
+        retry=Retry(max=3, interval=[10, 30, 60]),
+    )
+
     return asset
 
 
@@ -62,3 +74,37 @@ def get_asset(db: DBSession, project_id: UUID, asset_id: UUID) -> Assets | None:
         .filter(Assets.project_id == project_id, Assets.asset_id == asset_id)
         .first()
     )
+
+
+def reindex_asset(db: DBSession, project_id: UUID, asset_id: UUID) -> Assets | None:
+    """
+    Trigger a re-index of an asset's metadata.
+
+    Resets the indexing status to pending and enqueues a new processing job.
+    Returns the asset if found, None if not found.
+    """
+    asset = (
+        db.query(Assets)
+        .filter(Assets.project_id == project_id, Assets.asset_id == asset_id)
+        .first()
+    )
+
+    if not asset:
+        return None
+
+    # Reset status to pending (process_asset will set it to processing)
+    asset.indexing_status = "pending"
+    asset.indexing_error = None
+    db.commit()
+
+    # Enqueue the processing job
+    rq_queue.enqueue(
+        process_asset,
+        str(asset_id),
+        str(project_id),
+        job_timeout=600,  # 10 minutes
+        retry=Retry(max=3, interval=[10, 30, 60]),
+    )
+
+    db.refresh(asset)
+    return asset

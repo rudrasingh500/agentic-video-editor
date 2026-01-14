@@ -61,16 +61,43 @@ class Assets(Base):
     uploaded_at = Column(DateTime, nullable=False)
     project_id = Column(UUID, ForeignKey("projects.project_id"), nullable=False)
 
-    asset_transcript = Column(JSONB, nullable=True)
-    asset_events = Column(JSONB, nullable=True)
-    notable_shots = Column(
-        JSONB, nullable=True
-    )  # timestamps of notable shots worthy of further review
-    audio_features = Column(JSONB, nullable=True)
-    asset_faces = Column(JSONB, nullable=True)
+    # Core metadata fields
     asset_summary = Column(String, nullable=False)
-    asset_tags = Column(JSONB, nullable=True)
+    asset_tags = Column(JSONB, nullable=True)  # Array of searchable tags
 
+    # Transcript - structured format with text, segments, speakers
+    asset_transcript = Column(JSONB, nullable=True)
+
+    # Timeline-based data
+    asset_events = Column(JSONB, nullable=True)  # Key moments with timestamps
+    notable_shots = Column(JSONB, nullable=True)  # Visually interesting frames
+    asset_scenes = Column(JSONB, nullable=True)  # Video scene segmentation
+
+    # Audio analysis
+    audio_features = Column(JSONB, nullable=True)  # BPM, key, energy, etc.
+    audio_structure = Column(JSONB, nullable=True)  # Intro, verse, chorus timestamps
+
+    # Visual analysis
+    asset_faces = Column(JSONB, nullable=True)  # Detected people/faces
+    asset_objects = Column(JSONB, nullable=True)  # Detected objects with positions
+    asset_colors = Column(JSONB, nullable=True)  # Color palette analysis
+
+    # Technical metadata
+    asset_technical = Column(JSONB, nullable=True)  # Resolution, quality, etc.
+
+    # Speakers (for audio/video with speech)
+    asset_speakers = Column(JSONB, nullable=True)  # Speaker identification and info
+
+    # Indexing status tracking
+    indexing_status = Column(
+        String, nullable=False, default="pending"
+    )  # pending, processing, completed, failed
+    indexing_error = Column(String, nullable=True)  # Error message if failed
+    indexing_started_at = Column(DateTime, nullable=True)  # When processing began
+    indexing_completed_at = Column(DateTime, nullable=True)  # When processing finished
+    indexing_attempts = Column(Integer, nullable=False, default=0)  # Retry count
+
+    # Vector embedding for semantic search
     embedding = Column(Vector(EMBEDDING_DIMENSIONS), nullable=True)
 
     __table_args__ = (

@@ -39,3 +39,34 @@ class ProjectGetResponse(BaseModel):
 
 class ProjectDeleteResponse(BaseModel):
     ok: bool
+
+
+# Asset models
+class AssetResponse(BaseModel):
+    asset_id: str
+    asset_name: str
+    asset_type: str
+    asset_url: str
+    uploaded_at: datetime
+    indexing_status: str
+    indexing_error: str | None = None
+    indexing_attempts: int = 0
+
+
+class AssetListResponse(BaseModel):
+    ok: bool
+    assets: list[AssetResponse]
+
+
+class AssetUploadResponse(BaseModel):
+    ok: bool
+    asset: AssetResponse
+
+
+class AssetDeleteResponse(BaseModel):
+    ok: bool
+
+
+class AssetReindexResponse(BaseModel):
+    ok: bool
+    asset: AssetResponse

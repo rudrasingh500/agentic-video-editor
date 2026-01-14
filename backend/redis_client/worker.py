@@ -1,12 +1,12 @@
-from rq import Worker, Connection, Queue
-from __init__ import init_redis, redis_rq
+from rq import Worker, Queue
+
+from redis_client import init_redis, redis_rq
 
 
 def main():
     init_redis()
-    with Connection(redis_rq):
-        worker = Worker([Queue("agent")])
-        worker.work()
+    worker = Worker([Queue("agent", connection=redis_rq)], connection=redis_rq)
+    worker.work()
 
 
 if __name__ == "__main__":

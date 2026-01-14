@@ -7,3 +7,5 @@ pgvector
 rq
 redis
 google-cloud-storage
+openai
+openrouter
