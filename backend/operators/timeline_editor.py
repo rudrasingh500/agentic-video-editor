@@ -1,31 +1,10 @@
-"""
-Timeline Editor - High-level edit operations that create checkpoints.
-
-This module provides user-friendly edit operations for timeline manipulation.
-Each operation:
-1. Gets the current timeline snapshot
-2. Validates the operation
-3. Modifies the snapshot
-4. Creates a checkpoint with optimistic locking
-
-Operations are organized by category:
-- Track operations: add/remove/rename/reorder tracks
-- Clip operations: add/remove/trim/move/slip clips
-- Gap operations: add/remove/adjust gaps
-- Transition operations: add/remove/modify transitions
-- Nested composition operations: nest/flatten stacks
-- Marker operations: add/remove markers
-- Effect operations: add/remove effects
-"""
-
 from copy import deepcopy
-from typing import Any, Literal
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy.orm import Session as DBSession
 
 from database.models import (
-    Timeline as TimelineModel,
     TimelineCheckpoint as TimelineCheckpointModel,
     Assets as AssetsModel,
 )
@@ -41,48 +20,32 @@ from models.timeline_models import (
     RationalTime,
     TimeRange,
     ExternalReference,
-    GeneratorReference,
     Marker,
     MarkerColor,
-    Effect,
-    LinearTimeWarp,
-    FreezeFrame,
     EffectType,
 )
 from operators.timeline_operator import (
     get_timeline_snapshot,
     create_checkpoint,
-    TimelineNotFoundError,
-    CheckpointNotFoundError,
-    VersionConflictError,
     InvalidOperationError,
 )
 
 
-# =============================================================================
-# HELPER FUNCTIONS
-# =============================================================================
-
-
 def _get_track(timeline: Timeline, track_index: int) -> Track:
-    """Get a track by index, raising InvalidOperationError if not found."""
     if track_index < 0 or track_index >= len(timeline.tracks.children):
         raise InvalidOperationError(
             f"Track index {track_index} out of range "
             f"(0-{len(timeline.tracks.children) - 1})"
         )
-    
     track = timeline.tracks.children[track_index]
     if not isinstance(track, Track):
-        raise InvalidOperationError(
-            f"Item at index {track_index} is not a Track"
-        )
-    
+        raise InvalidOperationError(f"Item at index {track_index} is not a Track")
     return track
 
 
-def _get_item_from_track(track: Track, item_index: int) -> Clip | Gap | Transition | Stack:
-    """Get an item from a track by index."""
+def _get_item_from_track(
+    track: Track, item_index: int
+) -> Clip | Gap | Transition | Stack:
     if item_index < 0 or item_index >= len(track.children):
         raise InvalidOperationError(
             f"Item index {item_index} out of range "
@@ -92,17 +55,13 @@ def _get_item_from_track(track: Track, item_index: int) -> Clip | Gap | Transiti
 
 
 def _validate_transition_position(track: Track, position: int) -> None:
-    """Validate that a transition can be placed at the given position."""
     if position < 1 or position >= len(track.children):
         raise InvalidOperationError(
             f"Transition position {position} is invalid. "
             f"Must be between 1 and {len(track.children) - 1}"
         )
-    
-    # Check that adjacent items are not transitions
     prev_item = track.children[position - 1]
     next_item = track.children[position] if position < len(track.children) else None
-    
     if isinstance(prev_item, Transition):
         raise InvalidOperationError(
             "Cannot place transition: previous item is already a transition"
@@ -111,11 +70,6 @@ def _validate_transition_position(track: Track, position: int) -> None:
         raise InvalidOperationError(
             "Cannot place transition: next item is already a transition"
         )
-
-
-# =============================================================================
-# TRACK OPERATIONS
-# =============================================================================
 
 
 def add_track(
@@ -127,29 +81,10 @@ def add_track(
     actor: str = "system",
     expected_version: int = 0,
 ) -> TimelineCheckpointModel:
-    """
-    Add a new track to the timeline.
-    
-    Args:
-        db: Database session
-        timeline_id: Timeline UUID
-        name: Track name
-        kind: Track type (Video or Audio)
-        index: Insert position (None = append)
-        actor: Actor performing the operation
-        expected_version: Expected current version for optimistic locking
-    
-    Returns:
-        The created checkpoint
-    """
-    # Get current state
     current = get_timeline_snapshot(db, timeline_id)
     timeline = deepcopy(current.timeline)
-    
-    # Create the new track
     new_track = Track(name=name, kind=kind, children=[])
-    
-    # Insert at position or append
+
     if index is None or index >= len(timeline.tracks.children):
         timeline.tracks.children.append(new_track)
         insert_pos = len(timeline.tracks.children) - 1
@@ -157,8 +92,7 @@ def add_track(
         index = max(0, index)
         timeline.tracks.children.insert(index, new_track)
         insert_pos = index
-    
-    # Create checkpoint
+
     return create_checkpoint(
         db=db,
         timeline_id=timeline_id,
@@ -182,29 +116,12 @@ def remove_track(
     actor: str = "system",
     expected_version: int = 0,
 ) -> TimelineCheckpointModel:
-    """
-    Remove a track from the timeline.
-    
-    Args:
-        db: Database session
-        timeline_id: Timeline UUID
-        track_index: Index of the track to remove
-        actor: Actor performing the operation
-        expected_version: Expected current version
-    
-    Returns:
-        The created checkpoint
-    """
     current = get_timeline_snapshot(db, timeline_id)
     timeline = deepcopy(current.timeline)
-    
-    # Validate track exists
     track = _get_track(timeline, track_index)
     track_name = track.name
-    
-    # Remove the track
     timeline.tracks.children.pop(track_index)
-    
+
     return create_checkpoint(
         db=db,
         timeline_id=timeline_id,
@@ -228,14 +145,12 @@ def rename_track(
     actor: str = "system",
     expected_version: int = 0,
 ) -> TimelineCheckpointModel:
-    """Rename a track."""
     current = get_timeline_snapshot(db, timeline_id)
     timeline = deepcopy(current.timeline)
-    
     track = _get_track(timeline, track_index)
     old_name = track.name
     track.name = new_name
-    
+
     return create_checkpoint(
         db=db,
         timeline_id=timeline_id,
@@ -259,20 +174,10 @@ def reorder_tracks(
     actor: str = "system",
     expected_version: int = 0,
 ) -> TimelineCheckpointModel:
-    """
-    Reorder tracks according to new_order.
-    
-    new_order is a list where new_order[new_index] = old_index.
-    For example, [2, 0, 1] means:
-    - Track at old index 2 becomes new index 0
-    - Track at old index 0 becomes new index 1
-    - Track at old index 1 becomes new index 2
-    """
     current = get_timeline_snapshot(db, timeline_id)
     timeline = deepcopy(current.timeline)
-    
-    # Validate new_order
     num_tracks = len(timeline.tracks.children)
+
     if len(new_order) != num_tracks:
         raise InvalidOperationError(
             f"new_order has {len(new_order)} elements, but there are {num_tracks} tracks"
@@ -281,11 +186,10 @@ def reorder_tracks(
         raise InvalidOperationError(
             f"new_order must contain each index 0-{num_tracks - 1} exactly once"
         )
-    
-    # Reorder tracks
+
     old_tracks = timeline.tracks.children.copy()
     timeline.tracks.children = [old_tracks[i] for i in new_order]
-    
+
     return create_checkpoint(
         db=db,
         timeline_id=timeline_id,
@@ -296,11 +200,6 @@ def reorder_tracks(
         operation_type="reorder_tracks",
         operation_data={"new_order": new_order},
     )
-
-
-# =============================================================================
-# CLIP OPERATIONS
-# =============================================================================
 
 
 def add_clip(
@@ -314,41 +213,20 @@ def add_clip(
     actor: str = "system",
     expected_version: int = 0,
 ) -> TimelineCheckpointModel:
-    """
-    Add a clip to a track.
-    
-    Args:
-        db: Database session
-        timeline_id: Timeline UUID
-        track_index: Track to add clip to
-        asset_id: Asset UUID to reference
-        source_range: Which part of the asset to use (in/out points)
-        insert_index: Position in track (None = append)
-        name: Clip name (defaults to asset name if available)
-        actor: Actor performing the operation
-        expected_version: Expected current version
-    
-    Returns:
-        The created checkpoint
-    """
     current = get_timeline_snapshot(db, timeline_id)
     timeline = deepcopy(current.timeline)
-    
     track = _get_track(timeline, track_index)
-    
-    # Get asset name if clip name not provided
+
     if name is None:
         asset = db.query(AssetsModel).filter(AssetsModel.asset_id == asset_id).first()
         name = asset.asset_name if asset else f"Clip-{asset_id}"
-    
-    # Create the clip
+
     clip = Clip(
         name=name,
         source_range=source_range,
         media_reference=ExternalReference(asset_id=asset_id),
     )
-    
-    # Insert at position or append
+
     if insert_index is None or insert_index >= len(track.children):
         track.children.append(clip)
         insert_pos = len(track.children) - 1
@@ -356,9 +234,9 @@ def add_clip(
         insert_index = max(0, insert_index)
         track.children.insert(insert_index, clip)
         insert_pos = insert_index
-    
+
     duration_sec = source_range.duration.to_seconds()
-    
+
     return create_checkpoint(
         db=db,
         timeline_id=timeline_id,
@@ -385,21 +263,19 @@ def remove_clip(
     actor: str = "system",
     expected_version: int = 0,
 ) -> TimelineCheckpointModel:
-    """Remove a clip from a track."""
     current = get_timeline_snapshot(db, timeline_id)
     timeline = deepcopy(current.timeline)
-    
     track = _get_track(timeline, track_index)
     item = _get_item_from_track(track, clip_index)
-    
+
     if not isinstance(item, Clip):
         raise InvalidOperationError(
             f"Item at index {clip_index} is not a Clip (it's a {type(item).__name__})"
         )
-    
+
     clip_name = item.name
     track.children.pop(clip_index)
-    
+
     return create_checkpoint(
         db=db,
         timeline_id=timeline_id,
@@ -425,28 +301,18 @@ def trim_clip(
     actor: str = "system",
     expected_version: int = 0,
 ) -> TimelineCheckpointModel:
-    """
-    Trim a clip by changing its source_range (in/out points).
-    
-    This changes both the portion of source media used and the
-    clip's duration on the timeline.
-    """
     current = get_timeline_snapshot(db, timeline_id)
     timeline = deepcopy(current.timeline)
-    
     track = _get_track(timeline, track_index)
     item = _get_item_from_track(track, clip_index)
-    
+
     if not isinstance(item, Clip):
-        raise InvalidOperationError(
-            f"Item at index {clip_index} is not a Clip"
-        )
-    
+        raise InvalidOperationError(f"Item at index {clip_index} is not a Clip")
+
     old_duration = item.source_range.duration.to_seconds()
     new_duration = new_source_range.duration.to_seconds()
-    
     item.source_range = new_source_range
-    
+
     return create_checkpoint(
         db=db,
         timeline_id=timeline_id,
@@ -473,33 +339,25 @@ def slip_clip(
     actor: str = "system",
     expected_version: int = 0,
 ) -> TimelineCheckpointModel:
-    """
-    Slip a clip - change source_range start while keeping duration.
-    
-    This changes which part of the source media is shown without
-    changing the clip's duration on the timeline.
-    """
     current = get_timeline_snapshot(db, timeline_id)
     timeline = deepcopy(current.timeline)
-    
     track = _get_track(timeline, track_index)
     item = _get_item_from_track(track, clip_index)
-    
+
     if not isinstance(item, Clip):
         raise InvalidOperationError(f"Item at index {clip_index} is not a Clip")
-    
-    # Apply offset to start_time, keep duration
+
     old_start = item.source_range.start_time
     new_start = old_start + offset
-    
+
     item.source_range = TimeRange(
         start_time=new_start,
         duration=item.source_range.duration,
     )
-    
+
     offset_frames = offset.value
     direction = "forward" if offset_frames > 0 else "backward"
-    
+
     return create_checkpoint(
         db=db,
         timeline_id=timeline_id,
@@ -526,41 +384,28 @@ def move_clip(
     actor: str = "system",
     expected_version: int = 0,
 ) -> TimelineCheckpointModel:
-    """
-    Move a clip to a different position or track.
-    
-    Args:
-        from_track: Source track index
-        from_index: Index of clip in source track
-        to_track: Destination track index
-        to_index: Position in destination track
-    """
     current = get_timeline_snapshot(db, timeline_id)
     timeline = deepcopy(current.timeline)
-    
     src_track = _get_track(timeline, from_track)
     dst_track = _get_track(timeline, to_track)
-    
     item = _get_item_from_track(src_track, from_index)
+
     if not isinstance(item, Clip):
         raise InvalidOperationError(f"Item at index {from_index} is not a Clip")
-    
-    # Remove from source
+
     src_track.children.pop(from_index)
-    
-    # Adjust to_index if same track and moving forward
+
     if from_track == to_track and to_index > from_index:
         to_index -= 1
-    
-    # Insert at destination
+
     to_index = max(0, min(to_index, len(dst_track.children)))
     dst_track.children.insert(to_index, item)
-    
+
     if from_track == to_track:
         desc = f"Moved clip '{item.name}' from position {from_index} to {to_index} in track '{src_track.name}'"
     else:
         desc = f"Moved clip '{item.name}' from track '{src_track.name}' to track '{dst_track.name}'"
-    
+
     return create_checkpoint(
         db=db,
         timeline_id=timeline_id,
@@ -588,21 +433,18 @@ def replace_clip_media(
     actor: str = "system",
     expected_version: int = 0,
 ) -> TimelineCheckpointModel:
-    """Replace a clip's media reference with a different asset."""
     current = get_timeline_snapshot(db, timeline_id)
     timeline = deepcopy(current.timeline)
-    
     track = _get_track(timeline, track_index)
     item = _get_item_from_track(track, clip_index)
-    
+
     if not isinstance(item, Clip):
         raise InvalidOperationError(f"Item at index {clip_index} is not a Clip")
-    
+
     old_ref = item.media_reference
     old_asset_id = old_ref.asset_id if isinstance(old_ref, ExternalReference) else None
-    
     item.media_reference = ExternalReference(asset_id=new_asset_id)
-    
+
     return create_checkpoint(
         db=db,
         timeline_id=timeline_id,
@@ -620,11 +462,6 @@ def replace_clip_media(
     )
 
 
-# =============================================================================
-# GAP OPERATIONS
-# =============================================================================
-
-
 def add_gap(
     db: DBSession,
     timeline_id: UUID,
@@ -635,14 +472,11 @@ def add_gap(
     actor: str = "system",
     expected_version: int = 0,
 ) -> TimelineCheckpointModel:
-    """Add a gap (empty space) to a track."""
     current = get_timeline_snapshot(db, timeline_id)
     timeline = deepcopy(current.timeline)
-    
     track = _get_track(timeline, track_index)
-    
     gap = Gap.with_duration(duration, name=name)
-    
+
     if insert_index is None or insert_index >= len(track.children):
         track.children.append(gap)
         insert_pos = len(track.children) - 1
@@ -650,9 +484,9 @@ def add_gap(
         insert_index = max(0, insert_index)
         track.children.insert(insert_index, gap)
         insert_pos = insert_index
-    
+
     duration_sec = duration.to_seconds()
-    
+
     return create_checkpoint(
         db=db,
         timeline_id=timeline_id,
@@ -677,21 +511,19 @@ def remove_gap(
     actor: str = "system",
     expected_version: int = 0,
 ) -> TimelineCheckpointModel:
-    """Remove a gap from a track."""
     current = get_timeline_snapshot(db, timeline_id)
     timeline = deepcopy(current.timeline)
-    
     track = _get_track(timeline, track_index)
     item = _get_item_from_track(track, gap_index)
-    
+
     if not isinstance(item, Gap):
         raise InvalidOperationError(
             f"Item at index {gap_index} is not a Gap (it's a {type(item).__name__})"
         )
-    
+
     duration_sec = item.source_range.duration.to_seconds()
     track.children.pop(gap_index)
-    
+
     return create_checkpoint(
         db=db,
         timeline_id=timeline_id,
@@ -716,24 +548,22 @@ def adjust_gap_duration(
     actor: str = "system",
     expected_version: int = 0,
 ) -> TimelineCheckpointModel:
-    """Change the duration of a gap."""
     current = get_timeline_snapshot(db, timeline_id)
     timeline = deepcopy(current.timeline)
-    
     track = _get_track(timeline, track_index)
     item = _get_item_from_track(track, gap_index)
-    
+
     if not isinstance(item, Gap):
         raise InvalidOperationError(f"Item at index {gap_index} is not a Gap")
-    
+
     old_duration = item.source_range.duration.to_seconds()
     new_duration_sec = new_duration.to_seconds()
-    
+
     item.source_range = TimeRange(
         start_time=RationalTime(value=0, rate=new_duration.rate),
         duration=new_duration,
     )
-    
+
     return create_checkpoint(
         db=db,
         timeline_id=timeline_id,
@@ -751,11 +581,6 @@ def adjust_gap_duration(
     )
 
 
-# =============================================================================
-# TRANSITION OPERATIONS
-# =============================================================================
-
-
 def add_transition(
     db: DBSession,
     timeline_id: UUID,
@@ -767,40 +592,28 @@ def add_transition(
     actor: str = "system",
     expected_version: int = 0,
 ) -> TimelineCheckpointModel:
-    """
-    Add a transition between two items.
-    
-    Args:
-        track_index: Track to add transition to
-        position: Insert position - transition goes between [position-1] and [position]
-        transition_type: Type of transition (dissolve, wipe, etc.)
-        in_offset: Duration into outgoing clip (default: 12 frames)
-        out_offset: Duration from incoming clip (default: 12 frames)
-    """
     current = get_timeline_snapshot(db, timeline_id)
     timeline = deepcopy(current.timeline)
-    
     track = _get_track(timeline, track_index)
-    
-    # Use default offsets if not provided
     rate = timeline.metadata.get("default_rate", 24.0)
+
     if in_offset is None:
         in_offset = RationalTime(value=12, rate=rate)
     if out_offset is None:
         out_offset = RationalTime(value=12, rate=rate)
-    
+
     _validate_transition_position(track, position)
-    
+
     transition = Transition(
         transition_type=transition_type,
         in_offset=in_offset,
         out_offset=out_offset,
     )
-    
+
     track.children.insert(position, transition)
-    
+
     duration_frames = in_offset.value + out_offset.value
-    
+
     return create_checkpoint(
         db=db,
         timeline_id=timeline_id,
@@ -827,20 +640,18 @@ def remove_transition(
     actor: str = "system",
     expected_version: int = 0,
 ) -> TimelineCheckpointModel:
-    """Remove a transition from a track."""
     current = get_timeline_snapshot(db, timeline_id)
     timeline = deepcopy(current.timeline)
-    
     track = _get_track(timeline, track_index)
     item = _get_item_from_track(track, transition_index)
-    
+
     if not isinstance(item, Transition):
         raise InvalidOperationError(
             f"Item at index {transition_index} is not a Transition"
         )
-    
+
     track.children.pop(transition_index)
-    
+
     return create_checkpoint(
         db=db,
         timeline_id=timeline_id,
@@ -867,19 +678,18 @@ def modify_transition(
     actor: str = "system",
     expected_version: int = 0,
 ) -> TimelineCheckpointModel:
-    """Modify an existing transition."""
     current = get_timeline_snapshot(db, timeline_id)
     timeline = deepcopy(current.timeline)
-    
     track = _get_track(timeline, track_index)
     item = _get_item_from_track(track, transition_index)
-    
+
     if not isinstance(item, Transition):
         raise InvalidOperationError(
             f"Item at index {transition_index} is not a Transition"
         )
-    
+
     changes = []
+
     if transition_type is not None:
         item.transition_type = transition_type
         changes.append(f"type={transition_type.value}")
@@ -889,7 +699,6 @@ def modify_transition(
     if out_offset is not None:
         item.out_offset = out_offset
         changes.append(f"out_offset={out_offset.value:.0f}f")
-    
     return create_checkpoint(
         db=db,
         timeline_id=timeline_id,
@@ -908,11 +717,6 @@ def modify_transition(
     )
 
 
-# =============================================================================
-# NESTED COMPOSITION OPERATIONS
-# =============================================================================
-
-
 def nest_clips_as_stack(
     db: DBSession,
     timeline_id: UUID,
@@ -923,49 +727,32 @@ def nest_clips_as_stack(
     actor: str = "system",
     expected_version: int = 0,
 ) -> TimelineCheckpointModel:
-    """
-    Nest a range of clips into a Stack (compound clip).
-    
-    Takes children[start_index:end_index+1] and wraps them in a Stack,
-    replacing them with the Stack in the track.
-    """
     current = get_timeline_snapshot(db, timeline_id)
     timeline = deepcopy(current.timeline)
-    
     track = _get_track(timeline, track_index)
-    
-    # Validate range
+
     if start_index < 0 or end_index >= len(track.children) or start_index > end_index:
         raise InvalidOperationError(
             f"Invalid range [{start_index}:{end_index}] for track with "
             f"{len(track.children)} items"
         )
-    
-    # Extract items to nest
-    items_to_nest = track.children[start_index:end_index + 1]
-    
-    # Create inner track with the items
+
+    items_to_nest = track.children[start_index : end_index + 1]
+
     inner_track = Track(
         name=f"{stack_name}_track",
         kind=track.kind,
         children=items_to_nest,
     )
-    
-    # Create stack containing the inner track
+
     nested_stack = Stack(
         name=stack_name,
         children=[inner_track],
     )
-    
-    # Replace items with nested stack
     track.children = (
-        track.children[:start_index] +
-        [nested_stack] +
-        track.children[end_index + 1:]
+        track.children[:start_index] + [nested_stack] + track.children[end_index + 1 :]
     )
-    
     num_items = end_index - start_index + 1
-    
     return create_checkpoint(
         db=db,
         timeline_id=timeline_id,
@@ -992,45 +779,33 @@ def flatten_nested_stack(
     actor: str = "system",
     expected_version: int = 0,
 ) -> TimelineCheckpointModel:
-    """
-    Flatten a nested Stack back into individual items.
-    
-    Takes the first track from the Stack and inlines its children
-    back into the parent track.
-    """
     current = get_timeline_snapshot(db, timeline_id)
     timeline = deepcopy(current.timeline)
-    
     track = _get_track(timeline, track_index)
     item = _get_item_from_track(track, stack_index)
-    
+
     if not isinstance(item, Stack):
-        raise InvalidOperationError(
-            f"Item at index {stack_index} is not a Stack"
-        )
-    
+        raise InvalidOperationError(f"Item at index {stack_index} is not a Stack")
+
     stack_name = item.name
-    
-    # Get items from the first track in the stack
+
     if not item.children:
         raise InvalidOperationError("Stack has no children to flatten")
-    
+
     first_child = item.children[0]
+
     if isinstance(first_child, Track):
         items_to_inline = first_child.children
     elif isinstance(first_child, Stack):
-        # Recursively handle nested stacks
         items_to_inline = [first_child]
     else:
         items_to_inline = []
-    
-    # Replace stack with its contents
+
     track.children = (
-        track.children[:stack_index] +
-        list(items_to_inline) +
-        track.children[stack_index + 1:]
+        track.children[:stack_index]
+        + list(items_to_inline)
+        + track.children[stack_index + 1 :]
     )
-    
     return create_checkpoint(
         db=db,
         timeline_id=timeline_id,
@@ -1048,11 +823,6 @@ def flatten_nested_stack(
     )
 
 
-# =============================================================================
-# MARKER OPERATIONS
-# =============================================================================
-
-
 def add_marker(
     db: DBSession,
     timeline_id: UUID,
@@ -1065,29 +835,26 @@ def add_marker(
     actor: str = "system",
     expected_version: int = 0,
 ) -> TimelineCheckpointModel:
-    """Add a marker to a clip or gap."""
     current = get_timeline_snapshot(db, timeline_id)
     timeline = deepcopy(current.timeline)
-    
     track = _get_track(timeline, track_index)
     item = _get_item_from_track(track, item_index)
-    
-    if not hasattr(item, 'markers'):
+
+    if not hasattr(item, "markers"):
         raise InvalidOperationError(
             f"Item type {type(item).__name__} does not support markers"
         )
-    
+
     marker = Marker(
         name=name,
         marked_range=marked_range,
         color=color,
         metadata=metadata or {},
     )
-    
+
     item.markers.append(marker)
-    
-    item_name = getattr(item, 'name', f'item[{item_index}]')
-    
+    item_name = getattr(item, "name", f"item[{item_index}]")
+
     return create_checkpoint(
         db=db,
         timeline_id=timeline_id,
@@ -1113,26 +880,22 @@ def remove_marker(
     actor: str = "system",
     expected_version: int = 0,
 ) -> TimelineCheckpointModel:
-    """Remove a marker from a clip or gap."""
     current = get_timeline_snapshot(db, timeline_id)
     timeline = deepcopy(current.timeline)
-    
     track = _get_track(timeline, track_index)
     item = _get_item_from_track(track, item_index)
-    
-    if not hasattr(item, 'markers'):
+
+    if not hasattr(item, "markers"):
         raise InvalidOperationError(
             f"Item type {type(item).__name__} does not support markers"
         )
-    
+
     if marker_index < 0 or marker_index >= len(item.markers):
-        raise InvalidOperationError(
-            f"Marker index {marker_index} out of range"
-        )
-    
+        raise InvalidOperationError(f"Marker index {marker_index} out of range")
+
     marker = item.markers.pop(marker_index)
-    item_name = getattr(item, 'name', f'item[{item_index}]')
-    
+    item_name = getattr(item, "name", f"item[{item_index}]")
+
     return create_checkpoint(
         db=db,
         timeline_id=timeline_id,
@@ -1149,11 +912,6 @@ def remove_marker(
     )
 
 
-# =============================================================================
-# EFFECT OPERATIONS
-# =============================================================================
-
-
 def add_effect(
     db: DBSession,
     timeline_id: UUID,
@@ -1163,23 +921,20 @@ def add_effect(
     actor: str = "system",
     expected_version: int = 0,
 ) -> TimelineCheckpointModel:
-    """Add an effect to a clip, gap, or track."""
     current = get_timeline_snapshot(db, timeline_id)
     timeline = deepcopy(current.timeline)
-    
     track = _get_track(timeline, track_index)
     item = _get_item_from_track(track, item_index)
-    
-    if not hasattr(item, 'effects'):
+
+    if not hasattr(item, "effects"):
         raise InvalidOperationError(
             f"Item type {type(item).__name__} does not support effects"
         )
-    
+
     item.effects.append(effect)
-    
-    item_name = getattr(item, 'name', f'item[{item_index}]')
-    effect_name = getattr(effect, 'effect_name', type(effect).__name__)
-    
+    item_name = getattr(item, "name", f"item[{item_index}]")
+    effect_name = getattr(effect, "effect_name", type(effect).__name__)
+
     return create_checkpoint(
         db=db,
         timeline_id=timeline_id,
@@ -1205,27 +960,23 @@ def remove_effect(
     actor: str = "system",
     expected_version: int = 0,
 ) -> TimelineCheckpointModel:
-    """Remove an effect from a clip, gap, or track."""
     current = get_timeline_snapshot(db, timeline_id)
     timeline = deepcopy(current.timeline)
-    
     track = _get_track(timeline, track_index)
     item = _get_item_from_track(track, item_index)
-    
-    if not hasattr(item, 'effects'):
+
+    if not hasattr(item, "effects"):
         raise InvalidOperationError(
             f"Item type {type(item).__name__} does not support effects"
         )
-    
+
     if effect_index < 0 or effect_index >= len(item.effects):
-        raise InvalidOperationError(
-            f"Effect index {effect_index} out of range"
-        )
-    
+        raise InvalidOperationError(f"Effect index {effect_index} out of range")
+
     effect = item.effects.pop(effect_index)
-    item_name = getattr(item, 'name', f'item[{item_index}]')
-    effect_name = getattr(effect, 'effect_name', type(effect).__name__)
-    
+    item_name = getattr(item, "name", f"item[{item_index}]")
+    effect_name = getattr(effect, "effect_name", type(effect).__name__)
+
     return create_checkpoint(
         db=db,
         timeline_id=timeline_id,
@@ -1242,11 +993,6 @@ def remove_effect(
     )
 
 
-# =============================================================================
-# BULK OPERATIONS
-# =============================================================================
-
-
 def replace_timeline(
     db: DBSession,
     timeline_id: UUID,
@@ -1255,14 +1001,6 @@ def replace_timeline(
     actor: str = "system",
     expected_version: int = 0,
 ) -> TimelineCheckpointModel:
-    """
-    Replace the entire timeline with a new snapshot.
-    
-    Use this for:
-    - Importing timelines from external sources
-    - Major restructures
-    - Batch operations
-    """
     return create_checkpoint(
         db=db,
         timeline_id=timeline_id,
@@ -1284,16 +1022,13 @@ def clear_track(
     actor: str = "system",
     expected_version: int = 0,
 ) -> TimelineCheckpointModel:
-    """Remove all items from a track."""
     current = get_timeline_snapshot(db, timeline_id)
     timeline = deepcopy(current.timeline)
-    
     track = _get_track(timeline, track_index)
     num_items = len(track.children)
     track_name = track.name
-    
     track.children = []
-    
+
     return create_checkpoint(
         db=db,
         timeline_id=timeline_id,

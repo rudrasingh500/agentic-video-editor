@@ -13,7 +13,9 @@ from utils.gcs_utils import delete_file, upload_file
 ASSET_BUCKET = os.getenv("GCS_BUCKET", "video-editor")
 
 
-def upload_asset(db: DBSession, project_id: UUID, asset_name: str, content: bytes) -> Assets:
+def upload_asset(
+    db: DBSession, project_id: UUID, asset_name: str, content: bytes
+) -> Assets:
     blob_path = f"{project_id}/{asset_name}"
     asset_info = upload_file(
         bucket_name=ASSET_BUCKET,

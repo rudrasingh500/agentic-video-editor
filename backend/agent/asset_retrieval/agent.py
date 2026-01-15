@@ -109,11 +109,13 @@ def find_assets(
                 trace_entry["result"] = result
                 trace.append(trace_entry)
 
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tool_call.id,
-                    "content": json.dumps(result),
-                })
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": json.dumps(result),
+                    }
+                )
 
             remaining = MAX_ITERATIONS - iteration - 1
             iteration_context = (
@@ -132,10 +134,12 @@ def find_assets(
                 )
             iteration_context += "]"
 
-            messages.append({
-                "role": "user",
-                "content": iteration_context,
-            })
+            messages.append(
+                {
+                    "role": "user",
+                    "content": iteration_context,
+                }
+            )
 
         if response.choices[0].finish_reason == "stop" and not message.tool_calls:
             logger.debug("Agent finished - parsing candidates")
@@ -144,10 +148,12 @@ def find_assets(
         logger.warning(
             f"Asset retrieval reached max iterations ({MAX_ITERATIONS}) for query: {query}"
         )
-        trace.append({
-            "warning": "Max iterations reached",
-            "iteration": MAX_ITERATIONS,
-        })
+        trace.append(
+            {
+                "warning": "Max iterations reached",
+                "iteration": MAX_ITERATIONS,
+            }
+        )
 
     candidates = _parse_candidates(final_content)
 
@@ -218,7 +224,9 @@ def _log_run(
             trace={
                 "agent": "asset_retrieval",
                 "query": query,
-                "iterations": len(set(t.get("iteration", 0) for t in trace if "iteration" in t)),
+                "iterations": len(
+                    set(t.get("iteration", 0) for t in trace if "iteration" in t)
+                ),
                 "tool_calls": trace,
             },
             analysis_segments=[c.model_dump() for c in candidates],

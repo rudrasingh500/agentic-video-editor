@@ -1,5 +1,14 @@
 from uuid import uuid4
-from sqlalchemy import Column, Integer, String, DateTime, Index, ForeignKey, Computed, Boolean
+from sqlalchemy import (
+    Column,
+    Integer,
+    String,
+    DateTime,
+    Index,
+    ForeignKey,
+    Computed,
+    Boolean,
+)
 from sqlalchemy.dialects.postgresql import JSONB, UUID, ARRAY, TSVECTOR
 from sqlalchemy.sql import func
 from pgvector.sqlalchemy import Vector
@@ -166,10 +175,11 @@ class AgentRun(Base):
 class Timeline(Base):
     """
     Timeline container - one per project.
-    
+
     Stores the timeline metadata and current version pointer.
     The actual timeline content is stored in TimelineCheckpoint snapshots.
     """
+
     __tablename__ = "timelines"
 
     timeline_id = Column(
@@ -184,16 +194,16 @@ class Timeline(Base):
     name = Column(String, nullable=False)
     global_start_time = Column(JSONB, nullable=True)  # RationalTime JSON
     settings = Column(JSONB, nullable=False, default=dict)  # TimelineSettings JSON
-    timeline_metadata = Column(JSONB, nullable=False, default=dict)  # Renamed from 'metadata' (reserved)
+    timeline_metadata = Column(
+        JSONB, nullable=False, default=dict
+    )  # Renamed from 'metadata' (reserved)
     created_at = Column(DateTime, nullable=False, server_default=func.now())
     updated_at = Column(
         DateTime, nullable=False, server_default=func.now(), onupdate=func.now()
     )
     current_version = Column(Integer, nullable=False, default=0)
 
-    __table_args__ = (
-        Index("ix_timelines_project_id", project_id),
-    )
+    __table_args__ = (Index("ix_timelines_project_id", project_id),)
 
     def __repr__(self):
         return (
@@ -206,7 +216,7 @@ class Timeline(Base):
 class TimelineCheckpoint(Base):
     """
     Versioned timeline snapshot.
-    
+
     Each checkpoint stores a complete OTIO-compatible timeline snapshot.
     This enables:
     - Full history of all changes
@@ -214,6 +224,7 @@ class TimelineCheckpoint(Base):
     - Diffing between versions
     - Branching (via parent_version)
     """
+
     __tablename__ = "timeline_checkpoints"
 
     checkpoint_id = Column(
@@ -263,17 +274,18 @@ class TimelineCheckpoint(Base):
 class TimelineOperation(Base):
     """
     Audit log of operations performed on timelines.
-    
+
     Each checkpoint has one associated operation record that captures:
     - What type of operation was performed
     - The full parameters of the operation
     - When it was performed
-    
+
     This is useful for:
     - Debugging and auditing
     - Understanding change patterns
     - Potential undo/redo optimization in the future
     """
+
     __tablename__ = "timeline_operations"
 
     operation_id = Column(

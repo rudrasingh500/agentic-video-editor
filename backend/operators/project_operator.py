@@ -7,6 +7,7 @@ import os
 
 ASSET_BUCKET = os.getenv("GCS_BUCKET", "video-editor")
 
+
 def get_project_by_id(project_id: UUID, db: DBSession) -> Project:
     project = db.query(Project).filter(Project.project_id == project_id).first()
     return project
@@ -57,7 +58,9 @@ def get_video_output(project_id: UUID, db: DBSession) -> bytes:
     if not video_output:
         raise Exception("No video output found")
 
-    video_bytes = download_file(bucket_name=ASSET_BUCKET, blob_name=video_output.video_url)
+    video_bytes = download_file(
+        bucket_name=ASSET_BUCKET, blob_name=video_output.video_url
+    )
     if not video_bytes:
         raise Exception("Failed to download video")
 

@@ -1,5 +1,3 @@
-
-import json
 from typing import Any
 
 from sqlalchemy import func, text
@@ -222,6 +220,7 @@ TOOLS: list[dict[str, Any]] = [
     },
 ]
 
+
 def execute_tool(
     tool_name: str,
     arguments: dict[str, Any],
@@ -247,6 +246,7 @@ def execute_tool(
         return tool_fn(project_id=project_id, db=db, **arguments)
     except Exception as e:
         return {"error": str(e)}
+
 
 def _list_assets_summaries(
     project_id: str,
@@ -283,16 +283,21 @@ def _list_assets_summaries(
         ],
     }
 
+
 def _get_asset_details(
     project_id: str,
     db: Session,
     asset_id: str,
 ) -> dict[str, Any]:
-    asset = db.query(Assets).filter(
-        Assets.asset_id == asset_id,
-        Assets.project_id == project_id,
-        Assets.indexing_status == "completed",
-    ).first()
+    asset = (
+        db.query(Assets)
+        .filter(
+            Assets.asset_id == asset_id,
+            Assets.project_id == project_id,
+            Assets.indexing_status == "completed",
+        )
+        .first()
+    )
     if not asset:
         return {"error": f"Asset not found: {asset_id}"}
     return {
@@ -313,6 +318,7 @@ def _get_asset_details(
         "colors": asset.asset_colors,
         "technical": asset.asset_technical,
     }
+
 
 def _search_by_tags(
     project_id: str,
@@ -353,6 +359,7 @@ def _search_by_tags(
         ],
     }
 
+
 def _search_transcript(
     project_id: str,
     db: Session,
@@ -384,25 +391,30 @@ def _search_transcript(
         for seg in segments:
             seg_text = seg.get("text", "")
             if query_lower in seg_text.lower():
-                matching_segments.append({
-                    "t0": seg.get("timestamp_ms", seg.get("start_ms", 0)),
-                    "t1": seg.get("end_ms", seg.get("timestamp_ms", 0) + 5000),
-                    "text": seg_text,
-                    "speaker": seg.get("speaker"),
-                })
+                matching_segments.append(
+                    {
+                        "t0": seg.get("timestamp_ms", seg.get("start_ms", 0)),
+                        "t1": seg.get("end_ms", seg.get("timestamp_ms", 0) + 5000),
+                        "text": seg_text,
+                        "speaker": seg.get("speaker"),
+                    }
+                )
         if matching_segments:
-            output_assets.append({
-                "asset_id": str(row.asset_id),
-                "name": row.asset_name,
-                "type": row.asset_type,
-                "segments": matching_segments,
-            })
+            output_assets.append(
+                {
+                    "asset_id": str(row.asset_id),
+                    "name": row.asset_name,
+                    "type": row.asset_type,
+                    "segments": matching_segments,
+                }
+            )
     return {
         "count": len(output_assets),
         "query": query,
         "speaker_filter": speaker_id,
         "assets": output_assets,
     }
+
 
 def _search_faces_speakers(
     project_id: str,
@@ -432,35 +444,46 @@ def _search_faces_speakers(
         if face_ids:
             for face in faces:
                 if face.get("id") in face_ids:
-                    matched_faces.append({
-                        "id": face.get("id"),
-                        "description": face.get("description"),
-                        "appears_at_ms": face.get("appears_at_ms", []),
-                        "screen_time_percentage": face.get("screen_time_percentage"),
-                    })
+                    matched_faces.append(
+                        {
+                            "id": face.get("id"),
+                            "description": face.get("description"),
+                            "appears_at_ms": face.get("appears_at_ms", []),
+                            "screen_time_percentage": face.get(
+                                "screen_time_percentage"
+                            ),
+                        }
+                    )
         if speaker_ids:
             for speaker in speakers:
                 if speaker.get("id") in speaker_ids:
-                    matched_speakers.append({
-                        "id": speaker.get("id"),
-                        "description": speaker.get("description"),
-                        "role": speaker.get("role"),
-                        "speaking_time_percentage": speaker.get("speaking_time_percentage"),
-                    })
+                    matched_speakers.append(
+                        {
+                            "id": speaker.get("id"),
+                            "description": speaker.get("description"),
+                            "role": speaker.get("role"),
+                            "speaking_time_percentage": speaker.get(
+                                "speaking_time_percentage"
+                            ),
+                        }
+                    )
         if matched_faces or matched_speakers:
-            output_assets.append({
-                "asset_id": str(row.asset_id),
-                "name": row.asset_name,
-                "type": row.asset_type,
-                "matched_faces": matched_faces,
-                "matched_speakers": matched_speakers,
-            })
+            output_assets.append(
+                {
+                    "asset_id": str(row.asset_id),
+                    "name": row.asset_name,
+                    "type": row.asset_type,
+                    "matched_faces": matched_faces,
+                    "matched_speakers": matched_speakers,
+                }
+            )
     return {
         "count": len(output_assets),
         "query_face_ids": face_ids or [],
         "query_speaker_ids": speaker_ids or [],
         "assets": output_assets,
     }
+
 
 def _search_events_scenes(
     project_id: str,
@@ -495,41 +518,50 @@ def _search_events_scenes(
             if desc_lower and desc_lower not in event.get("description", "").lower():
                 matches = False
             if matches:
-                matched_events.append({
-                    "t0": event.get("timestamp_ms", 0),
-                    "t1": event.get("timestamp_ms", 0) + 3000,
-                    "type": event.get("event_type"),
-                    "description": event.get("description"),
-                    "importance": event.get("importance"),
-                })
+                matched_events.append(
+                    {
+                        "t0": event.get("timestamp_ms", 0),
+                        "t1": event.get("timestamp_ms", 0) + 3000,
+                        "type": event.get("event_type"),
+                        "description": event.get("description"),
+                        "importance": event.get("importance"),
+                    }
+                )
         for scene in scenes:
             matches = True
             if desc_lower:
-                scene_desc = scene.get("description", "") + " " + scene.get("key_content", "")
+                scene_desc = (
+                    scene.get("description", "") + " " + scene.get("key_content", "")
+                )
                 if desc_lower not in scene_desc.lower():
                     matches = False
             if matches and (not event_type or desc_lower):
-                matched_scenes.append({
-                    "t0": scene.get("start_ms", 0),
-                    "t1": scene.get("end_ms", 0),
-                    "description": scene.get("description"),
-                    "location": scene.get("location"),
-                    "mood": scene.get("mood"),
-                })
+                matched_scenes.append(
+                    {
+                        "t0": scene.get("start_ms", 0),
+                        "t1": scene.get("end_ms", 0),
+                        "description": scene.get("description"),
+                        "location": scene.get("location"),
+                        "mood": scene.get("mood"),
+                    }
+                )
         if matched_events or matched_scenes:
-            output_assets.append({
-                "asset_id": str(row.asset_id),
-                "name": row.asset_name,
-                "type": row.asset_type,
-                "matched_events": matched_events,
-                "matched_scenes": matched_scenes,
-            })
+            output_assets.append(
+                {
+                    "asset_id": str(row.asset_id),
+                    "name": row.asset_name,
+                    "type": row.asset_type,
+                    "matched_events": matched_events,
+                    "matched_scenes": matched_scenes,
+                }
+            )
     return {
         "count": len(output_assets),
         "query_event_type": event_type,
         "query_description": description_query,
         "assets": output_assets,
     }
+
 
 def _search_objects(
     project_id: str,
@@ -561,29 +593,35 @@ def _search_objects(
             if any(search_name in obj_name for search_name in search_names):
                 if prominence and obj.get("prominence") != prominence:
                     continue
-                matched_objects.append({
-                    "name": obj.get("name"),
-                    "description": obj.get("description"),
-                    "position": obj.get("position"),
-                    "prominence": obj.get("prominence"),
-                    "brand": obj.get("brand"),
-                })
+                matched_objects.append(
+                    {
+                        "name": obj.get("name"),
+                        "description": obj.get("description"),
+                        "position": obj.get("position"),
+                        "prominence": obj.get("prominence"),
+                        "brand": obj.get("brand"),
+                    }
+                )
         object_timestamps = []
         for shot in notable_shots:
             shot_desc = shot.get("description", "").lower()
             if any(search_name in shot_desc for search_name in search_names):
-                object_timestamps.append({
-                    "t0": shot.get("timestamp_ms", 0),
-                    "description": shot.get("description"),
-                })
+                object_timestamps.append(
+                    {
+                        "t0": shot.get("timestamp_ms", 0),
+                        "description": shot.get("description"),
+                    }
+                )
         if matched_objects or object_timestamps:
-            output_assets.append({
-                "asset_id": str(row.asset_id),
-                "name": row.asset_name,
-                "type": row.asset_type,
-                "matched_objects": matched_objects,
-                "object_timestamps": object_timestamps,
-            })
+            output_assets.append(
+                {
+                    "asset_id": str(row.asset_id),
+                    "name": row.asset_name,
+                    "type": row.asset_type,
+                    "matched_objects": matched_objects,
+                    "object_timestamps": object_timestamps,
+                }
+            )
     return {
         "count": len(output_assets),
         "query_objects": object_names,

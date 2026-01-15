@@ -15,7 +15,9 @@ class AssetCandidate(BaseModel):
     t1: int = Field(description="End timestamp in milliseconds")
     score: int = Field(ge=0, le=100, description="Relevance score (0-100)")
     reasons: list[str] = Field(description="Reasons why this asset matched the query")
-    tags: list[str] = Field(default_factory=list, description="Relevant tags from the asset")
+    tags: list[str] = Field(
+        default_factory=list, description="Relevant tags from the asset"
+    )
     transcript_snippet: str | None = Field(
         default=None, description="Relevant transcript excerpt if applicable"
     )
