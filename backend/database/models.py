@@ -1,5 +1,5 @@
 from uuid import uuid4
-from sqlalchemy import Column, Integer, String, DateTime, Index, ForeignKey, Computed
+from sqlalchemy import Column, Integer, String, DateTime, Index, ForeignKey, Computed, Boolean
 from sqlalchemy.dialects.postgresql import JSONB, UUID, ARRAY, TSVECTOR
 from sqlalchemy.sql import func
 from pgvector.sqlalchemy import Vector
@@ -156,3 +156,149 @@ class AgentRun(Base):
 
     def __repr__(self):
         return f"<AgentRun run_id={self.run_id} project_id={self.project_id} trace={self.trace} analysis_segments={self.analysis_segments}>"
+
+
+# =============================================================================
+# TIMELINE MODELS (OTIO-inspired)
+# =============================================================================
+
+
+class Timeline(Base):
+    """
+    Timeline container - one per project.
+    
+    Stores the timeline metadata and current version pointer.
+    The actual timeline content is stored in TimelineCheckpoint snapshots.
+    """
+    __tablename__ = "timelines"
+
+    timeline_id = Column(
+        UUID, unique=True, index=True, nullable=False, primary_key=True, default=uuid4
+    )
+    project_id = Column(
+        UUID,
+        ForeignKey("projects.project_id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,  # One timeline per project
+    )
+    name = Column(String, nullable=False)
+    global_start_time = Column(JSONB, nullable=True)  # RationalTime JSON
+    settings = Column(JSONB, nullable=False, default=dict)  # TimelineSettings JSON
+    timeline_metadata = Column(JSONB, nullable=False, default=dict)  # Renamed from 'metadata' (reserved)
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
+    updated_at = Column(
+        DateTime, nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+    current_version = Column(Integer, nullable=False, default=0)
+
+    __table_args__ = (
+        Index("ix_timelines_project_id", project_id),
+    )
+
+    def __repr__(self):
+        return (
+            f"<Timeline timeline_id={self.timeline_id} "
+            f"project_id={self.project_id} name={self.name} "
+            f"current_version={self.current_version}>"
+        )
+
+
+class TimelineCheckpoint(Base):
+    """
+    Versioned timeline snapshot.
+    
+    Each checkpoint stores a complete OTIO-compatible timeline snapshot.
+    This enables:
+    - Full history of all changes
+    - Rollback to any previous version
+    - Diffing between versions
+    - Branching (via parent_version)
+    """
+    __tablename__ = "timeline_checkpoints"
+
+    checkpoint_id = Column(
+        UUID, unique=True, index=True, nullable=False, primary_key=True, default=uuid4
+    )
+    timeline_id = Column(
+        UUID,
+        ForeignKey("timelines.timeline_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    version = Column(Integer, nullable=False)
+    parent_version = Column(
+        Integer, nullable=True
+    )  # For tracking rollbacks and branches
+    snapshot = Column(JSONB, nullable=False)  # Complete Timeline Pydantic model as JSON
+    description = Column(String, nullable=False)  # Human-readable change description
+    created_by = Column(
+        String, nullable=False
+    )  # "user:<uuid>", "agent:<name>", "system"
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
+
+    # Approval workflow (for agent integration)
+    is_approved = Column(Boolean, nullable=False, default=True)
+    approved_by = Column(String, nullable=True)
+    approved_at = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        # Unique constraint: one version number per timeline
+        Index(
+            "ix_timeline_checkpoints_timeline_version",
+            timeline_id,
+            version,
+            unique=True,
+        ),
+        Index("ix_timeline_checkpoints_timeline_id", timeline_id),
+        Index("ix_timeline_checkpoints_created_at", created_at),
+    )
+
+    def __repr__(self):
+        return (
+            f"<TimelineCheckpoint checkpoint_id={self.checkpoint_id} "
+            f"timeline_id={self.timeline_id} version={self.version} "
+            f"description={self.description[:50]}...>"
+        )
+
+
+class TimelineOperation(Base):
+    """
+    Audit log of operations performed on timelines.
+    
+    Each checkpoint has one associated operation record that captures:
+    - What type of operation was performed
+    - The full parameters of the operation
+    - When it was performed
+    
+    This is useful for:
+    - Debugging and auditing
+    - Understanding change patterns
+    - Potential undo/redo optimization in the future
+    """
+    __tablename__ = "timeline_operations"
+
+    operation_id = Column(
+        UUID, unique=True, index=True, nullable=False, primary_key=True, default=uuid4
+    )
+    checkpoint_id = Column(
+        UUID,
+        ForeignKey("timeline_checkpoints.checkpoint_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    operation_type = Column(
+        String, nullable=False
+    )  # add_clip, remove_clip, trim_clip, etc.
+    operation_data = Column(JSONB, nullable=False)  # Full operation parameters
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        Index("ix_timeline_operations_checkpoint_id", checkpoint_id),
+        Index("ix_timeline_operations_operation_type", operation_type),
+        Index("ix_timeline_operations_created_at", created_at),
+    )
+
+    def __repr__(self):
+        return (
+            f"<TimelineOperation operation_id={self.operation_id} "
+            f"operation_type={self.operation_type} "
+            f"checkpoint_id={self.checkpoint_id}>"
+        )

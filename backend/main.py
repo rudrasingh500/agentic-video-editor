@@ -4,6 +4,7 @@ from handlers.health_handler import router as health_router
 from handlers.auth_handler import router as auth_router
 from handlers.project_handler import router as project_router
 from handlers.asset_handler import router as asset_router
+from handlers.timeline_handler import router as timeline_router
 from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(app_name="Agent Editor Backend")
@@ -13,6 +14,7 @@ app.include_router(health_router)
 app.include_router(auth_router)
 app.include_router(project_router)
 app.include_router(asset_router)
+app.include_router(timeline_router)
 
 app.add_middleware(
     CORSMiddleware,

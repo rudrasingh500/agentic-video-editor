@@ -9,3 +9,4 @@ redis
 google-cloud-storage
 openai
 openrouter
+python-multipart
