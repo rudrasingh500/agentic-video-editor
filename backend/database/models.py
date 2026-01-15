@@ -314,3 +314,86 @@ class TimelineOperation(Base):
             f"operation_type={self.operation_type} "
             f"checkpoint_id={self.checkpoint_id}>"
         )
+
+
+# =============================================================================
+# RENDER JOB MODELS
+# =============================================================================
+
+
+class RenderJob(Base):
+    """
+    Render job tracking.
+
+    Tracks the status and progress of video rendering jobs executed
+    via Cloud Run Jobs. Each job renders a specific timeline version
+    to a video file stored in GCS.
+    """
+
+    __tablename__ = "render_jobs"
+
+    job_id = Column(
+        UUID, unique=True, index=True, nullable=False, primary_key=True, default=uuid4
+    )
+    project_id = Column(
+        UUID,
+        ForeignKey("projects.project_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    timeline_id = Column(
+        UUID,
+        ForeignKey("timelines.timeline_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    timeline_version = Column(Integer, nullable=False)
+
+    # Job type and status
+    job_type = Column(
+        String, nullable=False
+    )  # "preview" or "export"
+    status = Column(
+        String, nullable=False, default="pending"
+    )  # pending, queued, processing, uploading, completed, failed, cancelled
+
+    # Progress tracking
+    progress = Column(Integer, nullable=False, default=0)  # 0-100
+    current_frame = Column(Integer, nullable=True)
+    total_frames = Column(Integer, nullable=True)
+
+    # Render settings (stored as JSON)
+    preset = Column(JSONB, nullable=False)  # RenderPreset JSON
+
+    # Output details
+    output_filename = Column(String, nullable=True)
+    output_url = Column(String, nullable=True)  # GCS path to rendered video
+    output_size_bytes = Column(Integer, nullable=True)
+
+    # Error handling
+    error_message = Column(String, nullable=True)
+    error_details = Column(JSONB, nullable=True)
+
+    # Cloud Run integration
+    cloud_run_job_name = Column(String, nullable=True)  # Cloud Run Job name
+    cloud_run_execution_id = Column(String, nullable=True)  # Execution ID
+
+    # Timestamps
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+
+    # Additional metadata
+    job_metadata = Column(JSONB, nullable=False, default=dict)
+
+    __table_args__ = (
+        Index("ix_render_jobs_project_id", project_id),
+        Index("ix_render_jobs_status", status),
+        Index("ix_render_jobs_created_at", created_at),
+        Index("ix_render_jobs_project_status", project_id, status),
+    )
+
+    def __repr__(self):
+        return (
+            f"<RenderJob job_id={self.job_id} "
+            f"project_id={self.project_id} "
+            f"status={self.status} progress={self.progress}%>"
+        )

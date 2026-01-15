@@ -1,0 +1,49 @@
+# Video Render Job Container - GPU Version
+#
+# Uses NVIDIA CUDA base image with FFmpeg compiled with NVENC support
+# for hardware-accelerated video encoding on NVIDIA GPUs.
+#
+# Build:
+#   docker build -f Dockerfile.gpu -t video-render-gpu .
+#
+# Requires:
+#   - NVIDIA GPU (L4 recommended for Cloud Run)
+#   - Cloud Run Jobs with GPU enabled
+
+# Base image with CUDA and FFmpeg with NVENC
+FROM nvidia/cuda:12.2.0-runtime-ubuntu22.04
+
+# Install Python and FFmpeg with NVENC support
+RUN apt-get update && apt-get install -y \
+    python3.11 \
+    python3-pip \
+    ffmpeg \
+    libavcodec-extra \
+    libnvidia-encode-525 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Make python3.11 the default
+RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1 \
+    && update-alternatives --install /usr/bin/pip pip /usr/bin/pip3 1
+
+# Set working directory
+WORKDIR /app
+
+# Copy requirements first for better caching
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application code
+COPY *.py .
+
+# Create directories for GCS mounts
+RUN mkdir -p /inputs /outputs /tmp/render
+
+# Set environment variables
+ENV PYTHONUNBUFFERED=1
+ENV RENDER_TEMP_DIR=/tmp/render
+ENV NVIDIA_VISIBLE_DEVICES=all
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,video,utility
+
+# Entry point
+ENTRYPOINT ["python", "entrypoint.py"]
