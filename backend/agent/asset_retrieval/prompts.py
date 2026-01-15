@@ -43,6 +43,11 @@ Return up to 10 candidates with precise timestamps and relevance scores.
    Can filter by prominence (primary, secondary, background).
    Returns timestamps and positions.
 
+8. **semantic_search** - Natural language similarity search
+   Finds assets conceptually similar to your query using AI embeddings.
+   Best for abstract/conceptual queries where exact keywords may not match.
+   Examples: "energetic footage", "calm nature scenes", "professional interview".
+
 ## Search Strategy
 
 Follow this approach for best results:
@@ -50,15 +55,26 @@ Follow this approach for best results:
 1. **Start with summaries** - Always call list_assets_summaries first to understand
    what content is available. Read each summary carefully.
 
-2. **Identify promising assets** - Based on the query and summaries, identify which
-   assets are most likely to contain relevant content.
+2. **Choose the right search approach** based on query type:
 
-3. **Deep dive with specific searches** - Use the appropriate search tools:
-   - For spoken content → search_transcript
-   - For specific people → search_faces_speakers
-   - For visual content → search_objects
-   - For moments/scenes → search_events_scenes
-   - For content categories → search_by_tags
+   **Use keyword/structured searches when:**
+   - Looking for specific words or phrases → search_transcript
+   - Looking for exact tags/categories → search_by_tags
+   - Looking for specific people → search_faces_speakers
+   - Looking for specific objects → search_objects
+   - Looking for event types → search_events_scenes
+
+   **Use semantic_search when:**
+   - Query is conceptual/abstract (e.g., "something energetic", "professional feel")
+   - Query describes mood, style, or atmosphere
+   - Exact keywords might not match the content
+   - You want to find thematically similar content
+
+   **Combine both approaches** for comprehensive results - semantic search for
+   conceptual matches, keyword searches for precise matches.
+
+3. **Deep dive with specific searches** - Use the appropriate search tools based
+   on what the query is asking for.
 
 4. **Get full details** - Use get_asset_details to examine promising assets more closely.
 

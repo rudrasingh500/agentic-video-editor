@@ -6,6 +6,7 @@ from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 
 from database.models import Assets
+from utils.embeddings import get_query_embedding
 
 TOOLS: list[dict[str, Any]] = [
     {
@@ -188,6 +189,37 @@ TOOLS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "semantic_search",
+            "description": (
+                "Search assets using natural language semantic similarity. "
+                "Finds assets conceptually related to your query, even without exact keyword matches. "
+                "Best for conceptual queries like 'energetic footage', 'calm nature scenes', "
+                "'professional interview setup', or 'upbeat music'. "
+                "Returns assets ranked by semantic similarity to your description."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Natural language description of what you're looking for",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of results to return (default 10)",
+                    },
+                    "min_similarity": {
+                        "type": "number",
+                        "description": "Minimum similarity score between 0 and 1 (default 0.5)",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
 ]
 
 def execute_tool(
@@ -204,6 +236,7 @@ def execute_tool(
         "search_faces_speakers": _search_faces_speakers,
         "search_events_scenes": _search_events_scenes,
         "search_objects": _search_objects,
+        "semantic_search": _semantic_search,
     }
 
     tool_fn = tool_map.get(tool_name)
@@ -556,4 +589,73 @@ def _search_objects(
         "query_objects": object_names,
         "prominence_filter": prominence,
         "assets": output_assets,
+    }
+
+
+def _semantic_search(
+    project_id: str,
+    db: Session,
+    query: str,
+    limit: int = 10,
+    min_similarity: float = 0.5,
+) -> dict[str, Any]:
+    """
+    Vector similarity search using pgvector.
+
+    Finds assets semantically similar to the query by comparing
+    embedding vectors using cosine distance.
+    """
+    if not query.strip():
+        return {"error": "Empty search query", "assets": []}
+
+    # Generate embedding for the query
+    query_embedding = get_query_embedding(query)
+    if not query_embedding:
+        return {
+            "error": "Failed to generate query embedding",
+            "assets": [],
+        }
+
+    # Perform vector similarity search using pgvector's <=> operator (cosine distance)
+    # Cosine distance = 1 - cosine_similarity, so we compute similarity as 1 - distance
+    results = db.execute(
+        text("""
+            SELECT
+                asset_id,
+                asset_name,
+                asset_type,
+                asset_summary,
+                asset_tags,
+                1 - (embedding <=> :query_vector) AS similarity
+            FROM assets
+            WHERE project_id = :project_id
+              AND indexing_status = 'completed'
+              AND embedding IS NOT NULL
+              AND 1 - (embedding <=> :query_vector) >= :min_similarity
+            ORDER BY embedding <=> :query_vector
+            LIMIT :limit
+        """),
+        {
+            "query_vector": str(query_embedding),
+            "project_id": project_id,
+            "min_similarity": min_similarity,
+            "limit": limit,
+        },
+    ).fetchall()
+
+    return {
+        "count": len(results),
+        "query": query,
+        "min_similarity": min_similarity,
+        "assets": [
+            {
+                "asset_id": str(row.asset_id),
+                "name": row.asset_name,
+                "type": row.asset_type,
+                "summary": row.asset_summary,
+                "tags": row.asset_tags or [],
+                "similarity": round(row.similarity, 4),
+            }
+            for row in results
+        ],
     }

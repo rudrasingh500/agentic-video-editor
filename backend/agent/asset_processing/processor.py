@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from database.base import get_db
 from database.models import Assets
 from utils.gcs_utils import download_file
+from utils.embeddings import get_embedding, build_embedding_text
 
 from .analyzers import extract_metadata
 
@@ -75,6 +76,16 @@ def process_asset(asset_id: str, project_id: str) -> None:
             asset.asset_scenes = metadata.get("scenes")
             asset.audio_structure = metadata.get("structure")
             asset.asset_speakers = metadata.get("speakers")
+
+            # Generate embedding for semantic search (skip on failure)
+            embedding_text = build_embedding_text(
+                summary=asset.asset_summary,
+                tags=asset.asset_tags,
+            )
+            embedding = get_embedding(embedding_text)
+            if embedding:
+                asset.embedding = embedding
+
             asset.indexing_status = "completed"
             asset.indexing_completed_at = datetime.now(timezone.utc)
             db.commit()
