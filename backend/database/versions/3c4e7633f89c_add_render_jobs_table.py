@@ -40,7 +40,9 @@ def upgrade() -> None:
         sa.Column("output_size_bytes", sa.Integer(), nullable=True),
         # Error handling
         sa.Column("error_message", sa.String(), nullable=True),
-        sa.Column("error_details", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
+        sa.Column(
+            "error_details", postgresql.JSONB(astext_type=sa.Text()), nullable=True
+        ),
         # Cloud Run integration
         sa.Column("cloud_run_job_name", sa.String(), nullable=True),
         sa.Column("cloud_run_execution_id", sa.String(), nullable=True),
@@ -52,7 +54,10 @@ def upgrade() -> None:
         sa.Column("completed_at", sa.DateTime(), nullable=True),
         # Additional metadata
         sa.Column(
-            "job_metadata", postgresql.JSONB(astext_type=sa.Text()), nullable=False, default={}
+            "job_metadata",
+            postgresql.JSONB(astext_type=sa.Text()),
+            nullable=False,
+            default={},
         ),
         # Foreign keys
         sa.ForeignKeyConstraint(
@@ -71,9 +76,7 @@ def upgrade() -> None:
     op.create_index(
         "ix_render_jobs_project_id", "render_jobs", ["project_id"], unique=False
     )
-    op.create_index(
-        "ix_render_jobs_status", "render_jobs", ["status"], unique=False
-    )
+    op.create_index("ix_render_jobs_status", "render_jobs", ["status"], unique=False)
     op.create_index(
         "ix_render_jobs_created_at", "render_jobs", ["created_at"], unique=False
     )
@@ -92,6 +95,6 @@ def downgrade() -> None:
     op.drop_index("ix_render_jobs_status", table_name="render_jobs")
     op.drop_index("ix_render_jobs_project_id", table_name="render_jobs")
     op.drop_index(op.f("ix_render_jobs_job_id"), table_name="render_jobs")
-    
+
     # Drop table
     op.drop_table("render_jobs")

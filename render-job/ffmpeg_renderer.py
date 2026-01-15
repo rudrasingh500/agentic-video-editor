@@ -14,8 +14,7 @@ import os
 import re
 import shutil
 import subprocess
-import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
@@ -375,7 +374,7 @@ class FFmpegRenderer:
         # Add progress output
         cmd_with_progress = cmd[:-1] + ["-progress", "pipe:1", cmd[-1]]
 
-        logger.info(f"Executing FFmpeg...")
+        logger.info("Executing FFmpeg...")
         logger.debug(f"Command: {' '.join(cmd_with_progress)}")
 
         try:
@@ -420,7 +419,9 @@ class FFmpegRenderer:
 
             if process.returncode != 0:
                 stderr = process.stderr.read() if process.stderr else ""
-                raise RenderError(f"FFmpeg failed (code {process.returncode}): {stderr}")
+                raise RenderError(
+                    f"FFmpeg failed (code {process.returncode}): {stderr}"
+                )
 
             if progress_callback:
                 progress_callback(95, "Finalizing output")

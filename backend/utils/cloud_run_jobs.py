@@ -14,7 +14,6 @@ Requires:
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 from dataclasses import dataclass
@@ -159,7 +158,9 @@ class CloudRunJobsClient:
             from google.cloud import run_v2
 
             job_name = (
-                self.config.gpu_job_name if request.use_gpu else self.config.cpu_job_name
+                self.config.gpu_job_name
+                if request.use_gpu
+                else self.config.cpu_job_name
             )
             full_job_name = (
                 f"projects/{self.config.project_id}/"
@@ -306,7 +307,7 @@ class CloudRunJobsClient:
 
     def _map_execution_status(self, execution: Any) -> str:
         """Map Cloud Run execution status to our status enum."""
-        # Cloud Run statuses: 
+        # Cloud Run statuses:
         # - CONDITION_RECONCILING
         # - EXECUTION_CONDITION_ACTIVE
         # - CONDITION_SUCCEEDED

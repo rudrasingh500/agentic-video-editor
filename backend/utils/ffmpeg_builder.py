@@ -18,7 +18,6 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from typing import Any
-from uuid import UUID
 
 from models.timeline_models import (
     Clip,
@@ -28,11 +27,9 @@ from models.timeline_models import (
     GeneratorReference,
     LinearTimeWarp,
     MissingReference,
-    RationalTime,
     Stack,
     Timeline,
     Track,
-    TrackKind,
     Transition,
     TransitionType,
 )
@@ -92,7 +89,7 @@ class TransitionInfo:
     out_offset: float  # Seconds from incoming clip
 
 
-@dataclass 
+@dataclass
 class FFmpegCommand:
     """Complete FFmpeg command structure."""
 
@@ -413,14 +410,18 @@ class TimelineToFFmpeg:
                 effects_data.append({"type": "freeze"})
             else:
                 # Generic effect
-                effects_data.append({
-                    "type": "generic",
-                    "name": effect.effect_name,
-                    "metadata": effect.metadata,
-                })
+                effects_data.append(
+                    {
+                        "type": "generic",
+                        "name": effect.effect_name,
+                        "metadata": effect.metadata,
+                    }
+                )
 
         # Calculate timeline duration (affected by speed)
-        timeline_duration = source_duration / speed_factor if speed_factor != 0 else source_duration
+        timeline_duration = (
+            source_duration / speed_factor if speed_factor != 0 else source_duration
+        )
 
         return TrackSegment(
             start_time=timeline_start,
@@ -488,7 +489,7 @@ class TimelineToFFmpeg:
         # Speed effect
         if segment.is_freeze:
             # Freeze frame: select single frame and loop
-            filters.append(f"select='eq(n,0)',loop=loop=-1:size=1")
+            filters.append("select='eq(n,0)',loop=loop=-1:size=1")
         elif segment.speed_factor != 1.0:
             # Speed change using setpts
             pts_factor = 1.0 / segment.speed_factor

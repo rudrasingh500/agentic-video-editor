@@ -10,18 +10,15 @@ This module handles:
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 from datetime import datetime, timezone
-from typing import Any
 from uuid import UUID
 
 from sqlalchemy.orm import Session as DBSession
 
 from database.models import (
     Assets,
-    Project,
     RenderJob as RenderJobModel,
     Timeline as TimelineModel,
     TimelineCheckpoint as TimelineCheckpointModel,
@@ -36,7 +33,6 @@ from models.render_models import (
 )
 from models.timeline_models import Timeline
 from utils.cloud_run_jobs import (
-    CloudRunJobsClient,
     JobExecutionRequest,
     get_cloud_run_client,
 )
@@ -460,7 +456,10 @@ def poll_job_status(db: DBSession, job_id: UUID) -> RenderJobModel | None:
         return None
 
     # Only poll jobs that are in-progress
-    if job.status not in (RenderJobStatus.QUEUED.value, RenderJobStatus.PROCESSING.value):
+    if job.status not in (
+        RenderJobStatus.QUEUED.value,
+        RenderJobStatus.PROCESSING.value,
+    ):
         return job
 
     if not job.cloud_run_job_name or not job.cloud_run_execution_id:

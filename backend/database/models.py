@@ -348,9 +348,7 @@ class RenderJob(Base):
     timeline_version = Column(Integer, nullable=False)
 
     # Job type and status
-    job_type = Column(
-        String, nullable=False
-    )  # "preview" or "export"
+    job_type = Column(String, nullable=False)  # "preview" or "export"
     status = Column(
         String, nullable=False, default="pending"
     )  # pending, queued, processing, uploading, completed, failed, cancelled

@@ -35,7 +35,6 @@ from models.render_models import (
 from operators.render_operator import (
     MissingAssetsError,
     RenderError,
-    RenderJobNotFoundError,
     RenderValidationError,
     TimelineNotFoundError,
     cancel_render_job,
