@@ -1,15 +1,15 @@
-from logging.config import fileConfig
-from sqlalchemy import engine_from_config, text
-from sqlalchemy import pool
-from alembic import context
 import os
 import sys
+from logging.config import fileConfig
+
+from alembic import context
+from sqlalchemy import engine_from_config, pool, text
 
 base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, base_dir)
 
-from database.base import Base  # noqa: E402
-from database.base import DATABASE_URL  # noqa: E402
+from database.base import Base, DATABASE_URL  # noqa: E402
+
 
 
 config = context.config

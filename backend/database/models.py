@@ -14,7 +14,7 @@ from sqlalchemy.sql import func
 from pgvector.sqlalchemy import Vector
 from database.base import Base
 
-EMBEDDING_DIMENSIONS = 1536  # OpenAI ada-002 / text-embedding-3-small
+EMBEDDING_DIMENSIONS = 1536
 
 
 class Session(Base):
@@ -70,46 +70,34 @@ class Assets(Base):
     uploaded_at = Column(DateTime, nullable=False)
     project_id = Column(UUID, ForeignKey("projects.project_id"), nullable=False)
 
-    # Core metadata fields
     asset_summary = Column(String, nullable=False)
-    asset_tags = Column(JSONB, nullable=True)  # Array of searchable tags
+    asset_tags = Column(JSONB, nullable=True)
 
-    # Transcript - structured format with text, segments, speakers
     asset_transcript = Column(JSONB, nullable=True)
 
-    # Timeline-based data
-    asset_events = Column(JSONB, nullable=True)  # Key moments with timestamps
-    notable_shots = Column(JSONB, nullable=True)  # Visually interesting frames
-    asset_scenes = Column(JSONB, nullable=True)  # Video scene segmentation
+    asset_events = Column(JSONB, nullable=True)
+    notable_shots = Column(JSONB, nullable=True)
+    asset_scenes = Column(JSONB, nullable=True)
 
-    # Audio analysis
-    audio_features = Column(JSONB, nullable=True)  # BPM, key, energy, etc.
-    audio_structure = Column(JSONB, nullable=True)  # Intro, verse, chorus timestamps
+    audio_features = Column(JSONB, nullable=True)
+    audio_structure = Column(JSONB, nullable=True)
 
-    # Visual analysis
-    asset_faces = Column(JSONB, nullable=True)  # Detected people/faces
-    asset_objects = Column(JSONB, nullable=True)  # Detected objects with positions
-    asset_colors = Column(JSONB, nullable=True)  # Color palette analysis
+    asset_faces = Column(JSONB, nullable=True)
+    asset_objects = Column(JSONB, nullable=True)
+    asset_colors = Column(JSONB, nullable=True)
 
-    # Technical metadata
-    asset_technical = Column(JSONB, nullable=True)  # Resolution, quality, etc.
+    asset_technical = Column(JSONB, nullable=True)
 
-    # Speakers (for audio/video with speech)
-    asset_speakers = Column(JSONB, nullable=True)  # Speaker identification and info
+    asset_speakers = Column(JSONB, nullable=True)
 
-    # Indexing status tracking
-    indexing_status = Column(
-        String, nullable=False, default="pending"
-    )  # pending, processing, completed, failed
-    indexing_error = Column(String, nullable=True)  # Error message if failed
-    indexing_started_at = Column(DateTime, nullable=True)  # When processing began
-    indexing_completed_at = Column(DateTime, nullable=True)  # When processing finished
-    indexing_attempts = Column(Integer, nullable=False, default=0)  # Retry count
+    indexing_status = Column(String, nullable=False, default="pending")
+    indexing_error = Column(String, nullable=True)
+    indexing_started_at = Column(DateTime, nullable=True)
+    indexing_completed_at = Column(DateTime, nullable=True)
+    indexing_attempts = Column(Integer, nullable=False, default=0)
 
-    # Vector embedding for semantic search
     embedding = Column(Vector(EMBEDDING_DIMENSIONS), nullable=True)
 
-    # Full-text search vector for transcripts (auto-generated)
     transcript_tsv = Column(
         TSVECTOR,
         Computed(
@@ -167,19 +155,7 @@ class AgentRun(Base):
         return f"<AgentRun run_id={self.run_id} project_id={self.project_id} trace={self.trace} analysis_segments={self.analysis_segments}>"
 
 
-# =============================================================================
-# TIMELINE MODELS (OTIO-inspired)
-# =============================================================================
-
-
 class Timeline(Base):
-    """
-    Timeline container - one per project.
-
-    Stores the timeline metadata and current version pointer.
-    The actual timeline content is stored in TimelineCheckpoint snapshots.
-    """
-
     __tablename__ = "timelines"
 
     timeline_id = Column(
@@ -189,14 +165,12 @@ class Timeline(Base):
         UUID,
         ForeignKey("projects.project_id", ondelete="CASCADE"),
         nullable=False,
-        unique=True,  # One timeline per project
+        unique=True,
     )
     name = Column(String, nullable=False)
-    global_start_time = Column(JSONB, nullable=True)  # RationalTime JSON
-    settings = Column(JSONB, nullable=False, default=dict)  # TimelineSettings JSON
-    timeline_metadata = Column(
-        JSONB, nullable=False, default=dict
-    )  # Renamed from 'metadata' (reserved)
+    global_start_time = Column(JSONB, nullable=True)
+    settings = Column(JSONB, nullable=False, default=dict)
+    timeline_metadata = Column(JSONB, nullable=False, default=dict)
     created_at = Column(DateTime, nullable=False, server_default=func.now())
     updated_at = Column(
         DateTime, nullable=False, server_default=func.now(), onupdate=func.now()
@@ -214,17 +188,6 @@ class Timeline(Base):
 
 
 class TimelineCheckpoint(Base):
-    """
-    Versioned timeline snapshot.
-
-    Each checkpoint stores a complete OTIO-compatible timeline snapshot.
-    This enables:
-    - Full history of all changes
-    - Rollback to any previous version
-    - Diffing between versions
-    - Branching (via parent_version)
-    """
-
     __tablename__ = "timeline_checkpoints"
 
     checkpoint_id = Column(
@@ -236,23 +199,17 @@ class TimelineCheckpoint(Base):
         nullable=False,
     )
     version = Column(Integer, nullable=False)
-    parent_version = Column(
-        Integer, nullable=True
-    )  # For tracking rollbacks and branches
-    snapshot = Column(JSONB, nullable=False)  # Complete Timeline Pydantic model as JSON
-    description = Column(String, nullable=False)  # Human-readable change description
-    created_by = Column(
-        String, nullable=False
-    )  # "user:<uuid>", "agent:<name>", "system"
+    parent_version = Column(Integer, nullable=True)
+    snapshot = Column(JSONB, nullable=False)
+    description = Column(String, nullable=False)
+    created_by = Column(String, nullable=False)
     created_at = Column(DateTime, nullable=False, server_default=func.now())
 
-    # Approval workflow (for agent integration)
     is_approved = Column(Boolean, nullable=False, default=True)
     approved_by = Column(String, nullable=True)
     approved_at = Column(DateTime, nullable=True)
 
     __table_args__ = (
-        # Unique constraint: one version number per timeline
         Index(
             "ix_timeline_checkpoints_timeline_version",
             timeline_id,
@@ -272,20 +229,6 @@ class TimelineCheckpoint(Base):
 
 
 class TimelineOperation(Base):
-    """
-    Audit log of operations performed on timelines.
-
-    Each checkpoint has one associated operation record that captures:
-    - What type of operation was performed
-    - The full parameters of the operation
-    - When it was performed
-
-    This is useful for:
-    - Debugging and auditing
-    - Understanding change patterns
-    - Potential undo/redo optimization in the future
-    """
-
     __tablename__ = "timeline_operations"
 
     operation_id = Column(
@@ -296,10 +239,8 @@ class TimelineOperation(Base):
         ForeignKey("timeline_checkpoints.checkpoint_id", ondelete="CASCADE"),
         nullable=False,
     )
-    operation_type = Column(
-        String, nullable=False
-    )  # add_clip, remove_clip, trim_clip, etc.
-    operation_data = Column(JSONB, nullable=False)  # Full operation parameters
+    operation_type = Column(String, nullable=False)
+    operation_data = Column(JSONB, nullable=False)
     created_at = Column(DateTime, nullable=False, server_default=func.now())
 
     __table_args__ = (
@@ -316,20 +257,7 @@ class TimelineOperation(Base):
         )
 
 
-# =============================================================================
-# RENDER JOB MODELS
-# =============================================================================
-
-
 class RenderJob(Base):
-    """
-    Render job tracking.
-
-    Tracks the status and progress of video rendering jobs executed
-    via Cloud Run Jobs. Each job renders a specific timeline version
-    to a video file stored in GCS.
-    """
-
     __tablename__ = "render_jobs"
 
     job_id = Column(
@@ -347,39 +275,29 @@ class RenderJob(Base):
     )
     timeline_version = Column(Integer, nullable=False)
 
-    # Job type and status
-    job_type = Column(String, nullable=False)  # "preview" or "export"
-    status = Column(
-        String, nullable=False, default="pending"
-    )  # pending, queued, processing, uploading, completed, failed, cancelled
+    job_type = Column(String, nullable=False)
+    status = Column(String, nullable=False, default="pending")
 
-    # Progress tracking
-    progress = Column(Integer, nullable=False, default=0)  # 0-100
+    progress = Column(Integer, nullable=False, default=0)
     current_frame = Column(Integer, nullable=True)
     total_frames = Column(Integer, nullable=True)
 
-    # Render settings (stored as JSON)
-    preset = Column(JSONB, nullable=False)  # RenderPreset JSON
+    preset = Column(JSONB, nullable=False)
 
-    # Output details
     output_filename = Column(String, nullable=True)
-    output_url = Column(String, nullable=True)  # GCS path to rendered video
+    output_url = Column(String, nullable=True)
     output_size_bytes = Column(Integer, nullable=True)
 
-    # Error handling
     error_message = Column(String, nullable=True)
     error_details = Column(JSONB, nullable=True)
 
-    # Cloud Run integration
-    cloud_run_job_name = Column(String, nullable=True)  # Cloud Run Job name
-    cloud_run_execution_id = Column(String, nullable=True)  # Execution ID
+    cloud_run_job_name = Column(String, nullable=True)
+    cloud_run_execution_id = Column(String, nullable=True)
 
-    # Timestamps
     created_at = Column(DateTime, nullable=False, server_default=func.now())
     started_at = Column(DateTime, nullable=True)
     completed_at = Column(DateTime, nullable=True)
 
-    # Additional metadata
     job_metadata = Column(JSONB, nullable=False, default=dict)
 
     __table_args__ = (

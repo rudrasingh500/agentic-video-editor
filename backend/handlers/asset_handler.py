@@ -25,7 +25,6 @@ router = APIRouter(prefix="/projects/{project_id}/assets", tags=["assets"])
 
 
 def _asset_to_response(asset) -> AssetResponse:
-    """Convert an Assets model to AssetResponse."""
     return AssetResponse(
         asset_id=str(asset.asset_id),
         asset_name=asset.asset_name,
@@ -43,7 +42,6 @@ async def assets_list(
     project: Project = Depends(require_project),
     db: Session = Depends(get_db),
 ):
-    """List all assets in a project."""
     assets = list_assets(db, project.project_id)
     return AssetListResponse(
         ok=True,
@@ -57,7 +55,6 @@ async def asset_upload(
     project: Project = Depends(require_project),
     db: Session = Depends(get_db),
 ):
-    """Upload a new asset to a project."""
     if not file.filename:
         raise HTTPException(status_code=400, detail="File must have a filename")
 
@@ -79,7 +76,6 @@ async def asset_get(
     project: Project = Depends(require_project),
     db: Session = Depends(get_db),
 ):
-    """Get a specific asset by ID."""
     asset = get_asset(db, project.project_id, asset_id)
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
@@ -92,7 +88,6 @@ async def asset_delete(
     project: Project = Depends(require_project),
     db: Session = Depends(get_db),
 ):
-    """Delete an asset from a project."""
     success = delete_asset(db, project.project_id, asset_id)
     if not success:
         raise HTTPException(status_code=404, detail="Asset not found")
@@ -105,13 +100,6 @@ async def asset_reindex(
     project: Project = Depends(require_project),
     db: Session = Depends(get_db),
 ):
-    """
-    Trigger a re-index of an asset's metadata.
-
-    Use this endpoint when:
-    - An asset's indexing failed and you want to retry
-    - You want to refresh the metadata with updated analysis
-    """
     asset = reindex_asset(db, project.project_id, asset_id)
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")

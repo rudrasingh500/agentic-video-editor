@@ -1,10 +1,3 @@
-"""
-Tests for the FFmpeg command builder.
-
-These tests verify that timeline structures are correctly converted
-to FFmpeg filter_complex commands.
-"""
-
 import pytest
 from uuid import uuid4
 
@@ -31,14 +24,8 @@ from utils.ffmpeg_builder import (
 )
 
 
-# =============================================================================
-# FIXTURES
-# =============================================================================
-
-
 @pytest.fixture
 def sample_asset_map() -> dict[str, str]:
-    """Sample asset mapping for tests."""
     return {
         "asset-1": "/inputs/project/videos/clip1.mp4",
         "asset-2": "/inputs/project/videos/clip2.mp4",
@@ -48,19 +35,16 @@ def sample_asset_map() -> dict[str, str]:
 
 @pytest.fixture
 def draft_preset() -> RenderPreset:
-    """Draft quality preset for tests."""
     return RenderPreset.draft_preview()
 
 
 @pytest.fixture
 def standard_preset() -> RenderPreset:
-    """Standard quality preset for tests."""
     return RenderPreset.standard_export()
 
 
 @pytest.fixture
 def simple_timeline() -> Timeline:
-    """Simple timeline with one video clip."""
     clip = Clip(
         name="Test Clip",
         media_reference=ExternalReference(
@@ -69,7 +53,7 @@ def simple_timeline() -> Timeline:
         ),
         source_range=TimeRange(
             start_time=RationalTime(value=0, rate=24),
-            duration=RationalTime(value=120, rate=24),  # 5 seconds
+            duration=RationalTime(value=120, rate=24),
         ),
     )
 
@@ -90,7 +74,6 @@ def simple_timeline() -> Timeline:
 
 @pytest.fixture
 def multi_clip_timeline() -> Timeline:
-    """Timeline with multiple clips."""
     clip1 = Clip(
         name="Clip 1",
         media_reference=ExternalReference(
@@ -99,7 +82,7 @@ def multi_clip_timeline() -> Timeline:
         ),
         source_range=TimeRange(
             start_time=RationalTime(value=0, rate=24),
-            duration=RationalTime(value=48, rate=24),  # 2 seconds
+            duration=RationalTime(value=48, rate=24),
         ),
     )
 
@@ -110,8 +93,8 @@ def multi_clip_timeline() -> Timeline:
             target_url="gs://bucket/clip2.mp4",
         ),
         source_range=TimeRange(
-            start_time=RationalTime(value=24, rate=24),  # Start at 1 second
-            duration=RationalTime(value=72, rate=24),  # 3 seconds
+            start_time=RationalTime(value=24, rate=24),
+            duration=RationalTime(value=72, rate=24),
         ),
     )
 
@@ -132,7 +115,6 @@ def multi_clip_timeline() -> Timeline:
 
 @pytest.fixture
 def timeline_with_gap() -> Timeline:
-    """Timeline with a gap between clips."""
     clip1 = Clip(
         name="Clip 1",
         media_reference=ExternalReference(
@@ -148,7 +130,7 @@ def timeline_with_gap() -> Timeline:
     gap = Gap(
         source_range=TimeRange(
             start_time=RationalTime(value=0, rate=24),
-            duration=RationalTime(value=24, rate=24),  # 1 second gap
+            duration=RationalTime(value=24, rate=24),
         ),
     )
 
@@ -181,7 +163,6 @@ def timeline_with_gap() -> Timeline:
 
 @pytest.fixture
 def timeline_with_transition() -> Timeline:
-    """Timeline with a transition between clips."""
     clip1 = Clip(
         name="Clip 1",
         media_reference=ExternalReference(
@@ -190,14 +171,14 @@ def timeline_with_transition() -> Timeline:
         ),
         source_range=TimeRange(
             start_time=RationalTime(value=0, rate=24),
-            duration=RationalTime(value=72, rate=24),  # 3 seconds
+            duration=RationalTime(value=72, rate=24),
         ),
     )
 
     transition = Transition(
         name="Dissolve",
         transition_type=TransitionType.SMPTE_DISSOLVE,
-        in_offset=RationalTime(value=12, rate=24),  # 0.5 seconds
+        in_offset=RationalTime(value=12, rate=24),
         out_offset=RationalTime(value=12, rate=24),
     )
 
@@ -209,7 +190,7 @@ def timeline_with_transition() -> Timeline:
         ),
         source_range=TimeRange(
             start_time=RationalTime(value=0, rate=24),
-            duration=RationalTime(value=72, rate=24),  # 3 seconds
+            duration=RationalTime(value=72, rate=24),
         ),
     )
 
@@ -230,7 +211,6 @@ def timeline_with_transition() -> Timeline:
 
 @pytest.fixture
 def timeline_with_speed_effect() -> Timeline:
-    """Timeline with a speed-adjusted clip."""
     clip = Clip(
         name="Slow Motion Clip",
         media_reference=ExternalReference(
@@ -244,7 +224,7 @@ def timeline_with_speed_effect() -> Timeline:
         effects=[
             LinearTimeWarp(
                 effect_name="Speed",
-                time_scalar=0.5,  # Half speed (slow motion)
+                time_scalar=0.5,
             ),
         ],
     )
@@ -266,7 +246,6 @@ def timeline_with_speed_effect() -> Timeline:
 
 @pytest.fixture
 def timeline_with_generator() -> Timeline:
-    """Timeline with a solid color generator."""
     generator_clip = Clip(
         name="Black Screen",
         media_reference=GeneratorReference(
@@ -275,7 +254,7 @@ def timeline_with_generator() -> Timeline:
         ),
         source_range=TimeRange(
             start_time=RationalTime(value=0, rate=24),
-            duration=RationalTime(value=48, rate=24),  # 2 seconds
+            duration=RationalTime(value=48, rate=24),
         ),
     )
 
@@ -294,17 +273,8 @@ def timeline_with_generator() -> Timeline:
     )
 
 
-# =============================================================================
-# TIMELINE PARSING TESTS
-# =============================================================================
-
-
 class TestTimelineToFFmpeg:
-    """Tests for the TimelineToFFmpeg converter."""
-
     def test_collect_inputs_single_clip(self, simple_timeline, draft_preset):
-        """Test that inputs are collected from a single clip."""
-        # Get the asset ID from the clip
         clip = simple_timeline.find_clips()[0]
         asset_id = str(clip.media_reference.asset_id)
 
@@ -320,7 +290,6 @@ class TestTimelineToFFmpeg:
         assert asset_id in converter._input_index_map
 
     def test_collect_inputs_multiple_clips(self, multi_clip_timeline, draft_preset):
-        """Test that inputs are collected from multiple clips."""
         clips = multi_clip_timeline.find_clips()
         asset_map = {}
 
@@ -336,8 +305,6 @@ class TestTimelineToFFmpeg:
         assert len(converter._inputs) == 2
 
     def test_missing_asset_warning(self, simple_timeline, draft_preset, caplog):
-        """Test that missing assets generate warnings."""
-        # Empty asset map
         asset_map = {}
 
         converter = TimelineToFFmpeg(
@@ -350,10 +317,7 @@ class TestTimelineToFFmpeg:
 
 
 class TestSegmentExtraction:
-    """Tests for track segment extraction."""
-
     def test_extract_clip_segment(self, simple_timeline, draft_preset):
-        """Test extracting a segment from a clip."""
         clip = simple_timeline.find_clips()[0]
         asset_id = str(clip.media_reference.asset_id)
         asset_map = {asset_id: "/inputs/clip1.mp4"}
@@ -368,11 +332,10 @@ class TestSegmentExtraction:
 
         assert len(segments) == 1
         assert segments[0].start_time == 0.0
-        assert segments[0].duration == 5.0  # 120 frames at 24fps
+        assert segments[0].duration == 5.0
         assert segments[0].is_gap is False
 
     def test_extract_gap_segment(self, timeline_with_gap, draft_preset):
-        """Test extracting a gap segment."""
         clips = timeline_with_gap.find_clips()
         asset_map = {}
 
@@ -391,11 +354,10 @@ class TestSegmentExtraction:
         assert len(segments) == 3
         assert segments[0].is_gap is False
         assert segments[1].is_gap is True
-        assert segments[1].duration == 1.0  # 1 second gap
+        assert segments[1].duration == 1.0
         assert segments[2].is_gap is False
 
     def test_extract_speed_effect(self, timeline_with_speed_effect, draft_preset):
-        """Test extracting speed effect information."""
         clip = timeline_with_speed_effect.find_clips()[0]
         asset_id = str(clip.media_reference.asset_id)
         asset_map = {asset_id: "/inputs/clip1.mp4"}
@@ -410,17 +372,12 @@ class TestSegmentExtraction:
 
         assert len(segments) == 1
         assert segments[0].speed_factor == 0.5
-        # Duration should be doubled due to half speed
-        assert (
-            segments[0].duration == 4.0
-        )  # 2 seconds source at 0.5x = 4 seconds output
+
+        assert segments[0].duration == 4.0
 
 
 class TestFilterGeneration:
-    """Tests for FFmpeg filter generation."""
-
     def test_generate_trim_filter(self, simple_timeline, draft_preset):
-        """Test that trim filters are generated correctly."""
         clip = simple_timeline.find_clips()[0]
         asset_id = str(clip.media_reference.asset_id)
         asset_map = {asset_id: "/inputs/clip1.mp4"}
@@ -430,12 +387,10 @@ class TestFilterGeneration:
         )
         cmd = converter.build()
 
-        # Check filter contains trim
         assert "trim=" in cmd.filter_complex
         assert "setpts=PTS-STARTPTS" in cmd.filter_complex
 
     def test_generate_gap_video(self, timeline_with_gap, draft_preset):
-        """Test that black video is generated for gaps."""
         clips = timeline_with_gap.find_clips()
         asset_map = {}
 
@@ -448,11 +403,9 @@ class TestFilterGeneration:
         )
         cmd = converter.build()
 
-        # Check for color source (black frames for gap)
         assert "color=c=black" in cmd.filter_complex
 
     def test_generate_concat_filter(self, multi_clip_timeline, draft_preset):
-        """Test that concat filter is generated for multiple clips."""
         clips = multi_clip_timeline.find_clips()
         asset_map = {}
 
@@ -465,11 +418,9 @@ class TestFilterGeneration:
         )
         cmd = converter.build()
 
-        # Check for concat filter
         assert "concat=" in cmd.filter_complex
 
     def test_generate_transition_filter(self, timeline_with_transition, draft_preset):
-        """Test that xfade filter is generated for transitions."""
         clips = timeline_with_transition.find_clips()
         asset_map = {}
 
@@ -482,12 +433,10 @@ class TestFilterGeneration:
         )
         cmd = converter.build()
 
-        # Check for xfade filter (dissolve transition)
         assert "xfade=" in cmd.filter_complex
         assert "dissolve" in cmd.filter_complex
 
     def test_generate_speed_filter(self, timeline_with_speed_effect, draft_preset):
-        """Test that setpts filter is generated for speed changes."""
         clip = timeline_with_speed_effect.find_clips()[0]
         asset_id = str(clip.media_reference.asset_id)
         asset_map = {asset_id: "/inputs/clip1.mp4"}
@@ -497,32 +446,26 @@ class TestFilterGeneration:
         )
         cmd = converter.build()
 
-        # Check for setpts with speed factor (0.5 speed = 2.0 PTS multiplier)
         assert "setpts=" in cmd.filter_complex
-        # Should have 2.0*PTS for half speed
+
         assert "2.0*PTS" in cmd.filter_complex or "2*PTS" in cmd.filter_complex
 
     def test_generate_solid_color(self, timeline_with_generator, draft_preset):
-        """Test that solid color generator creates color filter."""
         converter = TimelineToFFmpeg(
             timeline_with_generator, {}, draft_preset, "/outputs/render.mp4"
         )
         cmd = converter.build()
 
-        # Check for color source
         assert "color=c=black" in cmd.filter_complex
 
 
 class TestOutputOptions:
-    """Tests for output encoding options."""
-
     def test_cpu_encoding_options(self, simple_timeline):
-        """Test CPU encoding options (libx264)."""
         clip = simple_timeline.find_clips()[0]
         asset_id = str(clip.media_reference.asset_id)
         asset_map = {asset_id: "/inputs/clip1.mp4"}
 
-        preset = RenderPreset.standard_export()  # use_gpu=False
+        preset = RenderPreset.standard_export()
 
         converter = TimelineToFFmpeg(
             simple_timeline, asset_map, preset, "/outputs/render.mp4"
@@ -534,12 +477,11 @@ class TestOutputOptions:
         assert "-crf" in cmd.output_options
 
     def test_gpu_encoding_options(self, simple_timeline):
-        """Test GPU encoding options (h264_nvenc)."""
         clip = simple_timeline.find_clips()[0]
         asset_id = str(clip.media_reference.asset_id)
         asset_map = {asset_id: "/inputs/clip1.mp4"}
 
-        preset = RenderPreset.high_quality_export()  # use_gpu=True
+        preset = RenderPreset.high_quality_export()
 
         converter = TimelineToFFmpeg(
             simple_timeline, asset_map, preset, "/outputs/render.mp4"
@@ -548,10 +490,9 @@ class TestOutputOptions:
 
         assert "-c:v" in cmd.output_options
         assert "h264_nvenc" in cmd.output_options
-        assert "-cq" in cmd.output_options  # GPU uses -cq instead of -crf
+        assert "-cq" in cmd.output_options
 
     def test_audio_encoding_options(self, simple_timeline, draft_preset):
-        """Test audio encoding options."""
         clip = simple_timeline.find_clips()[0]
         asset_id = str(clip.media_reference.asset_id)
         asset_map = {asset_id: "/inputs/clip1.mp4"}
@@ -566,7 +507,6 @@ class TestOutputOptions:
         assert "-b:a" in cmd.output_options
 
     def test_faststart_option(self, simple_timeline, draft_preset):
-        """Test that faststart is enabled for streaming."""
         clip = simple_timeline.find_clips()[0]
         asset_id = str(clip.media_reference.asset_id)
         asset_map = {asset_id: "/inputs/clip1.mp4"}
@@ -581,10 +521,7 @@ class TestOutputOptions:
 
 
 class TestCommandBuilding:
-    """Tests for building complete FFmpeg commands."""
-
     def test_build_command_string(self, simple_timeline, draft_preset):
-        """Test building a complete command string."""
         clip = simple_timeline.find_clips()[0]
         asset_id = str(clip.media_reference.asset_id)
         asset_map = {asset_id: "/inputs/clip1.mp4"}
@@ -600,7 +537,6 @@ class TestCommandBuilding:
         assert '"/outputs/render.mp4"' in cmd_str
 
     def test_build_render_command_helper(self, simple_timeline, draft_preset):
-        """Test the convenience helper function."""
         clip = simple_timeline.find_clips()[0]
         asset_id = str(clip.media_reference.asset_id)
         asset_map = {asset_id: "/inputs/clip1.mp4"}
@@ -615,39 +551,25 @@ class TestCommandBuilding:
 
 
 class TestDurationEstimation:
-    """Tests for render duration estimation."""
-
     def test_estimate_cpu_duration(self, simple_timeline):
-        """Test duration estimation for CPU rendering."""
         preset = RenderPreset.standard_export()
 
         estimated = estimate_render_duration(simple_timeline, preset)
 
-        # 5 second timeline with medium preset (~1.5x realtime)
-        assert estimated >= 5.0  # At least as long as timeline
-        assert estimated <= 30.0  # Not unreasonably long
+        assert estimated >= 5.0
+        assert estimated <= 30.0
 
     def test_estimate_gpu_duration(self, simple_timeline):
-        """Test duration estimation for GPU rendering."""
         preset = RenderPreset.high_quality_export()
 
         estimated = estimate_render_duration(simple_timeline, preset)
 
-        # GPU should be faster
-        assert estimated >= 0.5  # At least some time
-        assert estimated <= 5.0  # Faster than realtime
-
-
-# =============================================================================
-# RENDER MODELS TESTS
-# =============================================================================
+        assert estimated >= 0.5
+        assert estimated <= 5.0
 
 
 class TestRenderPresets:
-    """Tests for render preset configurations."""
-
     def test_draft_preview_preset(self):
-        """Test draft preview preset settings."""
         preset = RenderPreset.draft_preview()
 
         assert preset.quality.value == "draft"
@@ -658,7 +580,6 @@ class TestRenderPresets:
         assert preset.use_gpu is False
 
     def test_standard_export_preset(self):
-        """Test standard export preset settings."""
         preset = RenderPreset.standard_export()
 
         assert preset.quality.value == "standard"
@@ -667,7 +588,6 @@ class TestRenderPresets:
         assert preset.use_gpu is False
 
     def test_high_quality_preset(self):
-        """Test high quality preset settings."""
         preset = RenderPreset.high_quality_export()
 
         assert preset.quality.value == "high"
@@ -676,7 +596,6 @@ class TestRenderPresets:
         assert preset.use_gpu is True
 
     def test_maximum_quality_preset(self):
-        """Test maximum quality preset settings."""
         preset = RenderPreset.maximum_quality_export()
 
         assert preset.quality.value == "maximum"
@@ -686,10 +605,7 @@ class TestRenderPresets:
 
 
 class TestAtempoChain:
-    """Tests for audio tempo filter chain building."""
-
     def test_normal_speed(self, simple_timeline, draft_preset):
-        """Test no atempo filter for normal speed."""
         clip = simple_timeline.find_clips()[0]
         asset_id = str(clip.media_reference.asset_id)
         asset_map = {asset_id: "/inputs/clip1.mp4"}
@@ -702,7 +618,6 @@ class TestAtempoChain:
         assert chain == []
 
     def test_half_speed(self, simple_timeline, draft_preset):
-        """Test atempo filter for half speed."""
         clip = simple_timeline.find_clips()[0]
         asset_id = str(clip.media_reference.asset_id)
         asset_map = {asset_id: "/inputs/clip1.mp4"}
@@ -715,7 +630,6 @@ class TestAtempoChain:
         assert "atempo=0.5" in chain
 
     def test_double_speed(self, simple_timeline, draft_preset):
-        """Test atempo filter for double speed."""
         clip = simple_timeline.find_clips()[0]
         asset_id = str(clip.media_reference.asset_id)
         asset_map = {asset_id: "/inputs/clip1.mp4"}
@@ -728,7 +642,6 @@ class TestAtempoChain:
         assert "atempo=2.0" in chain
 
     def test_extreme_speed_chaining(self, simple_timeline, draft_preset):
-        """Test chained atempo filters for extreme speeds."""
         clip = simple_timeline.find_clips()[0]
         asset_id = str(clip.media_reference.asset_id)
         asset_map = {asset_id: "/inputs/clip1.mp4"}
@@ -737,7 +650,6 @@ class TestAtempoChain:
             simple_timeline, asset_map, draft_preset, "/outputs/render.mp4"
         )
 
-        # 4x speed requires chaining (atempo max is 2.0)
         chain = converter._build_atempo_chain(4.0)
-        assert len(chain) >= 2  # Needs at least 2 atempo filters
+        assert len(chain) >= 2
         assert all("atempo=" in f for f in chain)

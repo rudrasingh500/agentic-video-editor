@@ -1,15 +1,7 @@
-"""
-Type definitions for the asset retrieval agent.
-
-Defines the output schema for asset candidates returned by the agent.
-"""
-
 from pydantic import BaseModel, Field
 
 
 class AssetCandidate(BaseModel):
-    """A single asset candidate with timestamp information and relevance scoring."""
-
     media_id: str = Field(description="UUID of the asset")
     t0: int = Field(description="Start timestamp in milliseconds")
     t1: int = Field(description="End timestamp in milliseconds")
@@ -30,8 +22,6 @@ class AssetCandidate(BaseModel):
 
 
 class RetrievalResult(BaseModel):
-    """Result from the asset retrieval agent."""
-
     candidates: list[AssetCandidate] = Field(
         default_factory=list,
         description="Up to 10 asset candidates ordered by relevance",

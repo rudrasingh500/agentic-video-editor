@@ -41,7 +41,6 @@ class ProjectDeleteResponse(BaseModel):
     ok: bool
 
 
-# Asset models
 class AssetResponse(BaseModel):
     asset_id: str
     asset_name: str

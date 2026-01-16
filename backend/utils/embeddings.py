@@ -1,10 +1,3 @@
-"""
-Embedding generation utilities for semantic search.
-
-Uses OpenAI's text-embedding-3-small model via OpenRouter
-to generate 1536-dimensional embeddings for asset content.
-"""
-
 import os
 import logging
 from openai import OpenAI
@@ -17,7 +10,6 @@ EMBEDDING_DIMENSIONS = 1536
 
 
 def _get_client() -> OpenAI:
-    """Get OpenAI client configured for OpenRouter."""
     return OpenAI(
         base_url="https://openrouter.ai/api/v1",
         api_key=OPENROUTER_API_KEY,
@@ -25,16 +17,6 @@ def _get_client() -> OpenAI:
 
 
 def get_embedding(text: str) -> list[float] | None:
-    """
-    Generate embedding vector for the given text.
-
-    Args:
-        text: The text to embed (max ~8000 tokens)
-
-    Returns:
-        List of 1536 floats representing the embedding vector,
-        or None if embedding generation fails.
-    """
     if not text or not text.strip():
         logger.warning("Empty text provided for embedding generation")
         return None
@@ -64,36 +46,10 @@ def get_embedding(text: str) -> list[float] | None:
 
 
 def get_query_embedding(query: str) -> list[float] | None:
-    """
-    Generate embedding for a search query.
-
-    This is a convenience wrapper around get_embedding for search queries.
-    Uses the same model to ensure consistency between indexed content
-    and search queries.
-
-    Args:
-        query: The natural language search query
-
-    Returns:
-        Embedding vector or None if generation fails.
-    """
     return get_embedding(query)
 
 
 def build_embedding_text(summary: str, tags: list[str] | None) -> str:
-    """
-    Build the text representation to embed for an asset.
-
-    Combines the asset summary and tags into a single text string
-    optimized for semantic search.
-
-    Args:
-        summary: The asset summary description
-        tags: List of tags associated with the asset
-
-    Returns:
-        Formatted text string for embedding
-    """
     parts = []
 
     if summary:

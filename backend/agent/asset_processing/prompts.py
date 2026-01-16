@@ -1,10 +1,3 @@
-"""
-Analysis prompts for extracting metadata from media assets.
-
-These prompts are used with Gemini 3 Flash to analyze images, videos, and audio files
-and extract structured metadata for use in video editing workflows.
-"""
-
 IMAGE_ANALYSIS_PROMPT = """You are an expert media analyst. Analyze this image thoroughly and extract comprehensive metadata that will be used by AI agents for video editing, content search, and asset management.
 
 ## Required Output (JSON)

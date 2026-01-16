@@ -1,9 +1,3 @@
-"""
-System prompt for the asset retrieval agent.
-
-Defines the agent's role, available tools, search strategy, and output format.
-"""
-
 SYSTEM_PROMPT = """You are an asset retrieval agent for a video editing application.
 
 ## Your Role

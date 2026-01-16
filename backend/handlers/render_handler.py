@@ -1,16 +1,3 @@
-"""
-API handlers for video rendering.
-
-Endpoints:
-- POST /projects/{project_id}/render - Start a render job
-- GET /projects/{project_id}/renders - List render jobs
-- GET /projects/{project_id}/renders/{job_id} - Get render job status
-- POST /projects/{project_id}/renders/{job_id}/cancel - Cancel render job
-- DELETE /projects/{project_id}/renders/{job_id} - Delete render job
-- GET /projects/{project_id}/render/presets - List available presets
-- POST /projects/{project_id}/renders/{job_id}/webhook - Status webhook from Cloud Run
-"""
-
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -52,11 +39,6 @@ from operators.render_operator import (
 router = APIRouter(prefix="/projects/{project_id}", tags=["render"])
 
 
-# =============================================================================
-# RENDER JOB ENDPOINTS
-# =============================================================================
-
-
 @router.post("/render", response_model=RenderJobCreateResponse)
 async def create_render(
     request: RenderRequest,
@@ -64,14 +46,7 @@ async def create_render(
     db: Session = Depends(get_db),
     session: SessionData = Depends(get_session),
 ):
-    """
-    Start a new render job.
-
-    Creates a render job for the project's timeline and dispatches it
-    to Cloud Run for processing.
-    """
     try:
-        # Create the job
         job = create_render_job(
             db=db,
             project_id=project.project_id,
@@ -79,7 +54,6 @@ async def create_render(
             created_by=f"user:{session.user_id}",
         )
 
-        # Dispatch to Cloud Run
         job = dispatch_render_job(db, job.job_id)
 
         return RenderJobCreateResponse(ok=True, job=render_job_to_response(job))
@@ -108,11 +82,6 @@ async def list_renders(
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
 ):
-    """
-    List render jobs for a project.
-
-    Returns paginated list of render jobs, optionally filtered by status.
-    """
     jobs, total = list_render_jobs(
         db=db,
         project_id=project.project_id,
@@ -135,11 +104,6 @@ async def get_render_status(
     db: Session = Depends(get_db),
     poll: bool = Query(False, description="Poll Cloud Run for latest status"),
 ):
-    """
-    Get render job status.
-
-    If poll=true, will check Cloud Run for the latest status before responding.
-    """
     if poll:
         job = poll_job_status(db, job_id)
     else:
@@ -161,11 +125,6 @@ async def cancel_render(
     project: Project = Depends(require_project),
     db: Session = Depends(get_db),
 ):
-    """
-    Cancel a render job.
-
-    Only pending or in-progress jobs can be cancelled.
-    """
     job = get_render_job(db, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Render job not found")
@@ -187,11 +146,6 @@ async def delete_render(
     project: Project = Depends(require_project),
     db: Session = Depends(get_db),
 ):
-    """
-    Delete a render job record.
-
-    Note: This does not delete the rendered output from storage.
-    """
     job = get_render_job(db, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Render job not found")
@@ -204,19 +158,8 @@ async def delete_render(
     return {"ok": True}
 
 
-# =============================================================================
-# PRESETS ENDPOINT
-# =============================================================================
-
-
 @router.get("/render/presets", response_model=RenderPresetsResponse)
 async def get_presets():
-    """
-    Get available render presets.
-
-    Returns a list of predefined render presets that can be used
-    when creating render jobs.
-    """
     presets = [
         RenderPreset.draft_preview(),
         RenderPreset.standard_export(),
@@ -227,11 +170,6 @@ async def get_presets():
     return RenderPresetsResponse(ok=True, presets=presets)
 
 
-# =============================================================================
-# WEBHOOK ENDPOINT (for Cloud Run callbacks)
-# =============================================================================
-
-
 @router.post("/renders/{job_id}/webhook")
 async def render_webhook(
     job_id: UUID,
@@ -239,12 +177,6 @@ async def render_webhook(
     project: Project = Depends(require_project),
     db: Session = Depends(get_db),
 ):
-    """
-    Webhook endpoint for Cloud Run job status updates.
-
-    Called by the render job container to report progress and completion.
-    This endpoint should be protected in production (e.g., with a secret token).
-    """
     job = get_render_job(db, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Render job not found")
@@ -252,7 +184,6 @@ async def render_webhook(
     if job.project_id != project.project_id:
         raise HTTPException(status_code=404, detail="Render job not found")
 
-    # Update job status
     job = update_job_status(
         db=db,
         job_id=job_id,

@@ -1,9 +1,3 @@
-"""
-Tests for render models.
-
-These tests verify the Pydantic models for render requests and responses.
-"""
-
 import pytest
 from uuid import uuid4
 from datetime import datetime, timezone
@@ -26,16 +20,8 @@ from models.render_models import (
 )
 
 
-# =============================================================================
-# VIDEO SETTINGS TESTS
-# =============================================================================
-
-
 class TestVideoSettings:
-    """Tests for VideoSettings model."""
-
     def test_default_settings(self):
-        """Test default video settings."""
         settings = VideoSettings()
 
         assert settings.codec == VideoCodec.H264
@@ -46,7 +32,6 @@ class TestVideoSettings:
         assert settings.pixel_format == "yuv420p"
 
     def test_custom_settings(self):
-        """Test custom video settings."""
         settings = VideoSettings(
             codec=VideoCodec.H265,
             width=1920,
@@ -66,15 +51,12 @@ class TestVideoSettings:
         assert settings.preset == "slow"
 
     def test_crf_validation(self):
-        """Test CRF value validation."""
-        # Valid CRF
         settings = VideoSettings(crf=0)
         assert settings.crf == 0
 
         settings = VideoSettings(crf=51)
         assert settings.crf == 51
 
-        # Invalid CRF
         with pytest.raises(ValueError):
             VideoSettings(crf=-1)
 
@@ -83,10 +65,7 @@ class TestVideoSettings:
 
 
 class TestAudioSettings:
-    """Tests for AudioSettings model."""
-
     def test_default_settings(self):
-        """Test default audio settings."""
         settings = AudioSettings()
 
         assert settings.codec == AudioCodec.AAC
@@ -95,7 +74,6 @@ class TestAudioSettings:
         assert settings.channels == 2
 
     def test_custom_settings(self):
-        """Test custom audio settings."""
         settings = AudioSettings(
             codec=AudioCodec.MP3,
             bitrate="320k",
@@ -109,16 +87,8 @@ class TestAudioSettings:
         assert settings.channels == 1
 
 
-# =============================================================================
-# RENDER PRESET TESTS
-# =============================================================================
-
-
 class TestRenderPreset:
-    """Tests for RenderPreset model."""
-
     def test_default_preset(self):
-        """Test default preset values."""
         preset = RenderPreset(name="Test")
 
         assert preset.name == "Test"
@@ -128,7 +98,6 @@ class TestRenderPreset:
         assert preset.audio.codec == AudioCodec.AAC
 
     def test_draft_preview_factory(self):
-        """Test draft preview preset factory."""
         preset = RenderPreset.draft_preview()
 
         assert preset.name == "Draft Preview"
@@ -141,7 +110,6 @@ class TestRenderPreset:
         assert preset.use_gpu is False
 
     def test_standard_export_factory(self):
-        """Test standard export preset factory."""
         preset = RenderPreset.standard_export()
 
         assert preset.name == "Standard Export"
@@ -152,7 +120,6 @@ class TestRenderPreset:
         assert preset.use_gpu is False
 
     def test_high_quality_factory(self):
-        """Test high quality preset factory."""
         preset = RenderPreset.high_quality_export()
 
         assert preset.name == "High Quality Export"
@@ -163,7 +130,6 @@ class TestRenderPreset:
         assert preset.use_gpu is True
 
     def test_maximum_quality_factory(self):
-        """Test maximum quality preset factory."""
         preset = RenderPreset.maximum_quality_export()
 
         assert preset.name == "Maximum Quality Export"
@@ -173,16 +139,8 @@ class TestRenderPreset:
         assert preset.use_gpu is True
 
 
-# =============================================================================
-# RENDER REQUEST TESTS
-# =============================================================================
-
-
 class TestRenderRequest:
-    """Tests for RenderRequest model."""
-
     def test_default_request(self):
-        """Test default request values."""
         request = RenderRequest()
 
         assert request.job_type == RenderJobType.EXPORT
@@ -194,7 +152,6 @@ class TestRenderRequest:
         assert request.metadata == {}
 
     def test_preview_request(self):
-        """Test preview render request."""
         request = RenderRequest(
             job_type=RenderJobType.PREVIEW,
             timeline_version=5,
@@ -204,7 +161,6 @@ class TestRenderRequest:
         assert request.timeline_version == 5
 
     def test_export_request_with_preset(self):
-        """Test export request with custom preset."""
         preset = RenderPreset.high_quality_export()
 
         request = RenderRequest(
@@ -218,7 +174,6 @@ class TestRenderRequest:
         assert request.output_filename == "final_video.mp4"
 
     def test_partial_render_request(self):
-        """Test request for partial timeline render."""
         request = RenderRequest(
             start_frame=100,
             end_frame=500,
@@ -229,29 +184,17 @@ class TestRenderRequest:
 
 
 class TestCancelRenderRequest:
-    """Tests for CancelRenderRequest model."""
-
     def test_cancel_without_reason(self):
-        """Test cancel request without reason."""
         request = CancelRenderRequest()
         assert request.reason is None
 
     def test_cancel_with_reason(self):
-        """Test cancel request with reason."""
         request = CancelRenderRequest(reason="User cancelled")
         assert request.reason == "User cancelled"
 
 
-# =============================================================================
-# RENDER RESPONSE TESTS
-# =============================================================================
-
-
 class TestRenderJobResponse:
-    """Tests for RenderJobResponse model."""
-
     def test_job_response(self):
-        """Test job response creation."""
         job_id = uuid4()
         project_id = uuid4()
 
@@ -274,7 +217,6 @@ class TestRenderJobResponse:
         assert response.timeline_version == 3
 
     def test_completed_job_response(self):
-        """Test completed job response with output URL."""
         job_id = uuid4()
         project_id = uuid4()
         now = datetime.now(timezone.utc)
@@ -300,7 +242,6 @@ class TestRenderJobResponse:
         assert response.completed_at is not None
 
     def test_failed_job_response(self):
-        """Test failed job response with error message."""
         job_id = uuid4()
         project_id = uuid4()
 
@@ -321,10 +262,7 @@ class TestRenderJobResponse:
 
 
 class TestRenderJobListResponse:
-    """Tests for RenderJobListResponse model."""
-
     def test_empty_list(self):
-        """Test empty job list response."""
         response = RenderJobListResponse(ok=True, jobs=[], total=0)
 
         assert response.ok is True
@@ -332,7 +270,6 @@ class TestRenderJobListResponse:
         assert response.total == 0
 
     def test_list_with_jobs(self):
-        """Test job list response with jobs."""
         job = RenderJobResponse(
             job_id=uuid4(),
             project_id=uuid4(),
@@ -350,16 +287,8 @@ class TestRenderJobListResponse:
         assert response.total == 1
 
 
-# =============================================================================
-# RENDER MANIFEST TESTS
-# =============================================================================
-
-
 class TestRenderManifest:
-    """Tests for RenderManifest model."""
-
     def test_manifest_creation(self):
-        """Test manifest creation."""
         job_id = uuid4()
         project_id = uuid4()
 
@@ -383,7 +312,6 @@ class TestRenderManifest:
         assert manifest.output_bucket == "video-editor-renders"
 
     def test_manifest_with_callback(self):
-        """Test manifest with callback URL."""
         manifest = RenderManifest(
             job_id=uuid4(),
             project_id=uuid4(),
@@ -400,7 +328,6 @@ class TestRenderManifest:
         assert manifest.callback_url is not None
 
     def test_manifest_with_frame_range(self):
-        """Test manifest with partial render frame range."""
         manifest = RenderManifest(
             job_id=uuid4(),
             project_id=uuid4(),
@@ -419,16 +346,8 @@ class TestRenderManifest:
         assert manifest.end_frame == 500
 
 
-# =============================================================================
-# RENDER PROGRESS TESTS
-# =============================================================================
-
-
 class TestRenderProgress:
-    """Tests for RenderProgress model."""
-
     def test_progress_update(self):
-        """Test progress update."""
         progress = RenderProgress(
             job_id=uuid4(),
             status=RenderJobStatus.PROCESSING,
@@ -442,7 +361,6 @@ class TestRenderProgress:
         assert progress.total_frames == 1000
 
     def test_completion_update(self):
-        """Test completion progress update."""
         progress = RenderProgress(
             job_id=uuid4(),
             status=RenderJobStatus.COMPLETED,
@@ -455,7 +373,6 @@ class TestRenderProgress:
         assert progress.message == "Render complete"
 
     def test_failure_update(self):
-        """Test failure progress update."""
         progress = RenderProgress(
             job_id=uuid4(),
             status=RenderJobStatus.FAILED,
@@ -467,8 +384,6 @@ class TestRenderProgress:
         assert progress.error_message is not None
 
     def test_progress_validation(self):
-        """Test progress value validation."""
-        # Valid progress
         progress = RenderProgress(
             job_id=uuid4(),
             status=RenderJobStatus.PROCESSING,
@@ -483,7 +398,6 @@ class TestRenderProgress:
         )
         assert progress.progress == 100
 
-        # Invalid progress
         with pytest.raises(ValueError):
             RenderProgress(
                 job_id=uuid4(),
@@ -499,21 +413,12 @@ class TestRenderProgress:
             )
 
 
-# =============================================================================
-# ENUM TESTS
-# =============================================================================
-
-
 class TestEnums:
-    """Tests for render-related enums."""
-
     def test_job_types(self):
-        """Test RenderJobType enum values."""
         assert RenderJobType.PREVIEW.value == "preview"
         assert RenderJobType.EXPORT.value == "export"
 
     def test_job_statuses(self):
-        """Test RenderJobStatus enum values."""
         assert RenderJobStatus.PENDING.value == "pending"
         assert RenderJobStatus.QUEUED.value == "queued"
         assert RenderJobStatus.PROCESSING.value == "processing"
@@ -523,17 +428,14 @@ class TestEnums:
         assert RenderJobStatus.CANCELLED.value == "cancelled"
 
     def test_video_codecs(self):
-        """Test VideoCodec enum values."""
         assert VideoCodec.H264.value == "h264"
         assert VideoCodec.H265.value == "h265"
 
     def test_audio_codecs(self):
-        """Test AudioCodec enum values."""
         assert AudioCodec.AAC.value == "aac"
         assert AudioCodec.MP3.value == "mp3"
 
     def test_quality_levels(self):
-        """Test RenderQuality enum values."""
         assert RenderQuality.DRAFT.value == "draft"
         assert RenderQuality.STANDARD.value == "standard"
         assert RenderQuality.HIGH.value == "high"

@@ -1,10 +1,3 @@
-"""
-Background job processor for asset metadata extraction.
-
-This module provides the main process_asset function that is enqueued
-as a background job when assets are uploaded.
-"""
-
 import os
 from datetime import datetime, timezone
 
@@ -19,21 +12,6 @@ ASSET_BUCKET = os.getenv("GCS_BUCKET", "video-editor")
 
 
 def process_asset(asset_id: str, project_id: str) -> None:
-    """
-    Background job to extract metadata from an uploaded asset.
-
-    This function is called by the RQ worker to process uploaded assets.
-    It downloads the asset from GCS, analyzes it using Gemini 3 Flash,
-    and stores the extracted metadata in the database.
-
-    Args:
-        asset_id: UUID string of the asset to process
-        project_id: UUID string of the project containing the asset
-
-    Raises:
-        Exception: Re-raises any exception after updating asset status,
-                   allowing RQ to handle retries.
-    """
     db = next(get_db())
     asset = None
     try:
@@ -77,7 +55,6 @@ def process_asset(asset_id: str, project_id: str) -> None:
             asset.audio_structure = metadata.get("structure")
             asset.asset_speakers = metadata.get("speakers")
 
-            # Generate embedding for semantic search (skip on failure)
             embedding_text = build_embedding_text(
                 summary=asset.asset_summary,
                 tags=asset.asset_tags,

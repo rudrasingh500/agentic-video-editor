@@ -1,15 +1,5 @@
 #!/usr/bin/env python3
-"""
-Render job entrypoint.
 
-This script is the entry point for the Cloud Run render job container.
-It:
-1. Parses command-line arguments
-2. Downloads the render manifest from GCS
-3. Executes the FFmpeg render
-4. Uploads the result to GCS
-5. Reports status back to the backend
-"""
 
 import argparse
 import json
@@ -21,7 +11,7 @@ from google.cloud import storage
 
 from ffmpeg_renderer import FFmpegRenderer, RenderError
 
-# Configure logging
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -30,7 +20,6 @@ logger = logging.getLogger("render-job")
 
 
 def parse_args():
-    """Parse command line arguments."""
     parser = argparse.ArgumentParser(description="Video render job")
     parser.add_argument(
         "--manifest",
@@ -46,16 +35,6 @@ def parse_args():
 
 
 def download_manifest(gcs_path: str) -> dict:
-    """
-    Download render manifest from GCS.
-
-    Args:
-        gcs_path: GCS URI (gs://bucket/path/to/manifest.json)
-
-    Returns:
-        Parsed manifest dict
-    """
-    # Parse GCS URI
     if not gcs_path.startswith("gs://"):
         raise ValueError(f"Invalid GCS path: {gcs_path}")
 
@@ -82,16 +61,6 @@ def report_status(
     progress: int = 0,
     error_message: str | None = None,
 ):
-    """
-    Report status back to backend API.
-
-    Args:
-        callback_url: Backend webhook URL
-        job_id: Render job ID
-        status: Status string (processing, completed, failed)
-        progress: Progress percentage (0-100)
-        error_message: Error message if failed
-    """
     if not callback_url:
         logger.info(f"Status: {status}, Progress: {progress}%")
         return
@@ -112,38 +81,31 @@ def report_status(
 
 
 def main():
-    """Main entry point."""
     args = parse_args()
 
     job_id = args.job_id
     callback_url = os.environ.get("CALLBACK_URL")
 
     try:
-        # Download manifest
         report_status(callback_url, job_id, "processing", 5)
         manifest = download_manifest(args.manifest)
 
         logger.info(f"Processing render job {job_id}")
         logger.info(f"Timeline version: {manifest.get('timeline_version')}")
 
-        # Create renderer
         renderer = FFmpegRenderer(manifest)
 
-        # Define progress callback
         def progress_callback(progress: int, message: str | None = None):
-            # Scale progress: 5-95% for actual rendering
             scaled = 5 + int(progress * 0.9)
             report_status(callback_url, job_id, "processing", scaled)
             if message:
                 logger.info(message)
 
-        # Execute render
         report_status(callback_url, job_id, "processing", 10)
         output_path = renderer.render(progress_callback=progress_callback)
 
         logger.info(f"Render complete: {output_path}")
 
-        # Report completion
         report_status(callback_url, job_id, "completed", 100)
 
         logger.info("Job completed successfully")

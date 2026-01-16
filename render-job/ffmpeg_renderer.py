@@ -1,14 +1,4 @@
 #!/usr/bin/env python3
-"""
-FFmpeg renderer for Cloud Run job.
-
-This module handles the actual video rendering using FFmpeg.
-It:
-1. Builds FFmpeg commands from timeline data
-2. Executes FFmpeg with progress monitoring
-3. Handles errors and cleanup
-"""
-
 import logging
 import os
 import re
@@ -22,15 +12,11 @@ logger = logging.getLogger("ffmpeg-renderer")
 
 
 class RenderError(Exception):
-    """Error during rendering."""
-
     pass
 
 
 @dataclass
 class RenderManifest:
-    """Parsed render manifest."""
-
     job_id: str
     project_id: str
     timeline_version: int
@@ -46,14 +32,6 @@ class RenderManifest:
 
 
 class FFmpegRenderer:
-    """
-    Renders video from timeline using FFmpeg.
-
-    Uses GCS FUSE mounts for input/output:
-    - /inputs: Read-only mount of input bucket
-    - /outputs: Writable mount of output bucket
-    """
-
     def __init__(self, manifest_dict: dict[str, Any]):
         self.manifest = RenderManifest(
             job_id=manifest_dict["job_id"],
@@ -72,7 +50,6 @@ class FFmpegRenderer:
         self.temp_dir = Path(os.environ.get("RENDER_TEMP_DIR", "/tmp/render"))
         self.temp_dir.mkdir(parents=True, exist_ok=True)
 
-        # Input/output paths (GCS FUSE mounts)
         self.inputs_dir = Path("/inputs")
         self.outputs_dir = Path("/outputs")
 
@@ -80,27 +57,13 @@ class FFmpegRenderer:
         self,
         progress_callback: Callable[[int, str | None], None] | None = None,
     ) -> str:
-        """
-        Execute the render.
-
-        Args:
-            progress_callback: Optional callback for progress updates (0-100, message)
-
-        Returns:
-            Path to output file
-
-        Raises:
-            RenderError: If rendering fails
-        """
         logger.info(f"Starting render for job {self.manifest.job_id}")
 
-        # Build local asset paths (from GCS FUSE mount)
         local_asset_map = self._resolve_asset_paths()
 
         if progress_callback:
             progress_callback(5, "Resolved asset paths")
 
-        # Build FFmpeg command
         ffmpeg_cmd = self._build_ffmpeg_command(local_asset_map)
 
         if progress_callback:
@@ -108,7 +71,6 @@ class FFmpegRenderer:
 
         logger.info(f"FFmpeg command: {' '.join(ffmpeg_cmd[:10])}...")
 
-        # Execute FFmpeg
         output_path = self._execute_ffmpeg(ffmpeg_cmd, progress_callback)
 
         logger.info(f"Render complete: {output_path}")
@@ -116,15 +78,9 @@ class FFmpegRenderer:
         return output_path
 
     def _resolve_asset_paths(self) -> dict[str, str]:
-        """
-        Resolve asset IDs to local file paths.
-
-        Assets are accessible via GCS FUSE mount at /inputs.
-        """
         local_paths = {}
 
         for asset_id, gcs_path in self.manifest.asset_map.items():
-            # GCS path is relative to bucket root
             local_path = self.inputs_dir / gcs_path
 
             if not local_path.exists():
@@ -136,41 +92,27 @@ class FFmpegRenderer:
         return local_paths
 
     def _build_ffmpeg_command(self, asset_map: dict[str, str]) -> list[str]:
-        """
-        Build FFmpeg command from timeline and preset.
-
-        This is a simplified version - the full implementation would use
-        the ffmpeg_builder from the backend.
-        """
         timeline = self.manifest.timeline_snapshot
         preset = self.manifest.preset
 
-        # Output path
         output_path = self.outputs_dir / self.manifest.output_path
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Build command
-        cmd = ["ffmpeg", "-y"]  # -y to overwrite
+        cmd = ["ffmpeg", "-y"]
 
-        # Collect inputs and build filter graph
         inputs, filter_complex, maps = self._build_filter_graph(timeline, asset_map)
 
-        # Add inputs
         for input_file in inputs:
             cmd.extend(["-i", input_file])
 
-        # Add filter_complex if we have one
         if filter_complex:
             cmd.extend(["-filter_complex", filter_complex])
 
-        # Add maps
         for m in maps:
             cmd.extend(["-map", m])
 
-        # Add encoding options
         cmd.extend(self._build_encoding_options(preset))
 
-        # Add output
         cmd.append(str(output_path))
 
         return cmd
@@ -180,17 +122,10 @@ class FFmpegRenderer:
         timeline: dict[str, Any],
         asset_map: dict[str, str],
     ) -> tuple[list[str], str, list[str]]:
-        """
-        Build FFmpeg filter graph from timeline.
-
-        Returns:
-            Tuple of (input_files, filter_complex, output_maps)
-        """
         inputs: list[str] = []
         filters: list[str] = []
         input_index_map: dict[str, int] = {}
 
-        # Extract clips from timeline
         tracks = timeline.get("tracks", {})
         children = tracks.get("children", [])
 
@@ -216,14 +151,12 @@ class FFmpegRenderer:
                 if not asset_id or asset_id not in asset_map:
                     continue
 
-                # Add input if not already added
                 if asset_id not in input_index_map:
                     input_index_map[asset_id] = len(inputs)
                     inputs.append(asset_map[asset_id])
 
                 input_idx = input_index_map[asset_id]
 
-                # Get source range
                 source_range = item.get("source_range", {})
                 start_time = source_range.get("start_time", {})
                 duration = source_range.get("duration", {})
@@ -239,7 +172,6 @@ class FFmpegRenderer:
                     )
                     video_segments.append(seg_label)
 
-                    # Also get audio if video track
                     aseg_label = f"a{len(audio_segments)}"
                     filters.append(
                         f"[{input_idx}:a]atrim=start={start_sec}:duration={dur_sec},"
@@ -255,7 +187,6 @@ class FFmpegRenderer:
                     )
                     audio_segments.append(seg_label)
 
-        # Concatenate segments
         maps = []
 
         if video_segments:
@@ -280,20 +211,17 @@ class FFmpegRenderer:
 
         filter_complex = ";".join(filters) if filters else ""
 
-        # If no filters, just use first input directly
         if not filter_complex and inputs:
             maps = ["0:v", "0:a"]
 
         return inputs, filter_complex, maps
 
     def _build_encoding_options(self, preset: dict[str, Any]) -> list[str]:
-        """Build FFmpeg encoding options from preset."""
         options = []
         video = preset.get("video", {})
         audio = preset.get("audio", {})
         use_gpu = preset.get("use_gpu", False)
 
-        # Video codec
         codec = video.get("codec", "h264")
         if use_gpu:
             if codec == "h264":
@@ -306,17 +234,14 @@ class FFmpegRenderer:
             elif codec == "h265":
                 options.extend(["-c:v", "libx265"])
 
-        # Quality
         crf = video.get("crf", 23)
         if use_gpu:
             options.extend(["-cq", str(crf)])
         else:
             options.extend(["-crf", str(crf)])
 
-        # Preset
         enc_preset = video.get("preset", "medium")
         if use_gpu:
-            # Map to NVENC presets
             nvenc_map = {
                 "ultrafast": "fast",
                 "superfast": "fast",
@@ -331,11 +256,9 @@ class FFmpegRenderer:
             enc_preset = nvenc_map.get(enc_preset, "medium")
         options.extend(["-preset", enc_preset])
 
-        # Pixel format
         pix_fmt = video.get("pixel_format", "yuv420p")
         options.extend(["-pix_fmt", pix_fmt])
 
-        # Audio codec
         audio_codec = audio.get("codec", "aac")
         if audio_codec == "aac":
             options.extend(["-c:a", "aac"])
@@ -345,7 +268,6 @@ class FFmpegRenderer:
         audio_bitrate = audio.get("bitrate", "192k")
         options.extend(["-b:a", audio_bitrate])
 
-        # Streaming optimization
         options.extend(["-movflags", "+faststart"])
 
         return options
@@ -355,23 +277,8 @@ class FFmpegRenderer:
         cmd: list[str],
         progress_callback: Callable[[int, str | None], None] | None = None,
     ) -> str:
-        """
-        Execute FFmpeg command with progress monitoring.
-
-        Args:
-            cmd: FFmpeg command as list
-            progress_callback: Progress callback (0-100, message)
-
-        Returns:
-            Output file path
-
-        Raises:
-            RenderError: If FFmpeg fails
-        """
-        # Get output path (last argument)
         output_path = cmd[-1]
 
-        # Add progress output
         cmd_with_progress = cmd[:-1] + ["-progress", "pipe:1", cmd[-1]]
 
         logger.info("Executing FFmpeg...")
@@ -385,28 +292,24 @@ class FFmpegRenderer:
                 universal_newlines=True,
             )
 
-            # Parse progress output
             duration = None
             last_progress = 10
 
             for line in process.stdout:
                 line = line.strip()
 
-                # Parse duration
                 if line.startswith("Duration:"):
                     match = re.search(r"Duration: (\d+):(\d+):(\d+)", line)
                     if match:
                         h, m, s = map(int, match.groups())
                         duration = h * 3600 + m * 60 + s
 
-                # Parse progress
                 if line.startswith("out_time_ms="):
                     try:
                         time_ms = int(line.split("=")[1])
                         time_sec = time_ms / 1000000
 
                         if duration and duration > 0:
-                            # Scale to 10-95% range
                             pct = min(95, 10 + int((time_sec / duration) * 85))
                             if pct > last_progress and progress_callback:
                                 progress_callback(pct, None)
@@ -414,7 +317,6 @@ class FFmpegRenderer:
                     except (ValueError, IndexError):
                         pass
 
-            # Wait for completion
             process.wait()
 
             if process.returncode != 0:
@@ -432,6 +334,5 @@ class FFmpegRenderer:
             raise RenderError(f"Failed to execute FFmpeg: {e}")
 
     def cleanup(self):
-        """Clean up temporary files."""
         if self.temp_dir.exists():
             shutil.rmtree(self.temp_dir, ignore_errors=True)

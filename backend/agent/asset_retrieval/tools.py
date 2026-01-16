@@ -637,16 +637,9 @@ def _semantic_search(
     limit: int = 10,
     min_similarity: float = 0.5,
 ) -> dict[str, Any]:
-    """
-    Vector similarity search using pgvector.
-
-    Finds assets semantically similar to the query by comparing
-    embedding vectors using cosine distance.
-    """
     if not query.strip():
         return {"error": "Empty search query", "assets": []}
 
-    # Generate embedding for the query
     query_embedding = get_query_embedding(query)
     if not query_embedding:
         return {
@@ -654,8 +647,6 @@ def _semantic_search(
             "assets": [],
         }
 
-    # Perform vector similarity search using pgvector's <=> operator (cosine distance)
-    # Cosine distance = 1 - cosine_similarity, so we compute similarity as 1 - distance
     results = db.execute(
         text("""
             SELECT

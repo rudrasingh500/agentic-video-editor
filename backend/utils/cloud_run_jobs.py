@@ -1,17 +1,3 @@
-"""
-Cloud Run Jobs API client for video rendering.
-
-This module provides functionality to:
-- Create and deploy Cloud Run Jobs
-- Execute jobs with parameter overrides
-- Poll job execution status
-- Handle job completion callbacks
-
-Requires:
-- google-cloud-run Python client
-- Service account with Cloud Run Invoker permissions
-"""
-
 from __future__ import annotations
 
 import logging
@@ -22,28 +8,20 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
-# =============================================================================
-# CONFIGURATION
-# =============================================================================
-
-
 @dataclass
 class CloudRunConfig:
-    """Configuration for Cloud Run Jobs."""
-
     project_id: str
     region: str
     cpu_job_name: str = "video-render-cpu"
     gpu_job_name: str = "video-render-gpu"
-    cpu_job_image: str = ""  # Set via environment
-    gpu_job_image: str = ""  # Set via environment
+    cpu_job_image: str = ""
+    gpu_job_image: str = ""
     service_account_email: str = ""
     input_bucket: str = ""
     output_bucket: str = ""
 
     @classmethod
     def from_env(cls) -> CloudRunConfig:
-        """Load configuration from environment variables."""
         return cls(
             project_id=os.getenv("GCP_PROJECT_ID", ""),
             region=os.getenv("GCP_REGION", "us-central1"),
@@ -57,18 +35,11 @@ class CloudRunConfig:
         )
 
 
-# =============================================================================
-# DATA STRUCTURES
-# =============================================================================
-
-
 @dataclass
 class JobExecution:
-    """Represents a Cloud Run Job execution."""
-
     execution_id: str
     job_name: str
-    status: str  # PENDING, RUNNING, SUCCEEDED, FAILED, CANCELLED
+    status: str
     create_time: str | None = None
     start_time: str | None = None
     completion_time: str | None = None
@@ -77,31 +48,15 @@ class JobExecution:
 
 @dataclass
 class JobExecutionRequest:
-    """Request to execute a Cloud Run Job."""
-
-    job_id: str  # Our internal job ID
-    manifest_gcs_path: str  # GCS path to render manifest JSON
+    job_id: str
+    manifest_gcs_path: str
     use_gpu: bool = False
-    timeout_seconds: int = 3600  # 1 hour default
+    timeout_seconds: int = 3600
     memory: str = "32Gi"
     cpu: str = "8"
 
 
-# =============================================================================
-# CLOUD RUN JOBS CLIENT
-# =============================================================================
-
-
 class CloudRunJobsClient:
-    """
-    Client for managing Cloud Run Jobs for video rendering.
-
-    This client handles:
-    - Job execution with parameter overrides
-    - Status polling
-    - Error handling
-    """
-
     def __init__(self, config: CloudRunConfig | None = None):
         self.config = config or CloudRunConfig.from_env()
         self._jobs_client = None
@@ -109,7 +64,6 @@ class CloudRunJobsClient:
         self._initialized = False
 
     def _ensure_initialized(self) -> None:
-        """Lazily initialize the Cloud Run clients."""
         if self._initialized:
             return
 
@@ -134,20 +88,10 @@ class CloudRunJobsClient:
 
     @property
     def is_available(self) -> bool:
-        """Check if the Cloud Run client is available."""
         self._ensure_initialized()
         return self._jobs_client is not None
 
     def execute_render_job(self, request: JobExecutionRequest) -> JobExecution | None:
-        """
-        Execute a render job on Cloud Run.
-
-        Args:
-            request: Job execution parameters
-
-        Returns:
-            JobExecution with execution details, or None if failed
-        """
         self._ensure_initialized()
 
         if not self._jobs_client:
@@ -168,7 +112,6 @@ class CloudRunJobsClient:
                 f"jobs/{job_name}"
             )
 
-            # Create execution request with overrides
             run_request = run_v2.RunJobRequest(
                 name=full_job_name,
                 overrides=run_v2.RunJobRequest.Overrides(
@@ -195,7 +138,6 @@ class CloudRunJobsClient:
                 ),
             )
 
-            # Execute the job
             operation = self._jobs_client.run_job(request=run_request)
             execution = operation.result()
 
@@ -218,16 +160,6 @@ class CloudRunJobsClient:
     def get_execution_status(
         self, job_name: str, execution_id: str
     ) -> JobExecution | None:
-        """
-        Get the status of a job execution.
-
-        Args:
-            job_name: Name of the Cloud Run job
-            execution_id: Execution ID
-
-        Returns:
-            JobExecution with current status
-        """
         self._ensure_initialized()
 
         if not self._executions_client:
@@ -247,7 +179,6 @@ class CloudRunJobsClient:
                 request=run_v2.GetExecutionRequest(name=full_name)
             )
 
-            # Map Cloud Run status to our status
             status = self._map_execution_status(execution)
 
             return JobExecution(
@@ -271,16 +202,6 @@ class CloudRunJobsClient:
             return None
 
     def cancel_execution(self, job_name: str, execution_id: str) -> bool:
-        """
-        Cancel a running job execution.
-
-        Args:
-            job_name: Name of the Cloud Run job
-            execution_id: Execution ID
-
-        Returns:
-            True if cancelled successfully
-        """
         self._ensure_initialized()
 
         if not self._executions_client:
@@ -306,13 +227,6 @@ class CloudRunJobsClient:
             return False
 
     def _map_execution_status(self, execution: Any) -> str:
-        """Map Cloud Run execution status to our status enum."""
-        # Cloud Run statuses:
-        # - CONDITION_RECONCILING
-        # - EXECUTION_CONDITION_ACTIVE
-        # - CONDITION_SUCCEEDED
-        # - CONDITION_FAILED
-
         if not execution.conditions:
             return "PENDING"
 
@@ -329,7 +243,6 @@ class CloudRunJobsClient:
         return "PENDING"
 
     def _extract_error_message(self, execution: Any) -> str | None:
-        """Extract error message from failed execution."""
         if not execution.conditions:
             return None
 
@@ -342,17 +255,11 @@ class CloudRunJobsClient:
     def _execute_local_fallback(
         self, request: JobExecutionRequest
     ) -> JobExecution | None:
-        """
-        Fallback for local development without Cloud Run.
-
-        In development, we can run the render job locally or skip it.
-        """
         logger.warning(
             f"Cloud Run not available. "
             f"Render job {request.job_id} will need manual processing."
         )
 
-        # Return a placeholder execution for tracking
         return JobExecution(
             execution_id=f"local-{request.job_id}",
             job_name="local",
@@ -361,19 +268,9 @@ class CloudRunJobsClient:
         )
 
 
-# =============================================================================
-# JOB DEFINITION MANAGEMENT
-# =============================================================================
-
-
 def create_cpu_job_definition(
     config: CloudRunConfig,
 ) -> dict[str, Any]:
-    """
-    Generate Cloud Run Job definition for CPU rendering.
-
-    This can be used with gcloud or terraform to create the job.
-    """
     return {
         "apiVersion": "run.googleapis.com/v1",
         "kind": "Job",
@@ -447,14 +344,8 @@ def create_cpu_job_definition(
 def create_gpu_job_definition(
     config: CloudRunConfig,
 ) -> dict[str, Any]:
-    """
-    Generate Cloud Run Job definition for GPU rendering.
-
-    This can be used with gcloud or terraform to create the job.
-    """
     definition = create_cpu_job_definition(config)
 
-    # Update for GPU
     definition["metadata"]["name"] = config.gpu_job_name
     definition["spec"]["template"]["metadata"]["annotations"].update(
         {
@@ -473,33 +364,25 @@ def create_gpu_job_definition(
 
 
 def generate_gcloud_commands(config: CloudRunConfig) -> str:
-    """
-    Generate gcloud commands to create the render jobs.
-
-    Useful for initial setup or CI/CD pipelines.
-    """
     commands = []
 
-    # CPU job
     commands.append(f"""
-# Create CPU render job
-gcloud run jobs create {config.cpu_job_name} \\
-    --image {config.cpu_job_image} \\
-    --region {config.region} \\
-    --memory 32Gi \\
-    --cpu 8 \\
-    --max-retries 1 \\
-    --task-timeout 3600 \\
-    --service-account {config.service_account_email} \\
-    --add-volume=name=input-volume,type=cloud-storage,bucket={config.input_bucket},readonly=true \\
-    --add-volume-mount=volume=input-volume,mount-path=/inputs \\
-    --add-volume=name=output-volume,type=cloud-storage,bucket={config.output_bucket} \\
+ gcloud run jobs create {config.cpu_job_name} \
+    --image {config.cpu_job_image} \
+    --region {config.region} \
+    --memory 32Gi \
+    --cpu 8 \
+    --max-retries 1 \
+    --task-timeout 3600 \
+    --service-account {config.service_account_email} \
+    --add-volume=name=input-volume,type=cloud-storage,bucket={config.input_bucket},readonly=true \
+    --add-volume-mount=volume=input-volume,mount-path=/inputs \
+    --add-volume=name=output-volume,type=cloud-storage,bucket={config.output_bucket} \
     --add-volume-mount=volume=output-volume,mount-path=/outputs
 """)
 
-    # GPU job
     commands.append(f"""
-# Create GPU render job
+
 gcloud run jobs create {config.gpu_job_name} \\
     --image {config.gpu_job_image} \\
     --region {config.region} \\
@@ -520,16 +403,10 @@ gcloud run jobs create {config.gpu_job_name} \\
     return "\n".join(commands)
 
 
-# =============================================================================
-# SINGLETON CLIENT
-# =============================================================================
-
-
 _client: CloudRunJobsClient | None = None
 
 
 def get_cloud_run_client() -> CloudRunJobsClient:
-    """Get the singleton Cloud Run Jobs client."""
     global _client
     if _client is None:
         _client = CloudRunJobsClient()

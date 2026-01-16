@@ -1,10 +1,3 @@
-"""
-Asset retrieval agent for finding timestamp-addressable content.
-
-Uses z-ai/glm-4.7 via OpenRouter with tool calling to search across
-indexed asset metadata and return scored candidates.
-"""
-
 import json
 import logging
 import os

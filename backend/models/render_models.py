@@ -1,12 +1,3 @@
-"""
-Pydantic models for video rendering functionality.
-
-This module defines request/response schemas for:
-- Render job creation and management
-- Render presets and quality settings
-- Job status tracking
-"""
-
 from __future__ import annotations
 
 from datetime import datetime
@@ -17,61 +8,39 @@ from uuid import UUID
 from pydantic import BaseModel, Field
 
 
-# =============================================================================
-# ENUMS
-# =============================================================================
-
-
 class RenderJobType(str, Enum):
-    """Type of render job."""
-
-    PREVIEW = "preview"  # Quick, lower quality for playback
-    EXPORT = "export"  # High quality final output
+    PREVIEW = "preview"
+    EXPORT = "export"
 
 
 class RenderJobStatus(str, Enum):
-    """Status of a render job."""
-
-    PENDING = "pending"  # Job created, waiting to start
-    QUEUED = "queued"  # Sent to Cloud Run, waiting for execution
-    PROCESSING = "processing"  # Actively rendering
-    UPLOADING = "uploading"  # Render complete, uploading to GCS
-    COMPLETED = "completed"  # Successfully finished
-    FAILED = "failed"  # Error occurred
-    CANCELLED = "cancelled"  # User cancelled
+    PENDING = "pending"
+    QUEUED = "queued"
+    PROCESSING = "processing"
+    UPLOADING = "uploading"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
 class VideoCodec(str, Enum):
-    """Supported video codecs."""
-
-    H264 = "h264"  # libx264 (CPU) or h264_nvenc (GPU)
-    H265 = "h265"  # libx265 (CPU) or hevc_nvenc (GPU)
+    H264 = "h264"
+    H265 = "h265"
 
 
 class AudioCodec(str, Enum):
-    """Supported audio codecs."""
-
     AAC = "aac"
     MP3 = "mp3"
 
 
 class RenderQuality(str, Enum):
-    """Preset quality levels."""
-
-    DRAFT = "draft"  # Fast preview, lower quality
-    STANDARD = "standard"  # Balanced quality/speed
-    HIGH = "high"  # High quality, slower
-    MAXIMUM = "maximum"  # Best quality, slowest
-
-
-# =============================================================================
-# RENDER PRESETS
-# =============================================================================
+    DRAFT = "draft"
+    STANDARD = "standard"
+    HIGH = "high"
+    MAXIMUM = "maximum"
 
 
 class VideoSettings(BaseModel):
-    """Video encoding settings."""
-
     codec: VideoCodec = Field(default=VideoCodec.H264, description="Video codec")
     width: int | None = Field(default=None, description="Output width (None = source)")
     height: int | None = Field(
@@ -97,8 +66,6 @@ class VideoSettings(BaseModel):
 
 
 class AudioSettings(BaseModel):
-    """Audio encoding settings."""
-
     codec: AudioCodec = Field(default=AudioCodec.AAC, description="Audio codec")
     bitrate: str = Field(default="192k", description="Audio bitrate")
     sample_rate: int = Field(default=48000, description="Sample rate in Hz")
@@ -106,8 +73,6 @@ class AudioSettings(BaseModel):
 
 
 class RenderPreset(BaseModel):
-    """Complete render preset configuration."""
-
     name: str = Field(description="Preset name")
     quality: RenderQuality = Field(
         default=RenderQuality.STANDARD, description="Quality level"
@@ -120,7 +85,6 @@ class RenderPreset(BaseModel):
 
     @classmethod
     def draft_preview(cls) -> RenderPreset:
-        """Quick preview preset - fast encoding, lower quality."""
         return cls(
             name="Draft Preview",
             quality=RenderQuality.DRAFT,
@@ -137,7 +101,6 @@ class RenderPreset(BaseModel):
 
     @classmethod
     def standard_export(cls) -> RenderPreset:
-        """Standard quality export preset."""
         return cls(
             name="Standard Export",
             quality=RenderQuality.STANDARD,
@@ -152,7 +115,6 @@ class RenderPreset(BaseModel):
 
     @classmethod
     def high_quality_export(cls) -> RenderPreset:
-        """High quality export preset with GPU acceleration."""
         return cls(
             name="High Quality Export",
             quality=RenderQuality.HIGH,
@@ -167,7 +129,6 @@ class RenderPreset(BaseModel):
 
     @classmethod
     def maximum_quality_export(cls) -> RenderPreset:
-        """Maximum quality export preset."""
         return cls(
             name="Maximum Quality Export",
             quality=RenderQuality.MAXIMUM,
@@ -181,14 +142,7 @@ class RenderPreset(BaseModel):
         )
 
 
-# =============================================================================
-# REQUEST MODELS
-# =============================================================================
-
-
 class RenderRequest(BaseModel):
-    """Request to start a render job."""
-
     job_type: RenderJobType = Field(
         default=RenderJobType.EXPORT, description="Type of render job"
     )
@@ -201,7 +155,7 @@ class RenderRequest(BaseModel):
     output_filename: str | None = Field(
         default=None, description="Output filename (auto-generated if not specified)"
     )
-    # Optional time range to render (for partial renders)
+
     start_frame: int | None = Field(
         default=None, description="Start frame (None = beginning)"
     )
@@ -212,19 +166,10 @@ class RenderRequest(BaseModel):
 
 
 class CancelRenderRequest(BaseModel):
-    """Request to cancel a render job."""
-
     reason: str | None = Field(default=None, description="Reason for cancellation")
 
 
-# =============================================================================
-# RESPONSE MODELS
-# =============================================================================
-
-
 class RenderJobResponse(BaseModel):
-    """Response containing render job details."""
-
     job_id: UUID
     project_id: UUID
     job_type: RenderJobType
@@ -243,57 +188,32 @@ class RenderJobResponse(BaseModel):
 
 
 class RenderJobCreateResponse(BaseModel):
-    """Response after creating a render job."""
-
     ok: bool = True
     job: RenderJobResponse
 
 
 class RenderJobListResponse(BaseModel):
-    """Response containing list of render jobs."""
-
     ok: bool = True
     jobs: list[RenderJobResponse]
     total: int
 
 
 class RenderJobStatusResponse(BaseModel):
-    """Response for render job status check."""
-
     ok: bool = True
     job: RenderJobResponse
 
 
 class RenderJobCancelResponse(BaseModel):
-    """Response after cancelling a render job."""
-
     ok: bool = True
     job: RenderJobResponse
 
 
 class RenderPresetsResponse(BaseModel):
-    """Response containing available render presets."""
-
     ok: bool = True
     presets: list[RenderPreset]
 
 
-# =============================================================================
-# INTERNAL MODELS (for job processing)
-# =============================================================================
-
-
 class RenderManifest(BaseModel):
-    """
-    Manifest file passed to Cloud Run job.
-
-    Contains all information needed to render the video:
-    - Timeline snapshot
-    - Asset mappings (asset_id -> GCS path)
-    - Render settings
-    - Output location
-    """
-
     job_id: UUID
     project_id: UUID
     timeline_version: int
@@ -313,8 +233,6 @@ class RenderManifest(BaseModel):
 
 
 class RenderProgress(BaseModel):
-    """Progress update from render job."""
-
     job_id: UUID
     status: RenderJobStatus
     progress: int = Field(ge=0, le=100)
