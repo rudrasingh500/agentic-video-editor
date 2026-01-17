@@ -11,7 +11,6 @@ sys.path.insert(0, base_dir)
 from database.base import Base, DATABASE_URL  # noqa: E402
 
 
-
 config = context.config
 
 if config.config_file_name is not None:

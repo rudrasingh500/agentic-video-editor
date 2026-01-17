@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import json
 import logging
 import os
 import re
@@ -7,6 +8,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
+
 
 logger = logging.getLogger("ffmpeg-renderer")
 
@@ -50,8 +52,8 @@ class FFmpegRenderer:
         self.temp_dir = Path(os.environ.get("RENDER_TEMP_DIR", "/tmp/render"))
         self.temp_dir.mkdir(parents=True, exist_ok=True)
 
-        self.inputs_dir = Path("/inputs")
-        self.outputs_dir = Path("/outputs")
+        self.inputs_dir = Path(os.environ.get("RENDER_INPUT_DIR", "/inputs"))
+        self.outputs_dir = Path(os.environ.get("RENDER_OUTPUT_DIR", "/outputs"))
 
     def render(
         self,
@@ -60,11 +62,12 @@ class FFmpegRenderer:
         logger.info(f"Starting render for job {self.manifest.job_id}")
 
         local_asset_map = self._resolve_asset_paths()
+        input_streams = self._probe_streams(local_asset_map)
 
         if progress_callback:
             progress_callback(5, "Resolved asset paths")
 
-        ffmpeg_cmd = self._build_ffmpeg_command(local_asset_map)
+        ffmpeg_cmd = self._build_ffmpeg_command(local_asset_map, input_streams)
 
         if progress_callback:
             progress_callback(10, "Built FFmpeg command")
@@ -81,17 +84,47 @@ class FFmpegRenderer:
         local_paths = {}
 
         for asset_id, gcs_path in self.manifest.asset_map.items():
-            local_path = self.inputs_dir / gcs_path
+            asset_path = Path(gcs_path)
+            local_path = (
+                asset_path if asset_path.is_absolute() else self.inputs_dir / gcs_path
+            )
 
             if not local_path.exists():
-                raise RenderError(f"Asset not found: {gcs_path}")
+                raise RenderError(f"Asset not found: {local_path}")
 
             local_paths[asset_id] = str(local_path)
             logger.debug(f"Asset {asset_id}: {local_path}")
 
         return local_paths
 
-    def _build_ffmpeg_command(self, asset_map: dict[str, str]) -> list[str]:
+    def _probe_streams(self, asset_map: dict[str, str]) -> dict[int, set[str]]:
+        streams: dict[int, set[str]] = {}
+
+        for idx, (_, asset_path) in enumerate(asset_map.items()):
+            cmd = [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "stream=codec_type",
+                "-of",
+                "json",
+                asset_path,
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            data = json.loads(result.stdout)
+            stream_types = {
+                stream.get("codec_type") for stream in data.get("streams", [])
+            }
+            streams[idx] = {s for s in stream_types if s}
+
+        return streams
+
+    def _build_ffmpeg_command(
+        self,
+        asset_map: dict[str, str],
+        input_streams: dict[int, set[str]],
+    ) -> list[str]:
         timeline = self.manifest.timeline_snapshot
         preset = self.manifest.preset
 
@@ -100,7 +133,9 @@ class FFmpegRenderer:
 
         cmd = ["ffmpeg", "-y"]
 
-        inputs, filter_complex, maps = self._build_filter_graph(timeline, asset_map)
+        inputs, filter_complex, maps = self._build_filter_graph(
+            timeline, asset_map, input_streams
+        )
 
         for input_file in inputs:
             cmd.extend(["-i", input_file])
@@ -121,6 +156,7 @@ class FFmpegRenderer:
         self,
         timeline: dict[str, Any],
         asset_map: dict[str, str],
+        input_streams: dict[int, set[str]],
     ) -> tuple[list[str], str, list[str]]:
         inputs: list[str] = []
         filters: list[str] = []
@@ -156,6 +192,7 @@ class FFmpegRenderer:
                     inputs.append(asset_map[asset_id])
 
                 input_idx = input_index_map[asset_id]
+                streams = input_streams.get(input_idx, set())
 
                 source_range = item.get("source_range", {})
                 start_time = source_range.get("start_time", {})
@@ -172,14 +209,17 @@ class FFmpegRenderer:
                     )
                     video_segments.append(seg_label)
 
-                    aseg_label = f"a{len(audio_segments)}"
-                    filters.append(
-                        f"[{input_idx}:a]atrim=start={start_sec}:duration={dur_sec},"
-                        f"asetpts=PTS-STARTPTS[{aseg_label}]"
-                    )
-                    audio_segments.append(aseg_label)
+                    if "a" in streams:
+                        aseg_label = f"a{len(audio_segments)}"
+                        filters.append(
+                            f"[{input_idx}:a]atrim=start={start_sec}:duration={dur_sec},"
+                            f"asetpts=PTS-STARTPTS[{aseg_label}]"
+                        )
+                        audio_segments.append(aseg_label)
 
                 elif track_kind == "Audio":
+                    if "a" not in streams:
+                        continue
                     seg_label = f"a{len(audio_segments)}"
                     filters.append(
                         f"[{input_idx}:a]atrim=start={start_sec}:duration={dur_sec},"
@@ -294,6 +334,9 @@ class FFmpegRenderer:
 
             duration = None
             last_progress = 10
+
+            if process.stdout is None:
+                raise RenderError("FFmpeg did not provide a stdout stream")
 
             for line in process.stdout:
                 line = line.strip()
