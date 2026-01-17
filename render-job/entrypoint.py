@@ -6,8 +6,12 @@ import json
 import logging
 import os
 import sys
+from pathlib import Path
+
 
 from google.cloud import storage
+from google.oauth2 import service_account
+
 
 from ffmpeg_renderer import FFmpegRenderer, RenderError
 
@@ -24,7 +28,7 @@ def parse_args():
     parser.add_argument(
         "--manifest",
         required=True,
-        help="GCS path to render manifest (gs://bucket/path/manifest.json)",
+        help="GCS path or local path to render manifest",
     )
     parser.add_argument(
         "--job-id",
@@ -34,24 +38,49 @@ def parse_args():
     return parser.parse_args()
 
 
-def download_manifest(gcs_path: str) -> dict:
-    if not gcs_path.startswith("gs://"):
-        raise ValueError(f"Invalid GCS path: {gcs_path}")
 
-    parts = gcs_path[5:].split("/", 1)
-    if len(parts) != 2:
-        raise ValueError(f"Invalid GCS path: {gcs_path}")
+def _get_storage_client() -> storage.Client:
+    credentials_json = os.environ.get("GCP_CREDENTIALS")
+    if not credentials_json:
+        return storage.Client()
 
-    bucket_name, blob_path = parts
+    try:
+        credentials_info = json.loads(credentials_json)
+    except json.JSONDecodeError as exc:
+        raise ValueError("Invalid GCP_CREDENTIALS JSON") from exc
 
-    logger.info(f"Downloading manifest from {gcs_path}")
+    credentials = service_account.Credentials.from_service_account_info(
+        credentials_info
+    )
+    return storage.Client(
+        credentials=credentials, project=credentials_info.get("project_id")
+    )
 
-    client = storage.Client()
-    bucket = client.bucket(bucket_name)
-    blob = bucket.blob(blob_path)
 
-    manifest_json = blob.download_as_text()
-    return json.loads(manifest_json)
+def download_manifest(manifest_path: str) -> dict:
+    if manifest_path.startswith("gs://"):
+        parts = manifest_path[5:].split("/", 1)
+        if len(parts) != 2:
+            raise ValueError(f"Invalid GCS path: {manifest_path}")
+
+        bucket_name, blob_path = parts
+
+        logger.info(f"Downloading manifest from {manifest_path}")
+
+        client = _get_storage_client()
+        bucket = client.bucket(bucket_name)
+        blob = bucket.blob(blob_path)
+
+        manifest_json = blob.download_as_text()
+        return json.loads(manifest_json)
+
+    path = Path(manifest_path)
+    if not path.exists():
+        raise ValueError(f"Manifest file not found: {manifest_path}")
+
+    logger.info(f"Loading manifest from {manifest_path}")
+    return json.loads(path.read_text(encoding="utf-8"))
+
 
 
 def report_status(

@@ -5,6 +5,7 @@ import os
 from datetime import datetime, timezone
 from uuid import UUID
 
+
 from sqlalchemy.orm import Session as DBSession
 
 from database.models import (
@@ -14,6 +15,7 @@ from database.models import (
     TimelineCheckpoint as TimelineCheckpointModel,
 )
 from models.render_models import (
+    RenderExecutionMode,
     RenderJobResponse,
     RenderJobStatus,
     RenderJobType,
@@ -21,6 +23,7 @@ from models.render_models import (
     RenderPreset,
     RenderRequest,
 )
+
 from models.timeline_models import Timeline
 from utils.cloud_run_jobs import (
     JobExecutionRequest,
@@ -110,6 +113,23 @@ def create_render_job(
         job_type = request.job_type.value
         output_filename = f"{job_type}_{timeline_version}_{timestamp}.mp4"
 
+    execution_mode = request.execution_mode
+    if execution_mode is None:
+        env_mode = os.getenv("RENDER_EXECUTION_MODE", RenderExecutionMode.CLOUD.value)
+        execution_mode = (
+            RenderExecutionMode.LOCAL
+            if env_mode.lower() == RenderExecutionMode.LOCAL.value
+            else RenderExecutionMode.CLOUD
+        )
+
+    job_metadata = {
+        "created_by": created_by,
+        "start_frame": request.start_frame,
+        "end_frame": request.end_frame,
+        "execution_mode": execution_mode.value,
+        **request.metadata,
+    }
+
     job = RenderJobModel(
         project_id=project_id,
         timeline_id=timeline_record.timeline_id,
@@ -120,13 +140,9 @@ def create_render_job(
         total_frames=total_frames,
         preset=preset.model_dump(),
         output_filename=output_filename,
-        job_metadata={
-            "created_by": created_by,
-            "start_frame": request.start_frame,
-            "end_frame": request.end_frame,
-            **request.metadata,
-        },
+        job_metadata=job_metadata,
     )
+
     db.add(job)
     db.commit()
     db.refresh(job)
@@ -160,10 +176,15 @@ def dispatch_render_job(
 
     timeline = Timeline.model_validate(checkpoint.snapshot)
 
-    asset_map = _build_asset_map(db, job.project_id, timeline)
+    asset_map = _build_asset_map(db, job.project_id, timeline)  # type: ignore[arg-type]
+
 
     preset = RenderPreset.model_validate(job.preset)
     output_path = f"{job.project_id}/renders/{job.output_filename}"
+
+    execution_mode = str(
+        job.job_metadata.get("execution_mode", RenderExecutionMode.CLOUD.value)
+    )
 
     manifest = RenderManifest(
         job_id=job.job_id,
@@ -177,7 +198,10 @@ def dispatch_render_job(
         output_path=output_path,
         start_frame=job.job_metadata.get("start_frame"),
         end_frame=job.job_metadata.get("end_frame"),
+        callback_url=job.job_metadata.get("callback_url"),
+        execution_mode=RenderExecutionMode(execution_mode),
     )
+
 
     manifest_path = f"{job.project_id}/manifests/{job.job_id}.json"
     manifest_json = manifest.model_dump_json()
@@ -195,16 +219,20 @@ def dispatch_render_job(
         db.commit()
         raise RenderError(f"Failed to upload manifest: {e}")
 
+    manifest_ref = f"gs://{GCS_BUCKET}/{manifest_path}"
+
     client = get_cloud_run_client()
 
     execution_request = JobExecutionRequest(
         job_id=str(job.job_id),
-        manifest_gcs_path=f"gs://{GCS_BUCKET}/{manifest_path}",
+        manifest_gcs_path=manifest_ref,
+        execution_mode=execution_mode,
         use_gpu=preset.use_gpu,
         timeout_seconds=_estimate_timeout(timeline, preset),
     )
 
     execution = client.execute_render_job(execution_request)
+
 
     if execution:
         job.status = RenderJobStatus.QUEUED.value
@@ -428,6 +456,7 @@ def _calculate_total_frames(timeline: Timeline, preset: RenderPreset) -> int:
 
 
 def _estimate_timeout(timeline: Timeline, preset: RenderPreset) -> int:
+
     from utils.ffmpeg_builder import estimate_render_duration
 
     estimated = estimate_render_duration(timeline, preset)

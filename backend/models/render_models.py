@@ -23,7 +23,13 @@ class RenderJobStatus(str, Enum):
     CANCELLED = "cancelled"
 
 
+class RenderExecutionMode(str, Enum):
+    CLOUD = "cloud"
+    LOCAL = "local"
+
+
 class VideoCodec(str, Enum):
+
     H264 = "h264"
     H265 = "h265"
 
@@ -155,6 +161,9 @@ class RenderRequest(BaseModel):
     output_filename: str | None = Field(
         default=None, description="Output filename (auto-generated if not specified)"
     )
+    execution_mode: RenderExecutionMode | None = Field(
+        default=None, description="Render execution mode (cloud or local)"
+    )
 
     start_frame: int | None = Field(
         default=None, description="Start frame (None = beginning)"
@@ -163,6 +172,7 @@ class RenderRequest(BaseModel):
     metadata: dict[str, Any] = Field(
         default_factory=dict, description="Additional metadata for the job"
     )
+
 
 
 class CancelRenderRequest(BaseModel):
@@ -230,6 +240,10 @@ class RenderManifest(BaseModel):
     callback_url: str | None = Field(
         default=None, description="URL to POST status updates"
     )
+    execution_mode: RenderExecutionMode = Field(
+        default=RenderExecutionMode.CLOUD, description="Execution mode"
+    )
+
 
 
 class RenderProgress(BaseModel):

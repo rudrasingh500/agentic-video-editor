@@ -10,6 +10,7 @@ from models.render_models import (
     RenderJobResponse,
     RenderJobStatus,
     RenderJobType,
+    RenderExecutionMode,
     RenderManifest,
     RenderPreset,
     RenderProgress,
@@ -18,6 +19,7 @@ from models.render_models import (
     VideoCodec,
     VideoSettings,
 )
+
 
 
 class TestVideoSettings:
@@ -170,8 +172,10 @@ class TestRenderRequest:
         )
 
         assert request.job_type == RenderJobType.EXPORT
+        assert request.preset is not None
         assert request.preset.quality == RenderQuality.HIGH
         assert request.output_filename == "final_video.mp4"
+
 
     def test_partial_render_request(self):
         request = RenderRequest(
@@ -302,7 +306,9 @@ class TestRenderManifest:
             input_bucket="video-editor-assets",
             output_bucket="video-editor-renders",
             output_path="project/renders/output.mp4",
+            execution_mode=RenderExecutionMode.CLOUD,
         )
+
 
         assert manifest.job_id == job_id
         assert manifest.project_id == project_id
@@ -323,7 +329,9 @@ class TestRenderManifest:
             output_bucket="bucket",
             output_path="output.mp4",
             callback_url="https://api.example.com/webhook/render",
+            execution_mode=RenderExecutionMode.CLOUD,
         )
+
 
         assert manifest.callback_url is not None
 
@@ -340,7 +348,9 @@ class TestRenderManifest:
             output_path="output.mp4",
             start_frame=100,
             end_frame=500,
+            execution_mode=RenderExecutionMode.CLOUD,
         )
+
 
         assert manifest.start_frame == 100
         assert manifest.end_frame == 500

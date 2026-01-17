@@ -9,6 +9,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from google.cloud import storage
+from google.oauth2 import service_account
+
+
 
 logger = logging.getLogger("ffmpeg-renderer")
 
@@ -55,6 +59,9 @@ class FFmpegRenderer:
         self.inputs_dir = Path(os.environ.get("RENDER_INPUT_DIR", "/inputs"))
         self.outputs_dir = Path(os.environ.get("RENDER_OUTPUT_DIR", "/outputs"))
 
+        self._storage_client: storage.Client | None = None
+
+
     def render(
         self,
         progress_callback: Callable[[int, str | None], None] | None = None,
@@ -74,20 +81,29 @@ class FFmpegRenderer:
 
         logger.info(f"FFmpeg command: {' '.join(ffmpeg_cmd[:10])}...")
 
-        output_path = self._execute_ffmpeg(ffmpeg_cmd, progress_callback)
+        output_path = Path(self._execute_ffmpeg(ffmpeg_cmd, progress_callback))
+        self._upload_output(output_path)
 
         logger.info(f"Render complete: {output_path}")
 
-        return output_path
+        return str(output_path)
+
 
     def _resolve_asset_paths(self) -> dict[str, str]:
         local_paths = {}
 
         for asset_id, gcs_path in self.manifest.asset_map.items():
             asset_path = Path(gcs_path)
-            local_path = (
-                asset_path if asset_path.is_absolute() else self.inputs_dir / gcs_path
-            )
+            if asset_path.is_absolute():
+                local_path = asset_path
+            else:
+                bucket_name, blob_path = self._parse_gcs_path(
+                    gcs_path, self.manifest.input_bucket
+                )
+                local_path = self.inputs_dir / blob_path
+
+                if not local_path.exists():
+                    self._download_asset(bucket_name, blob_path, local_path)
 
             if not local_path.exists():
                 raise RenderError(f"Asset not found: {local_path}")
@@ -96,6 +112,7 @@ class FFmpegRenderer:
             logger.debug(f"Asset {asset_id}: {local_path}")
 
         return local_paths
+
 
     def _probe_streams(self, asset_map: dict[str, str]) -> dict[int, set[str]]:
         streams: dict[int, set[str]] = {}
@@ -120,6 +137,81 @@ class FFmpegRenderer:
 
         return streams
 
+    def _download_asset(
+        self, bucket_name: str, blob_path: str, local_path: Path
+    ) -> None:
+        client = self._get_storage_client()
+        bucket = client.bucket(bucket_name)
+        blob = bucket.blob(blob_path)
+
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            blob.download_to_filename(str(local_path))
+        except Exception as exc:
+            raise RenderError(f"Failed to download gs://{bucket_name}/{blob_path}") from exc
+
+    def _parse_gcs_path(self, gcs_path: str, fallback_bucket: str) -> tuple[str, str]:
+        if gcs_path.startswith("gs://"):
+            stripped = gcs_path[5:]
+            parts = stripped.split("/", 1)
+            if len(parts) != 2:
+                raise RenderError(f"Invalid GCS path: {gcs_path}")
+            return parts[0], parts[1]
+
+        if not fallback_bucket:
+            raise RenderError("input_bucket is required for GCS asset paths")
+        return fallback_bucket, gcs_path
+
+    def _get_storage_client(self) -> storage.Client:
+        if self._storage_client:
+            return self._storage_client
+
+        credentials_json = os.environ.get("GCP_CREDENTIALS")
+        if not credentials_json:
+            self._storage_client = storage.Client()
+            return self._storage_client
+
+        try:
+            credentials_info = json.loads(credentials_json)
+        except json.JSONDecodeError as exc:
+            raise RenderError("Invalid GCP_CREDENTIALS JSON") from exc
+
+        credentials = service_account.Credentials.from_service_account_info(
+            credentials_info
+        )
+        self._storage_client = storage.Client(
+            credentials=credentials, project=credentials_info.get("project_id")
+        )
+        return self._storage_client
+
+    def _upload_output(self, output_path: Path) -> None:
+        if not output_path.exists():
+            raise RenderError(f"Render output not found: {output_path}")
+
+        output_bucket = self.manifest.output_bucket
+        if not output_bucket or output_bucket == "local":
+            logger.info("Skipping GCS upload for local output bucket")
+            return
+
+        if Path(self.manifest.output_path).is_absolute():
+            logger.info("Skipping GCS upload for absolute output path")
+            return
+
+        bucket_name, blob_path = self._parse_gcs_path(
+            self.manifest.output_path, output_bucket
+        )
+        client = self._get_storage_client()
+        bucket = client.bucket(bucket_name)
+        blob = bucket.blob(blob_path)
+
+        try:
+            blob.upload_from_filename(str(output_path))
+        except Exception as exc:
+            raise RenderError(
+                f"Failed to upload render output to gs://{bucket_name}/{blob_path}"
+            ) from exc
+
+
     def _build_ffmpeg_command(
         self,
         asset_map: dict[str, str],
@@ -128,8 +220,11 @@ class FFmpegRenderer:
         timeline = self.manifest.timeline_snapshot
         preset = self.manifest.preset
 
-        output_path = self.outputs_dir / self.manifest.output_path
+        output_path = Path(self.manifest.output_path)
+        if not output_path.is_absolute():
+            output_path = self.outputs_dir / self.manifest.output_path
         output_path.parent.mkdir(parents=True, exist_ok=True)
+
 
         cmd = ["ffmpeg", "-y"]
 

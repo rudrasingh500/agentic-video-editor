@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import importlib
 import logging
 import os
 from dataclasses import dataclass
 from typing import Any
+
 
 logger = logging.getLogger(__name__)
 
@@ -50,10 +52,12 @@ class JobExecution:
 class JobExecutionRequest:
     job_id: str
     manifest_gcs_path: str
+    execution_mode: str = "cloud"
     use_gpu: bool = False
     timeout_seconds: int = 3600
     memory: str = "32Gi"
     cpu: str = "8"
+
 
 
 class CloudRunJobsClient:
@@ -68,10 +72,11 @@ class CloudRunJobsClient:
             return
 
         try:
-            from google.cloud import run_v2
+            run_v2 = importlib.import_module("google.cloud.run_v2")  # type: ignore[import-not-found]
 
             self._jobs_client = run_v2.JobsClient()
             self._executions_client = run_v2.ExecutionsClient()
+
             self._initialized = True
             logger.info("Cloud Run Jobs client initialized")
         except ImportError:
@@ -98,10 +103,20 @@ class CloudRunJobsClient:
             logger.error("Cloud Run client not available")
             return self._execute_local_fallback(request)
 
+        execution_mode = request.execution_mode or os.getenv("RENDER_EXECUTION_MODE", "cloud")
+        if execution_mode.lower() == "local":
+            logger.info("Render execution mode is local; skipping Cloud Run dispatch")
+            return JobExecution(
+                execution_id=f"local-{request.job_id}",
+                job_name="local",
+                status="PENDING",
+            )
+
         try:
-            from google.cloud import run_v2
+            run_v2 = importlib.import_module("google.cloud.run_v2")  # type: ignore[import-not-found]
 
             job_name = (
+
                 self.config.gpu_job_name
                 if request.use_gpu
                 else self.config.cpu_job_name
@@ -166,7 +181,7 @@ class CloudRunJobsClient:
             return None
 
         try:
-            from google.cloud import run_v2
+            run_v2 = importlib.import_module("google.cloud.run_v2")  # type: ignore[import-not-found]
 
             full_name = (
                 f"projects/{self.config.project_id}/"
@@ -178,6 +193,7 @@ class CloudRunJobsClient:
             execution = self._executions_client.get_execution(
                 request=run_v2.GetExecutionRequest(name=full_name)
             )
+
 
             status = self._map_execution_status(execution)
 
@@ -208,7 +224,7 @@ class CloudRunJobsClient:
             return False
 
         try:
-            from google.cloud import run_v2
+            run_v2 = importlib.import_module("google.cloud.run_v2")  # type: ignore[import-not-found]
 
             full_name = (
                 f"projects/{self.config.project_id}/"
@@ -220,6 +236,7 @@ class CloudRunJobsClient:
             self._executions_client.delete_execution(
                 request=run_v2.DeleteExecutionRequest(name=full_name)
             )
+
             return True
 
         except Exception as e:

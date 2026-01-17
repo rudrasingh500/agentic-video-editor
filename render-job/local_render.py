@@ -157,6 +157,7 @@ def build_manifest(
         },
         "input_bucket": "local",
         "output_bucket": "local",
+        "execution_mode": "local",
         "output_path": output_path,
     }
 
@@ -180,7 +181,7 @@ def render_asset(
     output_dir: Path,
     rate: float,
     use_gpu: bool,
-) -> Path:
+) -> tuple[Path, Path]:
     timeline = build_timeline_dict(asset, rate)
     output_filename = (
         f"{slugify_filename(asset.path.stem)}_{'gpu' if use_gpu else 'cpu'}.mp4"
@@ -188,9 +189,12 @@ def render_asset(
     output_path = output_dir / output_filename
     manifest = build_manifest(asset, timeline, str(output_path), use_gpu)
 
+    manifest_path = output_dir / f"{slugify_filename(asset.path.stem)}_manifest.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+
     renderer = FFmpegRenderer(manifest)
     renderer.render()
-    return output_path
+    return output_path, manifest_path
 
 
 def main() -> None:
@@ -214,8 +218,11 @@ def main() -> None:
         raise SystemExit(f"No .mp4 assets found in {input_dir}")
 
     for asset in assets:
-        output_path = render_asset(asset, output_dir, args.rate, args.use_gpu)
+        output_path, manifest_path = render_asset(
+            asset, output_dir, args.rate, args.use_gpu
+        )
         print(f"Rendered {asset.path.name} -> {output_path}")
+        print(f"Manifest saved: {manifest_path}")
 
 
 if __name__ == "__main__":
