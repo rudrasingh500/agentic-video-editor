@@ -1,0 +1,385 @@
+"""REST API endpoints for the Edit Orchestrator.
+
+Provides endpoints for:
+- Sending edit requests
+- Managing edit sessions
+- Listing and applying pending patches
+"""
+
+import logging
+from datetime import datetime
+from typing import Annotated
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, Header, HTTPException, BackgroundTasks
+from sqlalchemy.orm import Session
+
+from database.base import get_db
+from database.models import Project, Timeline
+from agent.edit_orchestrator import (
+    EditRequest,
+    EditSessionStatus,
+    PendingPatch,
+    SessionNotFoundError,
+    SessionClosedError,
+    clear_pending_patches,
+    delete_session,
+    execute_patch,
+    get_session,
+    list_sessions,
+    orchestrate_edit,
+    update_session_status,
+)
+from models.api_models import (
+    ApplyPatchesRequestBody,
+    ApplyPatchesResponse,
+    EditPatchSummary,
+    EditRequestBody,
+    EditResponse,
+    EditSessionCloseResponse,
+    EditSessionDetailResponse,
+    EditSessionListResponse,
+    EditSessionResponse,
+)
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter()
+
+
+def _get_user_id(x_user_id: Annotated[str | None, Header()] = None) -> str:
+    """Extract user ID from header."""
+    if not x_user_id:
+        raise HTTPException(status_code=401, detail="X-User-Id header required")
+    return x_user_id
+
+
+def _validate_project(project_id: str, db: Session) -> Project:
+    """Validate project exists."""
+    project = (
+        db.query(Project)
+        .filter(Project.project_id == project_id)
+        .first()
+    )
+    if not project:
+        raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
+    return project
+
+
+@router.post("", response_model=EditResponse)
+async def send_edit_request(
+    project_id: str,
+    body: EditRequestBody,
+    db: Session = Depends(get_db),
+    user_id: str = Depends(_get_user_id),
+) -> EditResponse:
+    """Send an edit request to the orchestrator.
+
+    This processes the user's natural language request and returns
+    proposed edit patches for review.
+    """
+    _validate_project(project_id, db)
+
+    request = EditRequest(
+        message=body.message,
+        session_id=body.session_id,
+    )
+
+    result = orchestrate_edit(
+        project_id=project_id,
+        user_id=user_id,
+        request=request,
+        db=db,
+    )
+
+    # Convert pending patches to summaries
+    patch_summaries = [
+        EditPatchSummary(
+            patch_id=p.patch_id,
+            agent_type=p.agent_type.value,
+            operation_count=len(p.patch.operations) if p.patch else 0,
+            description=p.patch.description if p.patch else "",
+            created_at=p.created_at,
+        )
+        for p in result.pending_patches
+    ]
+
+    return EditResponse(
+        ok=True,
+        session_id=result.session_id,
+        message=result.message,
+        pending_patches=patch_summaries,
+        warnings=result.warnings,
+        applied=result.applied,
+        new_version=result.new_version,
+    )
+
+
+@router.get("/sessions", response_model=EditSessionListResponse)
+async def list_edit_sessions(
+    project_id: str,
+    limit: int = 20,
+    offset: int = 0,
+    status: str | None = None,
+    db: Session = Depends(get_db),
+    user_id: str = Depends(_get_user_id),
+) -> EditSessionListResponse:
+    """List edit sessions for a project."""
+    _validate_project(project_id, db)
+
+    status_filter = None
+    if status:
+        try:
+            status_filter = EditSessionStatus(status)
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid status: {status}. Must be one of: active, completed, cancelled"
+            )
+
+    sessions, total = list_sessions(
+        db=db,
+        project_id=project_id,
+        limit=limit,
+        offset=offset,
+        status=status_filter,
+    )
+
+    return EditSessionListResponse(
+        ok=True,
+        sessions=[
+            EditSessionResponse(
+                ok=True,
+                session_id=s.session_id,
+                project_id=project_id,
+                timeline_id="",  # Summary doesn't include this
+                title=s.title,
+                status=s.status.value,
+                message_count=s.message_count,
+                pending_patch_count=s.pending_patch_count,
+                created_at=s.created_at,
+                updated_at=s.updated_at,
+            )
+            for s in sessions
+        ],
+        total=total,
+    )
+
+
+@router.get("/sessions/{session_id}", response_model=EditSessionDetailResponse)
+async def get_edit_session(
+    project_id: str,
+    session_id: str,
+    db: Session = Depends(get_db),
+    user_id: str = Depends(_get_user_id),
+) -> EditSessionDetailResponse:
+    """Get full details of an edit session including messages and patches."""
+    _validate_project(project_id, db)
+
+    try:
+        session = get_session(db, session_id)
+    except SessionNotFoundError:
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+
+    # Verify session belongs to project
+    if session.project_id != project_id:
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+
+    return EditSessionDetailResponse(
+        ok=True,
+        session_id=session.session_id,
+        project_id=session.project_id,
+        timeline_id=session.timeline_id,
+        title=session.title,
+        status=session.status.value,
+        messages=[m.model_dump(mode="json") for m in session.messages],
+        pending_patches=[p.model_dump(mode="json") for p in session.pending_patches],
+        created_at=session.created_at,
+        updated_at=session.updated_at,
+    )
+
+
+@router.post("/sessions/{session_id}/apply", response_model=ApplyPatchesResponse)
+async def apply_session_patches(
+    project_id: str,
+    session_id: str,
+    body: ApplyPatchesRequestBody,
+    db: Session = Depends(get_db),
+    user_id: str = Depends(_get_user_id),
+) -> ApplyPatchesResponse:
+    """Apply pending patches from a session to the timeline.
+
+    This creates a new timeline checkpoint with the applied changes.
+    """
+    _validate_project(project_id, db)
+
+    try:
+        session = get_session(db, session_id)
+    except SessionNotFoundError:
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+
+    if session.project_id != project_id:
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+
+    if session.status != EditSessionStatus.ACTIVE:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Session is {session.status.value}, cannot apply patches"
+        )
+
+    # Get timeline for this project
+    timeline = (
+        db.query(Timeline)
+        .filter(Timeline.project_id == project_id)
+        .first()
+    )
+    if not timeline:
+        raise HTTPException(status_code=404, detail="Timeline not found for project")
+
+    # Filter patches if specific IDs provided
+    patches_to_apply = session.pending_patches
+    if body.patch_ids:
+        patches_to_apply = [
+            p for p in session.pending_patches
+            if p.patch_id in body.patch_ids
+        ]
+
+    if not patches_to_apply:
+        return ApplyPatchesResponse(
+            ok=True,
+            new_version=None,
+            operations_applied=0,
+            errors=["No patches to apply"],
+        )
+
+    # Apply each patch's operations to the timeline
+    total_operations = 0
+    errors: list[str] = []
+    current_version = timeline.current_version
+    applied_patch_ids: list[str] = []
+
+    for pending_patch in patches_to_apply:
+        if pending_patch.patch is None:
+            errors.append(f"Patch {pending_patch.patch_id}: No patch data")
+            continue
+
+        if not pending_patch.patch.operations:
+            # No operations, nothing to apply but mark as applied
+            applied_patch_ids.append(pending_patch.patch_id)
+            continue
+
+        # Execute the patch
+        result = execute_patch(
+            db=db,
+            timeline_id=UUID(session.timeline_id),
+            patch=pending_patch.patch,
+            actor=f"agent:{pending_patch.agent_type.value}",
+            starting_version=current_version,
+            stop_on_error=True,
+        )
+
+        total_operations += result.successful_operations
+
+        if result.errors:
+            errors.extend([
+                f"Patch {pending_patch.patch_id}: {e}"
+                for e in result.errors
+            ])
+
+        if result.success:
+            applied_patch_ids.append(pending_patch.patch_id)
+            if result.final_version is not None:
+                current_version = result.final_version
+        else:
+            # Stop on first failed patch
+            logger.warning(
+                f"Stopping patch application due to errors in patch {pending_patch.patch_id}"
+            )
+            break
+
+    # Clear only the successfully applied patches
+    if applied_patch_ids:
+        clear_pending_patches(db, session_id, applied_patch_ids)
+
+    # Refresh timeline to get updated version
+    db.refresh(timeline)
+
+    return ApplyPatchesResponse(
+        ok=len(errors) == 0,
+        new_version=timeline.current_version if applied_patch_ids else None,
+        operations_applied=total_operations,
+        errors=errors if errors else [],
+    )
+
+
+@router.post("/sessions/{session_id}/complete", response_model=EditSessionCloseResponse)
+async def complete_session(
+    project_id: str,
+    session_id: str,
+    db: Session = Depends(get_db),
+    user_id: str = Depends(_get_user_id),
+) -> EditSessionCloseResponse:
+    """Mark an edit session as completed."""
+    _validate_project(project_id, db)
+
+    try:
+        session = get_session(db, session_id)
+    except SessionNotFoundError:
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+
+    if session.project_id != project_id:
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+
+    update_session_status(db, session_id, EditSessionStatus.COMPLETED)
+
+    return EditSessionCloseResponse(ok=True)
+
+
+@router.post("/sessions/{session_id}/cancel", response_model=EditSessionCloseResponse)
+async def cancel_session(
+    project_id: str,
+    session_id: str,
+    db: Session = Depends(get_db),
+    user_id: str = Depends(_get_user_id),
+) -> EditSessionCloseResponse:
+    """Cancel an edit session and discard pending patches."""
+    _validate_project(project_id, db)
+
+    try:
+        session = get_session(db, session_id)
+    except SessionNotFoundError:
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+
+    if session.project_id != project_id:
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+
+    # Clear all pending patches
+    clear_pending_patches(db, session_id)
+
+    # Update status
+    update_session_status(db, session_id, EditSessionStatus.CANCELLED)
+
+    return EditSessionCloseResponse(ok=True)
+
+
+@router.delete("/sessions/{session_id}", response_model=EditSessionCloseResponse)
+async def delete_edit_session(
+    project_id: str,
+    session_id: str,
+    db: Session = Depends(get_db),
+    user_id: str = Depends(_get_user_id),
+) -> EditSessionCloseResponse:
+    """Delete an edit session permanently."""
+    _validate_project(project_id, db)
+
+    try:
+        session = get_session(db, session_id)
+    except SessionNotFoundError:
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+
+    if session.project_id != project_id:
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+
+    delete_session(db, session_id)
+
+    return EditSessionCloseResponse(ok=True)

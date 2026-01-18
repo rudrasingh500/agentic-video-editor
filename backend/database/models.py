@@ -257,6 +257,48 @@ class TimelineOperation(Base):
         )
 
 
+class EditSession(Base):
+    __tablename__ = "edit_sessions"
+
+    session_id = Column(
+        UUID, unique=True, index=True, nullable=False, primary_key=True, default=uuid4
+    )
+    project_id = Column(
+        UUID,
+        ForeignKey("projects.project_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    timeline_id = Column(
+        UUID,
+        ForeignKey("timelines.timeline_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    created_by = Column(UUID, ForeignKey("users.session_id"), nullable=False)
+
+    title = Column(String, nullable=True)
+    messages = Column(JSONB, nullable=False, default=list)
+    pending_patches = Column(JSONB, nullable=False, default=list)
+    status = Column(String, nullable=False, default="active")
+
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
+    updated_at = Column(
+        DateTime, nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (
+        Index("ix_edit_sessions_project_id", project_id),
+        Index("ix_edit_sessions_timeline_id", timeline_id),
+        Index("ix_edit_sessions_status", status),
+        Index("ix_edit_sessions_created_at", created_at),
+    )
+
+    def __repr__(self):
+        return (
+            f"<EditSession session_id={self.session_id} "
+            f"project_id={self.project_id} status={self.status}>"
+        )
+
+
 class RenderJob(Base):
     __tablename__ = "render_jobs"
 

@@ -69,3 +69,95 @@ class AssetDeleteResponse(BaseModel):
 class AssetReindexResponse(BaseModel):
     ok: bool
     asset: AssetResponse
+
+
+# Edit Orchestrator API Models
+
+
+class EditRequestBody(BaseModel):
+    """Request body for sending an edit request."""
+
+    message: str
+    session_id: str | None = None
+
+
+class EditPatchSummary(BaseModel):
+    """Summary of a pending patch."""
+
+    patch_id: str
+    agent_type: str
+    operation_count: int
+    description: str
+    created_at: datetime
+
+
+class EditResponse(BaseModel):
+    """Response from the edit orchestrator."""
+
+    ok: bool
+    session_id: str
+    message: str
+    pending_patches: list[EditPatchSummary] = []
+    warnings: list[str] = []
+    applied: bool = False
+    new_version: int | None = None
+
+
+class EditSessionResponse(BaseModel):
+    """Response containing edit session details."""
+
+    ok: bool
+    session_id: str
+    project_id: str
+    timeline_id: str
+    title: str | None
+    status: str
+    message_count: int
+    pending_patch_count: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class EditSessionListResponse(BaseModel):
+    """Response containing list of edit sessions."""
+
+    ok: bool
+    sessions: list[EditSessionResponse]
+    total: int
+
+
+class EditSessionDetailResponse(BaseModel):
+    """Response containing full edit session with messages."""
+
+    ok: bool
+    session_id: str
+    project_id: str
+    timeline_id: str
+    title: str | None
+    status: str
+    messages: list[dict[str, Any]]
+    pending_patches: list[dict[str, Any]]
+    created_at: datetime
+    updated_at: datetime
+
+
+class ApplyPatchesRequestBody(BaseModel):
+    """Request body for applying patches."""
+
+    patch_ids: list[str] | None = None
+    description: str = "Applied AI-suggested edits"
+
+
+class ApplyPatchesResponse(BaseModel):
+    """Response from applying patches."""
+
+    ok: bool
+    new_version: int | None = None
+    operations_applied: int = 0
+    errors: list[str] = []
+
+
+class EditSessionCloseResponse(BaseModel):
+    """Response from closing/cancelling a session."""
+
+    ok: bool
