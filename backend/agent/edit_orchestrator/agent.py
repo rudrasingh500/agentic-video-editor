@@ -16,12 +16,13 @@ import os
 import re
 from datetime import datetime, timezone
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from openai import OpenAI
 from sqlalchemy.orm import Session as DBSession
 
 from database.models import AgentRun, Timeline
+from operators.timeline_operator import get_timeline_snapshot, list_checkpoints
 
 from . import session as session_ops
 from .prompts import SYSTEM_PROMPT, build_context_prompt
@@ -52,59 +53,64 @@ def _get_client() -> OpenAI:
     )
 
 
-def _format_tool_result(tool_name: str, result: dict[str, Any]) -> str:
+def _format_tool_result(
+    tool_name: str,
+    result: dict[str, Any],
+) -> tuple[str, dict[str, Any] | None]:
     """Format tool result for inclusion in messages.
 
-    For viewing tools that return media_content, format as multimodal content
-    for Gemini's native video/audio/image understanding.
+    For viewing tools that return media_content, emit a tool message payload
+    plus a follow-up user message containing multimodal content parts that
+    OpenRouter can forward to Gemini.
 
     Args:
         tool_name: Name of the tool that produced the result
         result: The tool's return value
 
     Returns:
-        JSON string with optional multimodal content parts
+        Tuple of (tool message content, optional follow-up user message)
     """
-    # Check if this is a viewing tool with media content
     media_content = result.get("media_content")
     if media_content and tool_name in ("view_asset", "view_rendered_output"):
-        # Build multimodal content for Gemini
-        # OpenRouter passes this through to Gemini which supports native video understanding
-        parts: list[dict[str, Any]] = []
+        media_part = _build_media_part(media_content)
 
-        # Add text context first
-        text_context = {
-            k: v for k, v in result.items()
-            if k != "media_content" and v is not None
+        tool_payload = dict(result)
+        tool_payload["media_content"] = {
+            "mime_type": media_content.get("mime_type"),
+            "size_bytes": result.get("size_bytes"),
+            "note": "Media content omitted; provided as multimodal input.",
         }
-        if text_context:
-            parts.append({
-                "type": "text",
-                "text": json.dumps(text_context),
-            })
 
-        # Add the media content
-        # Gemini via OpenRouter expects inline_data format
-        parts.append({
-            "type": "image_url",  # OpenRouter uses this for all media types
-            "image_url": {
-                "url": f"data:{media_content['mime_type']};base64,{media_content['data']}",
-            },
-        })
+        if not media_part:
+            tool_payload["media_content"]["note"] = (
+                "Media content unavailable for multimodal input."
+            )
+            return json.dumps(tool_payload), None
 
-        # Add any question as a follow-up text part
-        if result.get("question"):
-            parts.append({
-                "type": "text",
-                "text": f"Please analyze this media and answer: {result['question']}",
-            })
+        question = result.get("question")
+        context_payload = {
+            k: v
+            for k, v in result.items()
+            if k not in ("media_content", "question") and v is not None
+        }
+        text_blocks = []
+        if question:
+            text_blocks.append(f"Please analyze the media and answer: {question}")
+        if context_payload:
+            text_blocks.append(f"Context: {json.dumps(context_payload)}")
+        text_prompt = "\n".join(text_blocks) if text_blocks else "Please analyze the media."
 
-        # Return as JSON string since tool messages expect string content
-        # The OpenAI-compatible API will handle the multimodal format
-        return json.dumps(parts)
+        followup_message = {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": text_prompt},
+                media_part,
+            ],
+        }
 
-    # For non-media results, just return JSON string
-    return json.dumps(result)
+        return json.dumps(tool_payload), followup_message
+
+    return json.dumps(result), None
 
 
 def orchestrate_edit(
@@ -174,8 +180,18 @@ def orchestrate_edit(
         content=request.message,
     )
 
+    timeline_summary = _summarize_timeline(db, UUID(session.timeline_id))
+    recent_edits = _summarize_recent_edits(db, UUID(session.timeline_id))
+    conversation_summary = _summarize_conversation(session.messages)
+
     # Build conversation history for LLM
-    messages = _build_messages(session.messages, request.message)
+    messages = _build_messages(
+        session.messages,
+        request.message,
+        timeline_summary=timeline_summary,
+        recent_edits=recent_edits,
+        conversation_summary=conversation_summary,
+    )
 
     # Create tool execution context
     tool_context = ToolContext(
@@ -285,14 +301,20 @@ def orchestrate_edit(
                         collected_warnings.extend(result["warnings"])
 
                 # Format tool result for message
-                # For viewing tools with media_content, we need to format for Gemini multimodal
-                tool_result_content = _format_tool_result(tool_name, result)
+                # For viewing tools with media_content, we add a multimodal follow-up
+                tool_result_content, followup_message = _format_tool_result(
+                    tool_name,
+                    result,
+                )
 
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tool_call.id,
                     "content": tool_result_content,
                 })
+
+                if followup_message:
+                    messages.append(followup_message)
 
             # Add iteration context
             remaining = MAX_ITERATIONS - iteration - 1
@@ -361,10 +383,18 @@ def orchestrate_edit(
 def _build_messages(
     history: list,
     current_message: str,
+    timeline_summary: str | None = None,
+    recent_edits: list[str] | None = None,
+    conversation_summary: str | None = None,
 ) -> list[dict[str, Any]]:
     """Build message list for LLM from session history."""
+    system_prompt = SYSTEM_PROMPT + build_context_prompt(
+        timeline_summary=timeline_summary,
+        recent_edits=recent_edits,
+        conversation_history=conversation_summary,
+    )
     messages: list[dict[str, Any]] = [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": system_prompt},
     ]
 
     # Add conversation history (last N messages to avoid context overflow)
@@ -383,12 +413,12 @@ def _build_messages(
             messages.append({"role": role, "content": content})
 
     # Ensure current message is included if not already
-    if not messages or messages[-1].get("content") != current_message:
-        # Check if we already have this message (from history)
-        if messages and messages[-1].get("role") == "user":
-            pass  # Already there
-        else:
-            messages.append({"role": "user", "content": current_message})
+    last_user = next(
+        (msg for msg in reversed(messages) if msg.get("role") == "user"),
+        None,
+    )
+    if not last_user or last_user.get("content") != current_message:
+        messages.append({"role": "user", "content": current_message})
 
     return messages
 
@@ -404,13 +434,105 @@ def _summarize_conversation(history: list) -> str:
             role = msg.get("role", "")
             content = msg.get("content", "")[:100]
         else:
-            role = msg.role.value if hasattr(msg.role, 'value') else str(msg.role)
+            role = msg.role.value if hasattr(msg.role, "value") else str(msg.role)
             content = (msg.content or "")[:100]
 
         if content:
             summaries.append(f"{role}: {content}...")
 
     return "\n".join(summaries)
+
+
+def _summarize_timeline(db: DBSession, timeline_id: UUID) -> str | None:
+    """Build a concise textual summary of the current timeline."""
+    try:
+        snapshot = get_timeline_snapshot(db, timeline_id)
+    except Exception:
+        return None
+
+    timeline = snapshot.timeline
+    total_tracks = len(timeline.tracks.children)
+    video_tracks = len(timeline.video_tracks)
+    audio_tracks = len(timeline.audio_tracks)
+    clip_count = len(timeline.find_clips())
+    transitions = len(timeline.find_transitions())
+    duration_ms = int(timeline.duration.to_milliseconds())
+
+    return (
+        "Timeline '{name}' v{version}. Duration: {duration_ms} ms. "
+        "Tracks: {total_tracks} (video {video_tracks}, audio {audio_tracks}). "
+        "Clips: {clip_count}. Transitions: {transitions}."
+    ).format(
+        name=timeline.name,
+        version=snapshot.version,
+        duration_ms=duration_ms,
+        total_tracks=total_tracks,
+        video_tracks=video_tracks,
+        audio_tracks=audio_tracks,
+        clip_count=clip_count,
+        transitions=transitions,
+    )
+
+
+def _summarize_recent_edits(db: DBSession, timeline_id: UUID) -> list[str] | None:
+    """Summarize recent timeline checkpoints for context."""
+    try:
+        checkpoints, _ = list_checkpoints(db, timeline_id, limit=5)
+    except Exception:
+        return None
+
+    summaries: list[str] = []
+    for checkpoint in checkpoints:
+        description = checkpoint.description or ""
+        created_by = checkpoint.created_by
+        if description and created_by:
+            summaries.append(f"v{checkpoint.version} by {created_by}: {description}")
+        elif description:
+            summaries.append(f"v{checkpoint.version}: {description}")
+        else:
+            summaries.append(f"v{checkpoint.version} by {created_by}")
+
+    return summaries
+
+
+def _build_media_part(media_content: dict[str, Any]) -> dict[str, Any] | None:
+    """Build a multimodal content part for OpenRouter."""
+    mime_type = media_content.get("mime_type")
+    data = media_content.get("data")
+    if not mime_type or not data:
+        return None
+
+    if mime_type.startswith("video/"):
+        return {
+            "type": "video_url",
+            "video_url": {
+                "url": f"data:{mime_type};base64,{data}",
+            },
+        }
+
+    if mime_type.startswith("audio/"):
+        format_suffix = mime_type.split("/", maxsplit=1)[1]
+        format_map = {
+            "mpeg": "mp3",
+            "x-wav": "wav",
+        }
+        return {
+            "type": "input_audio",
+            "input_audio": {
+                "data": data,
+                "format": format_map.get(format_suffix, format_suffix),
+            },
+        }
+
+    if mime_type.startswith("image/"):
+        return {
+            "type": "image_url",
+            "image_url": {
+                "url": f"data:{mime_type};base64,{data}",
+            },
+        }
+
+    return None
 
 
 def _extract_plan(content: str, trace: list[dict]) -> EditPlan | None:
@@ -441,14 +563,18 @@ def _extract_plan(content: str, trace: list[dict]) -> EditPlan | None:
     if not sub_agent_calls and not content:
         return None
 
+    estimated_changes = 0
+    for entry in trace:
+        if not entry.get("tool", "").startswith("dispatch_"):
+            continue
+        patch = entry.get("result", {}).get("patch")
+        if isinstance(patch, dict):
+            estimated_changes += len(patch.get("operations", []))
+
     return EditPlan(
         summary=content[:500] if content else "Edit operations processed",
         sub_agent_calls=sub_agent_calls,
-        estimated_changes=sum(
-            len(entry.get("result", {}).get("patch", {}).get("operations", []))
-            for entry in trace
-            if entry.get("tool", "").startswith("dispatch_")
-        ),
+        estimated_changes=estimated_changes,
         requires_assets=any(
             entry.get("tool") == "search_assets"
             for entry in trace
