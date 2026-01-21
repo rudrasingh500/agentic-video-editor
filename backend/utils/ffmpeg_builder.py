@@ -330,9 +330,10 @@ class TimelineToFFmpeg:
                 is_freeze = True
                 effects_data.append({"type": "freeze"})
             else:
+                effect_type = effect.metadata.get("type") if effect.metadata else None
                 effects_data.append(
                     {
-                        "type": "generic",
+                        "type": effect_type or effect.effect_name,
                         "name": effect.effect_name,
                         "metadata": effect.metadata,
                     }
@@ -379,13 +380,13 @@ class TimelineToFFmpeg:
     def _process_video_segment(
         self, segment: TrackSegment, track_idx: int, seg_idx: int
     ) -> str | None:
-        label = f"v{track_idx}_{seg_idx}"
+        base_label = f"v{track_idx}_{seg_idx}"
 
         if segment.is_gap:
-            return self._generate_gap_video(segment, label)
+            return self._generate_gap_video(segment, base_label)
 
         if segment.is_generator:
-            return self._generate_generator_video(segment, label)
+            return self._generate_generator_video(segment, base_label)
 
         if segment.input_index is None:
             return None
@@ -413,9 +414,9 @@ class TimelineToFFmpeg:
             )
 
         filter_chain = ",".join(filters)
-        self._video_filters.append(f"[{input_label}]{filter_chain}[{label}]")
+        self._video_filters.append(f"[{input_label}]{filter_chain}[{base_label}]")
 
-        return label
+        return self._apply_video_effects(base_label, segment)
 
     def _process_audio_segment(
         self, segment: TrackSegment, track_idx: int, seg_idx: int
@@ -448,7 +449,7 @@ class TimelineToFFmpeg:
         filter_chain = ",".join(filters)
         self._audio_filters.append(f"[{input_label}]{filter_chain}[{label}]")
 
-        return label
+        return self._apply_audio_effects(label, segment)
 
     def _build_atempo_chain(self, tempo: float) -> list[str]:
         filters: list[str] = []
@@ -494,7 +495,38 @@ class TimelineToFFmpeg:
         height = self.preset.video.height or 1080
         framerate = self.preset.video.framerate or 24
 
-        if kind == "SolidColor":
+        if kind.lower() == "caption":
+            text = self._escape_drawtext(str(params.get("text", "")))
+            font = params.get("font")
+            size = params.get("size", 48)
+            color = params.get("color", "white")
+            bg_color = params.get("bg_color")
+            x = params.get("x", "(w-text_w)/2")
+            y = params.get("y", "h-120")
+
+            drawtext_parts = [
+                f"text='{text}'",
+                f"fontsize={size}",
+                f"fontcolor={color}",
+                f"x={x}",
+                f"y={y}",
+            ]
+            if font:
+                if str(font).lower().endswith((".ttf", ".otf")):
+                    drawtext_parts.append(f"fontfile={font}")
+                else:
+                    drawtext_parts.append(f"font={font}")
+            if bg_color:
+                drawtext_parts.append("box=1")
+                drawtext_parts.append(f"boxcolor={bg_color}")
+                drawtext_parts.append("boxborderw=8")
+
+            drawtext = "drawtext=" + ":".join(drawtext_parts)
+            self._video_filters.append(
+                f"color=c=black@0.0:s={width}x{height}:d={segment.duration}:r={framerate},"
+                f"format=rgba,{drawtext}[{label}]"
+            )
+        elif kind == "SolidColor":
             color = params.get("color", "black")
             self._video_filters.append(
                 f"color=c={color}:s={width}x{height}:d={segment.duration}:r={framerate}[{label}]"
@@ -509,6 +541,307 @@ class TimelineToFFmpeg:
             )
 
         return label
+
+    def _apply_video_effects(self, input_label: str, segment: TrackSegment) -> str:
+        current = input_label
+        effects = segment.effects or []
+        if not effects:
+            return current
+
+        for effect in effects:
+            effect_type = str(effect.get("type", "")).lower()
+            metadata = effect.get("metadata") or {}
+            if effect_type in {"speed", "freeze", ""}:
+                continue
+            if effect_type == "lut":
+                current = self._apply_lut(current, metadata)
+                continue
+            if effect_type in {"grade", "color"}:
+                current = self._apply_color_grade(current, metadata)
+                continue
+            if effect_type == "curves":
+                current = self._apply_curves(current, metadata)
+                continue
+            if effect_type in {"white_balance", "wb"}:
+                current = self._apply_white_balance(current, metadata)
+                continue
+            if effect_type == "blur":
+                radius = metadata.get("radius", 8)
+                current = self._apply_simple_video_filter(
+                    current, f"boxblur=lr={radius}:cr={radius}"
+                )
+                continue
+            if effect_type == "vignette":
+                strength = metadata.get("strength", 0.5)
+                current = self._apply_simple_video_filter(
+                    current, f"vignette=angle={strength}"
+                )
+                continue
+            if effect_type == "grain":
+                amount = metadata.get("amount", 0.2)
+                current = self._apply_simple_video_filter(
+                    current, f"noise=alls={amount}:allf=t+u"
+                )
+                continue
+            if effect_type == "stabilize":
+                strength = float(metadata.get("strength", 0.5))
+                radius = max(2, int(20 * strength))
+                current = self._apply_simple_video_filter(
+                    current, f"deshake=rx={radius}:ry={radius}:edge=mirror"
+                )
+                continue
+            if effect_type == "reframe":
+                current = self._apply_reframe(current, metadata)
+                continue
+            if effect_type == "position":
+                current = self._apply_position(current, metadata)
+                continue
+            if effect_type == "mask":
+                current = self._apply_mask(current, metadata)
+                continue
+            if effect_type == "mask_blur":
+                current = self._apply_mask_blur(current, metadata)
+                continue
+            if effect_type == "zoom":
+                current = self._apply_zoom(current, metadata, segment)
+                continue
+
+        return current
+
+    def _apply_audio_effects(self, input_label: str, segment: TrackSegment) -> str:
+        current = input_label
+        effects = segment.effects or []
+        if not effects:
+            return current
+
+        for effect in effects:
+            effect_type = str(effect.get("type", "")).lower()
+            metadata = effect.get("metadata") or {}
+            if effect_type == "ducking":
+                current = self._apply_ducking(current, metadata)
+                continue
+            if effect_type == "loudness":
+                current = self._apply_loudness(current, metadata)
+                continue
+            if effect_type == "volume":
+                current = self._apply_volume(current, metadata)
+                continue
+            if effect_type == "fade":
+                current = self._apply_audio_fade(current, metadata)
+                continue
+
+        return current
+
+    def _apply_simple_video_filter(self, input_label: str, expr: str) -> str:
+        output_label = f"vfx_{self._filter_counter}"
+        self._filter_counter += 1
+        self._video_filters.append(f"[{input_label}]{expr}[{output_label}]")
+        return output_label
+
+    def _apply_simple_audio_filter(self, input_label: str, expr: str) -> str:
+        output_label = f"afx_{self._filter_counter}"
+        self._filter_counter += 1
+        self._audio_filters.append(f"[{input_label}]{expr}[{output_label}]")
+        return output_label
+
+    def _apply_lut(self, input_label: str, metadata: dict[str, Any]) -> str:
+        path = metadata.get("path")
+        if not path:
+            return input_label
+        intensity = float(metadata.get("intensity", 1.0))
+        if intensity >= 0.999:
+            return self._apply_simple_video_filter(
+                input_label, f"lut3d=file={path}"
+            )
+
+        base_label = f"vlut_base_{self._filter_counter}"
+        lut_label = f"vlut_src_{self._filter_counter}"
+        lut_out = f"vlut_out_{self._filter_counter}"
+        output_label = f"vlut_mix_{self._filter_counter}"
+        self._filter_counter += 1
+
+        self._video_filters.append(
+            f"[{input_label}]split=2[{base_label}][{lut_label}]"
+        )
+        self._video_filters.append(f"[{lut_label}]lut3d=file={path}[{lut_out}]")
+        self._video_filters.append(
+            f"[{base_label}][{lut_out}]blend=all_mode=normal:all_opacity={intensity}"
+            f"[{output_label}]"
+        )
+        return output_label
+
+    def _apply_color_grade(self, input_label: str, metadata: dict[str, Any]) -> str:
+        parts: list[str] = []
+        if metadata.get("brightness") is not None:
+            parts.append(f"brightness={metadata['brightness']}")
+        if metadata.get("contrast") is not None:
+            parts.append(f"contrast={metadata['contrast']}")
+        if metadata.get("saturation") is not None:
+            parts.append(f"saturation={metadata['saturation']}")
+        if metadata.get("gamma") is not None:
+            parts.append(f"gamma={metadata['gamma']}")
+        if not parts:
+            return input_label
+        return self._apply_simple_video_filter(input_label, "eq=" + ":".join(parts))
+
+    def _apply_curves(self, input_label: str, metadata: dict[str, Any]) -> str:
+        preset = metadata.get("preset")
+        points = metadata.get("points")
+        if preset:
+            expr = f"curves=preset={preset}"
+        elif points:
+            expr = f"curves={points}"
+        else:
+            return input_label
+        return self._apply_simple_video_filter(input_label, expr)
+
+    def _apply_white_balance(self, input_label: str, metadata: dict[str, Any]) -> str:
+        red = metadata.get("red", 0)
+        green = metadata.get("green", 0)
+        blue = metadata.get("blue", 0)
+        expr = f"colorbalance=rs={red}:gs={green}:bs={blue}"
+        return self._apply_simple_video_filter(input_label, expr)
+
+    def _apply_reframe(self, input_label: str, metadata: dict[str, Any]) -> str:
+        width = metadata.get("width")
+        height = metadata.get("height")
+        if width is None or height is None:
+            return input_label
+        x = metadata.get("x", 0)
+        y = metadata.get("y", 0)
+        canvas_w = self.preset.video.width or 1920
+        canvas_h = self.preset.video.height or 1080
+        expr = f"crop={width}:{height}:{x}:{y},scale={canvas_w}:{canvas_h}"
+        return self._apply_simple_video_filter(input_label, expr)
+
+    def _apply_position(self, input_label: str, metadata: dict[str, Any]) -> str:
+        canvas_w = self.preset.video.width or 1920
+        canvas_h = self.preset.video.height or 1080
+        width = metadata.get("width", canvas_w)
+        height = metadata.get("height", canvas_h)
+        x = metadata.get("x", 0)
+        y = metadata.get("y", 0)
+        expr = (
+            f"scale={width}:{height},format=rgba,"
+            f"pad={canvas_w}:{canvas_h}:{x}:{y}:color=0x00000000"
+        )
+        return self._apply_simple_video_filter(input_label, expr)
+
+    def _apply_mask(self, input_label: str, metadata: dict[str, Any]) -> str:
+        canvas_w = self.preset.video.width or 1920
+        canvas_h = self.preset.video.height or 1080
+        width = metadata.get("width")
+        height = metadata.get("height")
+        if width is None or height is None:
+            return input_label
+        x = metadata.get("x", 0)
+        y = metadata.get("y", 0)
+        expr = (
+            f"crop={width}:{height}:{x}:{y},format=rgba,"
+            f"pad={canvas_w}:{canvas_h}:{x}:{y}:color=0x00000000"
+        )
+        return self._apply_simple_video_filter(input_label, expr)
+
+    def _apply_mask_blur(self, input_label: str, metadata: dict[str, Any]) -> str:
+        width = metadata.get("width")
+        height = metadata.get("height")
+        if width is None or height is None:
+            return input_label
+        x = metadata.get("x", 0)
+        y = metadata.get("y", 0)
+        radius = metadata.get("radius", 8)
+
+        base_label = f"vblur_base_{self._filter_counter}"
+        blur_label = f"vblur_src_{self._filter_counter}"
+        crop_label = f"vblur_crop_{self._filter_counter}"
+        out_label = f"vblur_out_{self._filter_counter}"
+        self._filter_counter += 1
+
+        self._video_filters.append(
+            f"[{input_label}]split=2[{base_label}][{blur_label}]"
+        )
+        self._video_filters.append(
+            f"[{blur_label}]crop={width}:{height}:{x}:{y},boxblur=lr={radius}:cr={radius}"
+            f"[{crop_label}]"
+        )
+        self._video_filters.append(
+            f"[{base_label}][{crop_label}]overlay={x}:{y}[{out_label}]"
+        )
+        return out_label
+
+    def _apply_zoom(
+        self, input_label: str, metadata: dict[str, Any], segment: TrackSegment
+    ) -> str:
+        start_zoom = float(metadata.get("start_zoom", 1.0))
+        end_zoom = float(metadata.get("end_zoom", 1.0))
+        center_x = float(metadata.get("center_x", 0.5))
+        center_y = float(metadata.get("center_y", 0.5))
+
+        canvas_w = self.preset.video.width or 1920
+        canvas_h = self.preset.video.height or 1080
+        framerate = self.preset.video.framerate or self.timeline.metadata.get(
+            "default_rate", 24.0
+        )
+        frames = max(1, int(segment.duration * framerate))
+
+        zoom_expr = (
+            f"if(eq(on,0),{start_zoom},"
+            f"{start_zoom}+({end_zoom}-{start_zoom})*on/({frames}-1))"
+        )
+        x_expr = f"(iw - iw/zoom)*{center_x}"
+        y_expr = f"(ih - ih/zoom)*{center_y}"
+        expr = (
+            f"zoompan=z='{zoom_expr}':x='{x_expr}':y='{y_expr}':"
+            f"d={frames}:s={canvas_w}x{canvas_h}:fps={framerate}"
+        )
+        return self._apply_simple_video_filter(input_label, expr)
+
+    def _apply_ducking(self, input_label: str, metadata: dict[str, Any]) -> str:
+        segments = metadata.get("segments", [])
+        target_db = metadata.get("target_db", -16)
+        if not segments:
+            gain = 10 ** (target_db / 20)
+            return self._apply_simple_audio_filter(input_label, f"volume={gain}")
+
+        expr = "1"
+        for segment in segments[::-1]:
+            start = segment.get("start_ms", 0) / 1000.0
+            end = segment.get("end_ms", 0) / 1000.0
+            gain_db = segment.get("gain_db", target_db)
+            gain = 10 ** (gain_db / 20)
+            expr = f"if(between(t,{start},{end}),{gain},{expr})"
+        return self._apply_simple_audio_filter(input_label, f"volume={expr}")
+
+    def _apply_loudness(self, input_label: str, metadata: dict[str, Any]) -> str:
+        target = metadata.get("target_lufs", -16)
+        lra = metadata.get("lra", 11)
+        true_peak = metadata.get("true_peak", -1.5)
+        expr = f"loudnorm=I={target}:LRA={lra}:TP={true_peak}"
+        return self._apply_simple_audio_filter(input_label, expr)
+
+    def _apply_volume(self, input_label: str, metadata: dict[str, Any]) -> str:
+        if "gain" in metadata:
+            gain = metadata["gain"]
+        else:
+            gain_db = metadata.get("gain_db", 0)
+            gain = 10 ** (gain_db / 20)
+        return self._apply_simple_audio_filter(input_label, f"volume={gain}")
+
+    def _apply_audio_fade(self, input_label: str, metadata: dict[str, Any]) -> str:
+        fade_type = metadata.get("fade_type", "in")
+        start_ms = metadata.get("start_ms", 0)
+        duration_ms = metadata.get("duration_ms", 500)
+        start = start_ms / 1000.0
+        duration = duration_ms / 1000.0
+        expr = f"afade=t={fade_type}:st={start}:d={duration}"
+        return self._apply_simple_audio_filter(input_label, expr)
+
+    def _escape_drawtext(self, value: str) -> str:
+        return (
+            value.replace("\\", "\\\\")
+            .replace(":", "\\:")
+            .replace("'", "\\'")
+        )
 
     def _apply_video_transitions(
         self, segments: list[str], transitions: list[TransitionInfo]

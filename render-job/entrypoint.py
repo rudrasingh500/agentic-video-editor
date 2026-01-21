@@ -89,6 +89,8 @@ def report_status(
     status: str,
     progress: int = 0,
     error_message: str | None = None,
+    output_url: str | None = None,
+    output_size_bytes: int | None = None,
 ):
     if not callback_url:
         logger.info(f"Status: {status}, Progress: {progress}%")
@@ -102,6 +104,8 @@ def report_status(
             "status": status,
             "progress": progress,
             "error_message": error_message,
+            "output_url": output_url,
+            "output_size_bytes": output_size_bytes,
         }
         response = requests.post(callback_url, json=payload, timeout=10)
         response.raise_for_status()
@@ -131,11 +135,18 @@ def main():
                 logger.info(message)
 
         report_status(callback_url, job_id, "processing", 10)
-        output_path = renderer.render(progress_callback=progress_callback)
+        output_info = renderer.render(progress_callback=progress_callback)
 
-        logger.info(f"Render complete: {output_path}")
+        logger.info(f"Render complete: {output_info.get('output_path')}")
 
-        report_status(callback_url, job_id, "completed", 100)
+        report_status(
+            callback_url,
+            job_id,
+            "completed",
+            100,
+            output_url=output_info.get("output_url"),
+            output_size_bytes=output_info.get("output_size_bytes"),
+        )
 
         logger.info("Job completed successfully")
         sys.exit(0)

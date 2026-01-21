@@ -20,6 +20,7 @@ from models.timeline_models import (
     RationalTime,
     TimeRange,
     ExternalReference,
+    GeneratorReference,
     Marker,
     MarkerColor,
     EffectType,
@@ -212,7 +213,7 @@ def add_clip(
     name: str | None = None,
     actor: str = "system",
     expected_version: int = 0,
-) -> TimelineCheckpointModel:
+    ) -> TimelineCheckpointModel:
     current = get_timeline_snapshot(db, timeline_id)
     timeline = deepcopy(current.timeline)
     track = _get_track(timeline, track_index)
@@ -249,6 +250,66 @@ def add_clip(
             "track_index": track_index,
             "insert_index": insert_pos,
             "asset_id": str(asset_id),
+            "source_range": source_range.model_dump(),
+            "name": name,
+        },
+    )
+
+
+def add_generator_clip(
+    db: DBSession,
+    timeline_id: UUID,
+    track_index: int,
+    generator_kind: str,
+    parameters: dict[str, Any],
+    source_range: TimeRange,
+    insert_index: int | None = None,
+    name: str | None = None,
+    actor: str = "system",
+    expected_version: int = 0,
+) -> TimelineCheckpointModel:
+    current = get_timeline_snapshot(db, timeline_id)
+    timeline = deepcopy(current.timeline)
+    track = _get_track(timeline, track_index)
+
+    if name is None:
+        name = f"{generator_kind}-Clip"
+
+    clip = Clip(
+        name=name,
+        source_range=source_range,
+        media_reference=GeneratorReference(
+            generator_kind=generator_kind,
+            parameters=parameters,
+        ),
+    )
+
+    if insert_index is None or insert_index >= len(track.children):
+        track.children.append(clip)
+        insert_pos = len(track.children) - 1
+    else:
+        insert_index = max(0, insert_index)
+        track.children.insert(insert_index, clip)
+        insert_pos = insert_index
+
+    duration_sec = source_range.duration.to_seconds()
+
+    return create_checkpoint(
+        db=db,
+        timeline_id=timeline_id,
+        snapshot=timeline,
+        description=(
+            f"Added generator '{generator_kind}' clip '{name}' "
+            f"({duration_sec:.2f}s) to track '{track.name}'"
+        ),
+        created_by=actor,
+        expected_version=expected_version,
+        operation_type="add_generator_clip",
+        operation_data={
+            "track_index": track_index,
+            "insert_index": insert_pos,
+            "generator_kind": generator_kind,
+            "parameters": parameters,
             "source_range": source_range.model_dump(),
             "name": name,
         },
@@ -326,6 +387,65 @@ def trim_clip(
             "clip_index": clip_index,
             "old_source_range": {"duration_sec": old_duration},
             "new_source_range": new_source_range.model_dump(),
+        },
+    )
+
+
+def split_clip(
+    db: DBSession,
+    timeline_id: UUID,
+    track_index: int,
+    clip_index: int,
+    split_offset: RationalTime,
+    actor: str = "system",
+    expected_version: int = 0,
+) -> TimelineCheckpointModel:
+    current = get_timeline_snapshot(db, timeline_id)
+    timeline = deepcopy(current.timeline)
+    track = _get_track(timeline, track_index)
+    item = _get_item_from_track(track, clip_index)
+
+    if not isinstance(item, Clip):
+        raise InvalidOperationError(f"Item at index {clip_index} is not a Clip")
+
+    if split_offset <= RationalTime(value=0, rate=split_offset.rate):
+        raise InvalidOperationError("split_offset must be greater than zero")
+
+    if split_offset >= item.source_range.duration:
+        raise InvalidOperationError("split_offset exceeds clip duration")
+
+    original_range = item.source_range
+    first_range = TimeRange(
+        start_time=original_range.start_time,
+        duration=split_offset,
+    )
+    second_range = TimeRange(
+        start_time=original_range.start_time + split_offset,
+        duration=original_range.duration - split_offset,
+    )
+
+    first_clip = item.model_copy(deep=True)
+    second_clip = item.model_copy(deep=True)
+    first_clip.source_range = first_range
+    second_clip.source_range = second_range
+
+    track.children[clip_index] = first_clip
+    track.children.insert(clip_index + 1, second_clip)
+
+    return create_checkpoint(
+        db=db,
+        timeline_id=timeline_id,
+        snapshot=timeline,
+        description=(
+            f"Split clip '{item.name}' at {split_offset.to_seconds():.2f}s"
+        ),
+        created_by=actor,
+        expected_version=expected_version,
+        operation_type="split_clip",
+        operation_data={
+            "track_index": track_index,
+            "clip_index": clip_index,
+            "split_offset": split_offset.model_dump(),
         },
     )
 

@@ -254,3 +254,5 @@ class RenderProgress(BaseModel):
     total_frames: int | None = None
     message: str | None = None
     error_message: str | None = None
+    output_url: str | None = None
+    output_size_bytes: int | None = None

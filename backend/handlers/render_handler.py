@@ -191,6 +191,8 @@ async def render_webhook(
         progress=progress.progress,
         current_frame=progress.current_frame,
         error_message=progress.error_message,
+        output_url=progress.output_url,
+        output_size_bytes=progress.output_size_bytes,
     )
 
     return {"ok": True, "status": job.status if job else "unknown"}

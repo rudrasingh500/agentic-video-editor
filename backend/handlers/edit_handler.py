@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from database.base import get_db
 from database.models import Project, Timeline
-from agent.edit_orchestrator import (
+from agent.edit_agent import (
     EditRequest,
     EditSessionStatus,
     PendingPatch,
@@ -73,7 +73,7 @@ async def send_edit_request(
     db: Session = Depends(get_db),
     user_id: str = Depends(_get_user_id),
 ) -> EditResponse:
-    """Send an edit request to the orchestrator.
+    """Send an edit request to the edit agent.
 
     This processes the user's natural language request and returns
     proposed edit patches for review.
@@ -85,12 +85,17 @@ async def send_edit_request(
         session_id=body.session_id,
     )
 
-    result = orchestrate_edit(
-        project_id=project_id,
-        user_id=user_id,
-        request=request,
-        db=db,
-    )
+    try:
+        result = orchestrate_edit(
+            project_id=project_id,
+            user_id=user_id,
+            request=request,
+            db=db,
+        )
+    except SessionNotFoundError:
+        raise HTTPException(status_code=404, detail="Session not found")
+    except SessionClosedError:
+        raise HTTPException(status_code=400, detail="Session is closed")
 
     # Convert pending patches to summaries
     patch_summaries = [
@@ -255,7 +260,7 @@ async def apply_session_patches(
     # Apply each patch's operations to the timeline
     total_operations = 0
     errors: list[str] = []
-    current_version = timeline.current_version
+    current_version = int(str(getattr(timeline, "current_version", 0)))
     applied_patch_ids: list[str] = []
 
     for pending_patch in patches_to_apply:
@@ -274,7 +279,7 @@ async def apply_session_patches(
             timeline_id=UUID(session.timeline_id),
             patch=pending_patch.patch,
             actor=f"agent:{pending_patch.agent_type.value}",
-            starting_version=current_version,
+            starting_version=int(current_version),
             stop_on_error=True,
         )
 
@@ -306,7 +311,9 @@ async def apply_session_patches(
 
     return ApplyPatchesResponse(
         ok=len(errors) == 0,
-        new_version=timeline.current_version if applied_patch_ids else None,
+        new_version=(
+            int(str(getattr(timeline, "current_version", 0))) if applied_patch_ids else None
+        ),
         operations_applied=total_operations,
         errors=errors if errors else [],
     )

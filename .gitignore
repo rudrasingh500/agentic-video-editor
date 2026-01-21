@@ -20,3 +20,5 @@ htmlcov/
 *.swp
 *.swo
 .DS_Store
+backend/test_assets/
+backend/test_outputs/

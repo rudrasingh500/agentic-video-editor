@@ -71,7 +71,7 @@ class AssetReindexResponse(BaseModel):
     asset: AssetResponse
 
 
-# Edit Orchestrator API Models
+# Edit Agent API Models
 
 
 class EditRequestBody(BaseModel):
@@ -92,7 +92,7 @@ class EditPatchSummary(BaseModel):
 
 
 class EditResponse(BaseModel):
-    """Response from the edit orchestrator."""
+    """Response from the edit agent."""
 
     ok: bool
     session_id: str

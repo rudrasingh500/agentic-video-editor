@@ -1,8 +1,12 @@
+from __future__ import annotations
+
 import io
 import json
 import os
-import dotenv
+from datetime import timedelta
+from typing import Optional
 
+import dotenv
 from google.cloud import storage
 from google.cloud.exceptions import Conflict, NotFound
 from google.oauth2 import service_account
@@ -12,8 +16,10 @@ dotenv.load_dotenv()
 
 
 def _get_storage_client() -> storage.Client:
-    credentials = os.getenv("GCP_CREDENTIALS")
-    credentials_info = json.loads(credentials)
+    credentials_raw: str = os.getenv("GCP_CREDENTIALS", "")
+    if not credentials_raw:
+        return storage.Client()
+    credentials_info = json.loads(credentials_raw)
     credentials = service_account.Credentials.from_service_account_info(
         credentials_info
     )
@@ -59,7 +65,7 @@ def upload_file(bucket_name: str, contents: bytes, destination_blob_name: str) -
         return {}
 
 
-def download_file(bucket_name: str, blob_name: str) -> str:
+def download_file(bucket_name: str, blob_name: str) -> Optional[bytes]:
     try:
         bucket = _get_bucket(bucket_name)
         blob = bucket.blob(blob_name)
@@ -81,3 +87,26 @@ def delete_file(bucket_name: str, blob_name: str) -> bool:
     except Exception as e:
         print(f"Error deleting file: {e}")
         return False
+
+
+def parse_gcs_url(url: str) -> tuple[str, str] | None:
+    if not url:
+        return None
+    if url.startswith("gs://"):
+        parts = url[5:].split("/", 1)
+        if len(parts) != 2:
+            return None
+        return parts[0], parts[1]
+    return None
+
+
+def generate_signed_url(
+    bucket_name: str,
+    blob_name: str,
+    expiration: timedelta | None = None,
+) -> str:
+    if expiration is None:
+        expiration = timedelta(hours=1)
+    bucket = _get_bucket(bucket_name)
+    blob = bucket.blob(blob_name)
+    return blob.generate_signed_url(expiration=expiration, method="GET", version="v4")
