@@ -1,3 +1,5 @@
+import os
+from datetime import timedelta
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
@@ -8,6 +10,7 @@ from database.models import Project
 from dependencies.project import require_project
 from models.api_models import (
     AssetDeleteResponse,
+    AssetDownloadResponse,
     AssetListResponse,
     AssetReindexResponse,
     AssetResponse,
@@ -20,8 +23,12 @@ from operators.asset_operator import (
     reindex_asset,
     upload_asset,
 )
+from utils.gcs_utils import generate_signed_url
 
 router = APIRouter(prefix="/projects/{project_id}/assets", tags=["assets"])
+
+ASSET_BUCKET = os.getenv("GCS_BUCKET", "video-editor")
+SIGNED_URL_TTL_SECONDS = 3600
 
 
 def _asset_to_response(asset) -> AssetResponse:
@@ -80,6 +87,29 @@ async def asset_get(
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
     return _asset_to_response(asset)
+
+
+@router.get("/{asset_id}/download", response_model=AssetDownloadResponse)
+async def asset_download(
+    asset_id: UUID,
+    project: Project = Depends(require_project),
+    db: Session = Depends(get_db),
+):
+    asset = get_asset(db, project.project_id, asset_id)
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+
+    url = generate_signed_url(
+        bucket_name=ASSET_BUCKET,
+        blob_name=asset.asset_url,
+        expiration=timedelta(seconds=SIGNED_URL_TTL_SECONDS),
+    )
+
+    return AssetDownloadResponse(
+        ok=True,
+        url=url,
+        expires_in=SIGNED_URL_TTL_SECONDS,
+    )
 
 
 @router.delete("/{asset_id}", response_model=AssetDeleteResponse)

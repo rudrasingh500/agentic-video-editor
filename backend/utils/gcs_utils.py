@@ -104,9 +104,33 @@ def generate_signed_url(
     bucket_name: str,
     blob_name: str,
     expiration: timedelta | None = None,
+    method: str = "GET",
+    content_type: str | None = None,
 ) -> str:
     if expiration is None:
         expiration = timedelta(hours=1)
     bucket = _get_bucket(bucket_name)
     blob = bucket.blob(blob_name)
-    return blob.generate_signed_url(expiration=expiration, method="GET", version="v4")
+    kwargs = {
+        "expiration": expiration,
+        "method": method,
+        "version": "v4",
+    }
+    if content_type:
+        kwargs["content_type"] = content_type
+    return blob.generate_signed_url(**kwargs)
+
+
+def generate_signed_upload_url(
+    bucket_name: str,
+    blob_name: str,
+    expiration: timedelta | None = None,
+    content_type: str = "application/octet-stream",
+) -> str:
+    return generate_signed_url(
+        bucket_name=bucket_name,
+        blob_name=blob_name,
+        expiration=expiration,
+        method="PUT",
+        content_type=content_type,
+    )

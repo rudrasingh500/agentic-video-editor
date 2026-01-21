@@ -115,7 +115,7 @@ def create_render_job(
 
     execution_mode = request.execution_mode
     if execution_mode is None:
-        env_mode = os.getenv("RENDER_EXECUTION_MODE", RenderExecutionMode.CLOUD.value)
+        env_mode = os.getenv("RENDER_EXECUTION_MODE", RenderExecutionMode.LOCAL.value)
         execution_mode = (
             RenderExecutionMode.LOCAL
             if env_mode.lower() == RenderExecutionMode.LOCAL.value
@@ -182,8 +182,9 @@ def dispatch_render_job(
     preset = RenderPreset.model_validate(job.preset)
     output_path = f"{job.project_id}/renders/{job.output_filename}"
 
+    job_metadata = job.job_metadata or {}
     execution_mode = str(
-        job.job_metadata.get("execution_mode", RenderExecutionMode.CLOUD.value)
+        job_metadata.get("execution_mode", RenderExecutionMode.LOCAL.value)
     )
 
     manifest = RenderManifest(
@@ -206,6 +207,16 @@ def dispatch_render_job(
     manifest_path = f"{job.project_id}/manifests/{job.job_id}.json"
     manifest_json = manifest.model_dump_json()
 
+    job_metadata.update(
+        {
+            "manifest_path": manifest_path,
+            "output_path": output_path,
+            "output_bucket": GCS_RENDER_BUCKET,
+            "execution_mode": execution_mode,
+        }
+    )
+    job.job_metadata = job_metadata
+
     try:
         upload_file(
             bucket_name=GCS_BUCKET,
@@ -221,6 +232,15 @@ def dispatch_render_job(
 
     manifest_ref = f"gs://{GCS_BUCKET}/{manifest_path}"
 
+    if execution_mode.lower() == RenderExecutionMode.LOCAL.value:
+        job.status = RenderJobStatus.QUEUED.value
+        job.cloud_run_job_name = None
+        job.cloud_run_execution_id = None
+        db.commit()
+        db.refresh(job)
+        logger.info(f"Render job {job_id} queued for local execution")
+        return job
+
     client = get_cloud_run_client()
 
     execution_request = JobExecutionRequest(
@@ -232,7 +252,6 @@ def dispatch_render_job(
     )
 
     execution = client.execute_render_job(execution_request)
-
 
     if execution:
         job.status = RenderJobStatus.QUEUED.value
@@ -468,6 +487,14 @@ def _estimate_timeout(timeline: Timeline, preset: RenderPreset) -> int:
 
 
 def render_job_to_response(job: RenderJobModel) -> RenderJobResponse:
+    metadata = job.job_metadata or {}
+    execution_mode = metadata.get("execution_mode")
+    render_execution_mode = None
+    if execution_mode:
+        try:
+            render_execution_mode = RenderExecutionMode(str(execution_mode))
+        except ValueError:
+            render_execution_mode = None
     return RenderJobResponse(
         job_id=job.job_id,
         project_id=job.project_id,
@@ -483,5 +510,8 @@ def render_job_to_response(job: RenderJobModel) -> RenderJobResponse:
         started_at=job.started_at,
         completed_at=job.completed_at,
         cloud_run_execution_id=job.cloud_run_execution_id,
-        metadata=job.job_metadata or {},
+        execution_mode=render_execution_mode,
+        manifest_path=metadata.get("manifest_path"),
+        output_path=metadata.get("output_path"),
+        metadata=metadata,
     )

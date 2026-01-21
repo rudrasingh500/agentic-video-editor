@@ -62,6 +62,12 @@ class AssetUploadResponse(BaseModel):
     asset: AssetResponse
 
 
+class AssetDownloadResponse(BaseModel):
+    ok: bool
+    url: str
+    expires_in: int | None = None
+
+
 class AssetDeleteResponse(BaseModel):
     ok: bool
 
@@ -69,6 +75,31 @@ class AssetDeleteResponse(BaseModel):
 class AssetReindexResponse(BaseModel):
     ok: bool
     asset: AssetResponse
+
+
+class OutputUploadUrlRequest(BaseModel):
+    filename: str
+    content_type: str | None = None
+
+
+class OutputUploadUrlResponse(BaseModel):
+    ok: bool
+    upload_url: str
+    gcs_path: str
+    expires_in: int | None = None
+
+
+class OutputShareRequest(BaseModel):
+    gcs_path: str
+    changes: dict[str, Any] | None = None
+
+
+class OutputShareResponse(BaseModel):
+    ok: bool
+    video_id: str
+    video_url: str
+    version: int
+    created_at: datetime
 
 
 # Edit Agent API Models

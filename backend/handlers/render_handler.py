@@ -1,3 +1,5 @@
+import os
+from datetime import timedelta
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -14,10 +16,13 @@ from models.render_models import (
     RenderJobListResponse,
     RenderJobStatus,
     RenderJobStatusResponse,
+    RenderManifestResponse,
     RenderPreset,
     RenderPresetsResponse,
     RenderProgress,
     RenderRequest,
+    RenderUploadUrlRequest,
+    RenderUploadUrlResponse,
 )
 from operators.render_operator import (
     MissingAssetsError,
@@ -34,9 +39,14 @@ from operators.render_operator import (
     render_job_to_response,
     update_job_status,
 )
+from utils.gcs_utils import generate_signed_upload_url, generate_signed_url
 
 
 router = APIRouter(prefix="/projects/{project_id}", tags=["render"])
+
+GCS_BUCKET = os.getenv("GCS_BUCKET", "video-editor")
+GCS_RENDER_BUCKET = os.getenv("GCS_RENDER_BUCKET", "video-editor-renders")
+SIGNED_URL_TTL_SECONDS = 3600
 
 
 @router.post("/render", response_model=RenderJobCreateResponse)
@@ -116,6 +126,74 @@ async def get_render_status(
         raise HTTPException(status_code=404, detail="Render job not found")
 
     return RenderJobStatusResponse(ok=True, job=render_job_to_response(job))
+
+
+@router.get("/renders/{job_id}/manifest", response_model=RenderManifestResponse)
+async def get_render_manifest(
+    job_id: UUID,
+    project: Project = Depends(require_project),
+    db: Session = Depends(get_db),
+):
+    job = get_render_job(db, job_id)
+    if not job or job.project_id != project.project_id:
+        raise HTTPException(status_code=404, detail="Render job not found")
+
+    metadata = job.job_metadata or {}
+    manifest_path = metadata.get("manifest_path")
+    if not manifest_path:
+        raise HTTPException(status_code=404, detail="Render manifest not available")
+
+    url = generate_signed_url(
+        bucket_name=GCS_BUCKET,
+        blob_name=manifest_path,
+        expiration=timedelta(seconds=SIGNED_URL_TTL_SECONDS),
+    )
+
+    return RenderManifestResponse(
+        ok=True,
+        manifest_url=url,
+        manifest_path=manifest_path,
+        expires_in=SIGNED_URL_TTL_SECONDS,
+    )
+
+
+@router.post("/renders/{job_id}/upload-url", response_model=RenderUploadUrlResponse)
+async def create_render_upload_url(
+    job_id: UUID,
+    request: RenderUploadUrlRequest | None = None,
+    project: Project = Depends(require_project),
+    db: Session = Depends(get_db),
+):
+    job = get_render_job(db, job_id)
+    if not job or job.project_id != project.project_id:
+        raise HTTPException(status_code=404, detail="Render job not found")
+
+    metadata = job.job_metadata or {}
+    output_path = metadata.get("output_path")
+    if not output_path:
+        output_filename = job.output_filename or f"{job.job_id}.mp4"
+        output_path = f"{job.project_id}/renders/{output_filename}"
+
+    content_type = None
+    if request:
+        content_type = request.content_type
+    if not content_type:
+        content_type = "video/mp4"
+
+    upload_url = generate_signed_upload_url(
+        bucket_name=GCS_RENDER_BUCKET,
+        blob_name=output_path,
+        expiration=timedelta(seconds=SIGNED_URL_TTL_SECONDS),
+        content_type=content_type,
+    )
+    gcs_path = f"gs://{GCS_RENDER_BUCKET}/{output_path}"
+
+    return RenderUploadUrlResponse(
+        ok=True,
+        upload_url=upload_url,
+        gcs_path=gcs_path,
+        expires_in=SIGNED_URL_TTL_SECONDS,
+    )
 
 
 @router.post("/renders/{job_id}/cancel", response_model=RenderJobCancelResponse)

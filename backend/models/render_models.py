@@ -194,6 +194,9 @@ class RenderJobResponse(BaseModel):
     started_at: datetime | None = None
     completed_at: datetime | None = None
     cloud_run_execution_id: str | None = None
+    execution_mode: RenderExecutionMode | None = None
+    manifest_path: str | None = None
+    output_path: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -221,6 +224,25 @@ class RenderJobCancelResponse(BaseModel):
 class RenderPresetsResponse(BaseModel):
     ok: bool = True
     presets: list[RenderPreset]
+
+
+class RenderManifestResponse(BaseModel):
+    ok: bool = True
+    manifest_url: str
+    manifest_path: str | None = None
+    expires_in: int | None = None
+
+
+class RenderUploadUrlRequest(BaseModel):
+    filename: str | None = None
+    content_type: str | None = None
+
+
+class RenderUploadUrlResponse(BaseModel):
+    ok: bool = True
+    upload_url: str
+    gcs_path: str
+    expires_in: int | None = None
 
 
 class RenderManifest(BaseModel):

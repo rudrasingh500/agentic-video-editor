@@ -1,6 +1,9 @@
-from uuid import UUID
+import os
+import secrets
 from dataclasses import dataclass
-from fastapi import Cookie, Depends, HTTPException, status
+from uuid import UUID
+
+from fastapi import Cookie, Depends, Header, HTTPException, status
 from sqlalchemy.orm import Session
 
 from database.base import get_db
@@ -14,6 +17,11 @@ class SessionData:
     scopes: list[str]
 
 
+DEV_USER_ID = UUID("00000000-0000-0000-0000-000000000001")
+DEV_SESSION_ID = UUID("00000000-0000-0000-0000-000000000002")
+DEV_SCOPES = ["dev"]
+
+
 def parse_session_cookie(cookie: str) -> tuple[UUID, str] | None:
     try:
         parts = cookie.split(".", 1)
@@ -24,10 +32,44 @@ def parse_session_cookie(cookie: str) -> tuple[UUID, str] | None:
         return None
 
 
+def _parse_bearer_token(authorization: str | None) -> str | None:
+    if not authorization:
+        return None
+    parts = authorization.split()
+    if len(parts) != 2 or parts[0].lower() != "bearer":
+        return None
+    return parts[1]
+
+
+def _resolve_dev_session(token: str | None) -> SessionData | None | bool:
+    if not token:
+        return None
+    dev_token = os.getenv("DEV_API_TOKEN")
+    if not dev_token:
+        return None
+    if not secrets.compare_digest(token, dev_token):
+        return False
+    return SessionData(
+        session_id=DEV_SESSION_ID,
+        user_id=DEV_USER_ID,
+        scopes=DEV_SCOPES,
+    )
+
+
 def get_session(
     sid: str | None = Cookie(default=None),
+    authorization: str | None = Header(default=None),
     db: Session = Depends(get_db),
 ) -> SessionData:
+    token = _parse_bearer_token(authorization)
+    dev_session = _resolve_dev_session(token)
+    if dev_session is False:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid bearer token",
+        )
+    if dev_session:
+        return dev_session
     if not sid:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -59,8 +101,15 @@ def get_session(
 
 def get_optional_session(
     sid: str | None = Cookie(default=None),
+    authorization: str | None = Header(default=None),
     db: Session = Depends(get_db),
 ) -> SessionData | None:
+    token = _parse_bearer_token(authorization)
+    dev_session = _resolve_dev_session(token)
+    if dev_session is False:
+        return None
+    if dev_session:
+        return dev_session
     if not sid:
         return None
 
