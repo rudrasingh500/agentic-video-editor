@@ -1,4 +1,5 @@
 import os
+import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -31,6 +32,7 @@ from utils.gcs_utils import generate_signed_upload_url
 
 
 router = APIRouter(prefix="/projects", tags=["projects"])
+logger = logging.getLogger(__name__)
 
 GCS_RENDER_BUCKET = os.getenv("GCS_RENDER_BUCKET", "video-editor-renders")
 SIGNED_URL_TTL_SECONDS = 3600
@@ -45,6 +47,8 @@ async def project_create(
     try:
         project = create_project(session.user_id, request.name, db)
     except Exception:
+        db.rollback()
+        logger.exception("Failed to create project for user %s", session.user_id)
         raise HTTPException(status_code=500, detail="Failed to create project")
 
     return ProjectCreateResponse(
@@ -62,6 +66,8 @@ async def project_list(
     try:
         projects = list_projects(session.user_id, db)
     except Exception:
+        db.rollback()
+        logger.exception("Failed to list projects for user %s", session.user_id)
         raise HTTPException(status_code=500, detail="Failed to list projects")
 
     return ProjectListResponse(
@@ -97,6 +103,8 @@ async def project_delete(
         db.delete(project)
         db.commit()
     except Exception:
+        db.rollback()
+        logger.exception("Failed to delete project %s", project.project_id)
         raise HTTPException(status_code=500, detail="Failed to delete project")
 
     return ProjectDeleteResponse(ok=True)
@@ -161,6 +169,7 @@ async def project_video_get(
     try:
         video_bytes = get_video_output(project.project_id, db)
     except Exception as e:
+        logger.exception("Failed to fetch video output for project %s", project.project_id)
         raise HTTPException(status_code=404, detail=str(e))
 
     return Response(

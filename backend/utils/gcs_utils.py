@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import logging
 from datetime import timedelta
 from typing import Optional
 
@@ -13,6 +14,7 @@ from google.oauth2 import service_account
 
 
 dotenv.load_dotenv()
+logger = logging.getLogger(__name__)
 
 
 def _get_storage_client() -> storage.Client:
@@ -43,8 +45,8 @@ def init_bucket(bucket_name: str) -> bool:
         return True
     except Conflict:
         return True
-    except Exception as e:
-        print(f"Error creating bucket: {e}")
+    except Exception:
+        logger.exception("Error creating bucket %s", bucket_name)
         return False
 
 
@@ -60,8 +62,12 @@ def upload_file(bucket_name: str, contents: bytes, destination_blob_name: str) -
             "content_type": blob.content_type,
             "size": blob.size,
         }
-    except Exception as e:
-        print(f"Error uploading file: {e}")
+    except Exception:
+        logger.exception(
+            "Error uploading file to bucket %s at %s",
+            bucket_name,
+            destination_blob_name,
+        )
         return {}
 
 
@@ -70,8 +76,12 @@ def download_file(bucket_name: str, blob_name: str) -> Optional[bytes]:
         bucket = _get_bucket(bucket_name)
         blob = bucket.blob(blob_name)
         return blob.download_as_bytes()
-    except Exception as e:
-        print(f"Error downloading file: {e}")
+    except Exception:
+        logger.exception(
+            "Error downloading file from bucket %s at %s",
+            bucket_name,
+            blob_name,
+        )
         return None
 
 
@@ -82,10 +92,14 @@ def delete_file(bucket_name: str, blob_name: str) -> bool:
         blob.delete()
         return True
     except NotFound:
-        print(f"File {blob_name} not found in bucket {bucket_name}")
+        logger.warning("File %s not found in bucket %s", blob_name, bucket_name)
         return False
-    except Exception as e:
-        print(f"Error deleting file: {e}")
+    except Exception:
+        logger.exception(
+            "Error deleting file from bucket %s at %s",
+            bucket_name,
+            blob_name,
+        )
         return False
 
 

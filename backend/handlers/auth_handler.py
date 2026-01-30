@@ -1,3 +1,4 @@
+import os
 from uuid import UUID
 from fastapi import APIRouter, Depends, Response, Cookie
 from sqlalchemy.orm import Session
@@ -13,6 +14,7 @@ from operators.auth_operator import (
 
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+SESSION_COOKIE_SECURE = os.getenv("SESSION_COOKIE_SECURE", "true").lower() == "true"
 
 
 def build_session_cookie(session_id: UUID, session_secret: str) -> str:
@@ -41,7 +43,7 @@ async def session_create(
         key="sid",
         value=cookie_value,
         httponly=True,
-        secure=True,
+        secure=SESSION_COOKIE_SECURE,
         samesite="lax",
         max_age=SESSION_TTL_SECONDS,
         path="/",

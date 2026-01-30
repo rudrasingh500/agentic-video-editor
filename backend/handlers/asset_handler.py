@@ -1,4 +1,5 @@
 import os
+import logging
 from datetime import timedelta
 from uuid import UUID
 
@@ -26,6 +27,7 @@ from operators.asset_operator import (
 from utils.gcs_utils import generate_signed_url
 
 router = APIRouter(prefix="/projects/{project_id}/assets", tags=["assets"])
+logger = logging.getLogger(__name__)
 
 ASSET_BUCKET = os.getenv("GCS_BUCKET", "video-editor")
 SIGNED_URL_TTL_SECONDS = 3600
@@ -71,8 +73,14 @@ async def asset_upload(
 
     try:
         asset = upload_asset(db, project.project_id, file.filename, content)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to upload asset: {str(e)}")
+    except Exception:
+        db.rollback()
+        logger.exception(
+            "Failed to upload asset %s for project %s",
+            file.filename,
+            project.project_id,
+        )
+        raise HTTPException(status_code=500, detail="Failed to upload asset")
 
     return AssetUploadResponse(ok=True, asset=_asset_to_response(asset))
 

@@ -1,13 +1,23 @@
-from fastapi import FastAPI
+import logging
+import os
+
 import uvicorn
-from handlers.health_handler import router as health_router
-from handlers.auth_handler import router as auth_router
-from handlers.project_handler import router as project_router
-from handlers.asset_handler import router as asset_router
-from handlers.timeline_handler import router as timeline_router
-from handlers.render_handler import router as render_router
-from handlers.edit_handler import router as edit_router
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
+from handlers.asset_handler import router as asset_router
+from handlers.auth_handler import router as auth_router
+from handlers.edit_handler import router as edit_router
+from handlers.health_handler import router as health_router
+from handlers.project_handler import router as project_router
+from handlers.render_handler import router as render_router
+from handlers.timeline_handler import router as timeline_router
+
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(
+    level=LOG_LEVEL,
+    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+)
 
 app = FastAPI(app_name="Agent Editor Backend")
 

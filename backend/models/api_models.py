@@ -1,6 +1,7 @@
 from datetime import datetime
 from typing import Any
-from pydantic import BaseModel
+
+from pydantic import BaseModel, Field
 
 
 class SessionCreateResponse(BaseModel):
@@ -13,7 +14,7 @@ class SessionCreateResponse(BaseModel):
 class SessionValidateResponse(BaseModel):
     valid: bool
     user_id: str | None = None
-    scopes: list[str] = []
+    scopes: list[str] = Field(default_factory=list)
 
 
 class ProjectCreateRequest(BaseModel):
@@ -128,8 +129,8 @@ class EditResponse(BaseModel):
     ok: bool
     session_id: str
     message: str
-    pending_patches: list[EditPatchSummary] = []
-    warnings: list[str] = []
+    pending_patches: list[EditPatchSummary] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
     applied: bool = False
     new_version: int | None = None
 
@@ -185,7 +186,7 @@ class ApplyPatchesResponse(BaseModel):
     ok: bool
     new_version: int | None = None
     operations_applied: int = 0
-    errors: list[str] = []
+    errors: list[str] = Field(default_factory=list)
 
 
 class EditSessionCloseResponse(BaseModel):

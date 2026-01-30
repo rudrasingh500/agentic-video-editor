@@ -1,8 +1,10 @@
+import logging
 import os
+import secrets
 from datetime import timedelta
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from database.base import get_db
@@ -43,10 +45,24 @@ from utils.gcs_utils import generate_signed_upload_url, generate_signed_url
 
 
 router = APIRouter(prefix="/projects/{project_id}", tags=["render"])
+logger = logging.getLogger(__name__)
 
 GCS_BUCKET = os.getenv("GCS_BUCKET", "video-editor")
 GCS_RENDER_BUCKET = os.getenv("GCS_RENDER_BUCKET", "video-editor-renders")
 SIGNED_URL_TTL_SECONDS = 3600
+WEBHOOK_SECRET = os.getenv("RENDER_WEBHOOK_SECRET")
+
+
+def verify_render_webhook(
+    x_render_webhook_secret: str | None = Header(default=None),
+) -> None:
+    if not WEBHOOK_SECRET:
+        logger.warning("RENDER_WEBHOOK_SECRET not configured; rejecting webhook")
+        raise HTTPException(status_code=503, detail="Render webhook not configured")
+    if not x_render_webhook_secret or not secrets.compare_digest(
+        x_render_webhook_secret, WEBHOOK_SECRET
+    ):
+        raise HTTPException(status_code=401, detail="Invalid webhook secret")
 
 
 @router.post("/render", response_model=RenderJobCreateResponse)
@@ -250,16 +266,20 @@ async def get_presets():
 
 @router.post("/renders/{job_id}/webhook")
 async def render_webhook(
+    project_id: UUID,
     job_id: UUID,
     progress: RenderProgress,
-    project: Project = Depends(require_project),
     db: Session = Depends(get_db),
+    _: None = Depends(verify_render_webhook),
 ):
+    if progress.job_id != job_id:
+        raise HTTPException(status_code=400, detail="Job ID mismatch")
+
     job = get_render_job(db, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Render job not found")
 
-    if job.project_id != project.project_id:
+    if job.project_id != project_id:
         raise HTTPException(status_code=404, detail="Render job not found")
 
     job = update_job_status(

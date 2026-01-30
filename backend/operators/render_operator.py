@@ -76,7 +76,11 @@ def create_render_job(
     if not timeline_record:
         raise TimelineNotFoundError(project_id)
 
-    timeline_version = request.timeline_version or timeline_record.current_version
+    timeline_version = (
+        request.timeline_version
+        if request.timeline_version is not None
+        else timeline_record.current_version
+    )
 
     checkpoint = (
         db.query(TimelineCheckpointModel)

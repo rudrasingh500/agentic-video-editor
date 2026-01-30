@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session as DBSession
 from database.models import (
     TimelineCheckpoint as TimelineCheckpointModel,
     Assets as AssetsModel,
+    Timeline as TimelineModel,
 )
 from models.timeline_models import (
     Timeline,
@@ -71,6 +72,17 @@ def _validate_transition_position(track: Track, position: int) -> None:
         raise InvalidOperationError(
             "Cannot place transition: next item is already a transition"
         )
+
+
+def _get_timeline_project_id(db: DBSession, timeline_id: UUID) -> UUID:
+    timeline_record = (
+        db.query(TimelineModel.project_id)
+        .filter(TimelineModel.timeline_id == timeline_id)
+        .first()
+    )
+    if not timeline_record:
+        raise InvalidOperationError(f"Timeline not found: {timeline_id}")
+    return timeline_record.project_id
 
 
 def add_track(
@@ -217,10 +229,20 @@ def add_clip(
     current = get_timeline_snapshot(db, timeline_id)
     timeline = deepcopy(current.timeline)
     track = _get_track(timeline, track_index)
+    project_id = _get_timeline_project_id(db, timeline_id)
+
+    asset = (
+        db.query(AssetsModel)
+        .filter(AssetsModel.asset_id == asset_id, AssetsModel.project_id == project_id)
+        .first()
+    )
+    if not asset:
+        raise InvalidOperationError(
+            f"Asset {asset_id} not found in project {project_id}"
+        )
 
     if name is None:
-        asset = db.query(AssetsModel).filter(AssetsModel.asset_id == asset_id).first()
-        name = asset.asset_name if asset else f"Clip-{asset_id}"
+        name = asset.asset_name
 
     clip = Clip(
         name=name,
@@ -557,9 +579,23 @@ def replace_clip_media(
     timeline = deepcopy(current.timeline)
     track = _get_track(timeline, track_index)
     item = _get_item_from_track(track, clip_index)
+    project_id = _get_timeline_project_id(db, timeline_id)
 
     if not isinstance(item, Clip):
         raise InvalidOperationError(f"Item at index {clip_index} is not a Clip")
+
+    asset_exists = (
+        db.query(AssetsModel.asset_id)
+        .filter(
+            AssetsModel.asset_id == new_asset_id,
+            AssetsModel.project_id == project_id,
+        )
+        .first()
+    )
+    if not asset_exists:
+        raise InvalidOperationError(
+            f"Asset {new_asset_id} not found in project {project_id}"
+        )
 
     old_ref = item.media_reference
     old_asset_id = old_ref.asset_id if isinstance(old_ref, ExternalReference) else None

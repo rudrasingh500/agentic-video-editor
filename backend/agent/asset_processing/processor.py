@@ -1,4 +1,5 @@
 import os
+import logging
 from datetime import datetime, timezone
 
 from database.base import get_db
@@ -9,6 +10,7 @@ from utils.embeddings import get_embedding, build_embedding_text
 from .analyzers import extract_metadata
 
 ASSET_BUCKET = os.getenv("GCS_BUCKET", "video-editor")
+logger = logging.getLogger(__name__)
 
 
 def process_asset(asset_id: str, project_id: str) -> None:
@@ -22,8 +24,14 @@ def process_asset(asset_id: str, project_id: str) -> None:
         )
 
         if not asset:
+            logger.warning(
+                "Asset %s not found for project %s during indexing",
+                asset_id,
+                project_id,
+            )
             return
 
+        logger.info("Indexing asset %s for project %s", asset_id, project_id)
         asset.indexing_status = "processing"
         asset.indexing_started_at = datetime.now(timezone.utc)
         asset.indexing_attempts = (asset.indexing_attempts or 0) + 1
@@ -36,6 +44,11 @@ def process_asset(asset_id: str, project_id: str) -> None:
             asset.indexing_error = "Failed to download asset from storage"
             asset.indexing_completed_at = datetime.now(timezone.utc)
             db.commit()
+            logger.error(
+                "Failed to download asset %s for project %s",
+                asset_id,
+                project_id,
+            )
             return
 
         metadata = extract_metadata(content, asset.asset_type)
@@ -66,11 +79,17 @@ def process_asset(asset_id: str, project_id: str) -> None:
             asset.indexing_status = "completed"
             asset.indexing_completed_at = datetime.now(timezone.utc)
             db.commit()
+            logger.info("Completed indexing asset %s", asset_id)
         else:
             asset.indexing_status = "failed"
             asset.indexing_error = f"Unsupported media type: {asset.asset_type}"
             asset.indexing_completed_at = datetime.now(timezone.utc)
             db.commit()
+            logger.error(
+                "Unsupported media type %s for asset %s",
+                asset.asset_type,
+                asset_id,
+            )
 
     except Exception as e:
         error_msg = f"{type(e).__name__}: {str(e)}"
@@ -79,6 +98,7 @@ def process_asset(asset_id: str, project_id: str) -> None:
             asset.indexing_error = error_msg[:1000]
             asset.indexing_completed_at = datetime.now(timezone.utc)
             db.commit()
+        logger.exception("Asset indexing failed for asset %s", asset_id)
         raise
     finally:
         db.close()

@@ -1,3 +1,4 @@
+import logging
 from typing import Annotated
 from uuid import UUID
 
@@ -35,6 +36,7 @@ from operators.timeline_operator import (
     list_checkpoints,
     rollback_to_version,
     diff_versions,
+    TimelineAlreadyExistsError,
     TimelineNotFoundError,
     CheckpointNotFoundError,
     VersionConflictError,
@@ -68,6 +70,7 @@ from operators.timeline_editor import (
 
 
 router = APIRouter(prefix="/projects/{project_id}/timeline", tags=["timeline"])
+logger = logging.getLogger(__name__)
 
 
 def get_expected_version(
@@ -92,7 +95,9 @@ def get_actor(session: SessionData) -> str:
 
 
 def handle_timeline_error(e: Exception):
-    if isinstance(e, TimelineNotFoundError):
+    if isinstance(e, TimelineAlreadyExistsError):
+        raise HTTPException(status_code=409, detail=str(e))
+    elif isinstance(e, TimelineNotFoundError):
         raise HTTPException(status_code=404, detail=str(e))
     elif isinstance(e, CheckpointNotFoundError):
         raise HTTPException(status_code=404, detail=str(e))
@@ -109,7 +114,8 @@ def handle_timeline_error(e: Exception):
     elif isinstance(e, InvalidOperationError):
         raise HTTPException(status_code=400, detail=str(e))
     else:
-        raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
+        logger.exception("Unhandled timeline error")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 def checkpoint_to_summary(checkpoint) -> CheckpointSummary:
@@ -150,8 +156,6 @@ async def timeline_create(
             checkpoint_id=result.checkpoint_id,
         )
     except Exception as e:
-        if "already exists" in str(e):
-            raise HTTPException(status_code=400, detail=str(e))
         handle_timeline_error(e)
 
 

@@ -24,6 +24,12 @@ class TimelineError(Exception):
     pass
 
 
+class TimelineAlreadyExistsError(TimelineError):
+    def __init__(self, project_id: UUID):
+        self.project_id = project_id
+        super().__init__(f"Timeline already exists for project: {project_id}")
+
+
 class TimelineNotFoundError(TimelineError):
     def __init__(self, timeline_id: UUID | None = None, project_id: UUID | None = None):
         self.timeline_id = timeline_id
@@ -75,7 +81,7 @@ def create_timeline(
         db.query(TimelineModel).filter(TimelineModel.project_id == project_id).first()
     )
     if existing:
-        raise TimelineError(f"Timeline already exists for project {project_id}")
+        raise TimelineAlreadyExistsError(project_id)
 
     if settings is None:
         settings = TimelineSettings()
@@ -97,7 +103,7 @@ def create_timeline(
         name=name,
         rate=settings.default_framerate,
     )
-    empty_timeline.metadata = metadata
+    empty_timeline.metadata = {**empty_timeline.metadata, **metadata}
 
     checkpoint = TimelineCheckpointModel(
         timeline_id=timeline.timeline_id,

@@ -23,7 +23,7 @@ class Session(Base):
     id = Column(UUID, primary_key=True, default=uuid4)
     secret_hash = Column(String(64), nullable=False)
     user_id = Column(UUID, ForeignKey("users.session_id"), nullable=True)
-    scopes = Column(ARRAY(String), nullable=False, default=[])
+    scopes = Column(ARRAY(String), nullable=False, default=list)
     created_at = Column(DateTime, nullable=False, server_default=func.now())
     expires_at = Column(DateTime, nullable=False)
 

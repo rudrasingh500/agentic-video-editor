@@ -6,7 +6,7 @@ import os
 import re
 from datetime import datetime, timezone
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from openai import OpenAI
 from sqlalchemy.orm import Session
@@ -40,13 +40,25 @@ def _get_client() -> OpenAI:
 
 
 def orchestrate_edit(
-    project_id: str,
-    user_id: str,
+    project_id: UUID | str,
+    user_id: UUID | str,
     request: EditRequest,
     db: Session,
 ) -> EditAgentResult:
+    try:
+        project_uuid = (
+            project_id if isinstance(project_id, UUID) else UUID(str(project_id))
+        )
+    except ValueError as exc:
+        raise SessionNotFoundError(f"Invalid project ID: {project_id}") from exc
+
+    try:
+        user_uuid = user_id if isinstance(user_id, UUID) else UUID(str(user_id))
+    except ValueError as exc:
+        raise SessionNotFoundError("Invalid user ID") from exc
+
     timeline = (
-        db.query(Timeline).filter(Timeline.project_id == project_id).first()
+        db.query(Timeline).filter(Timeline.project_id == project_uuid).first()
     )
     if not timeline:
         raise SessionNotFoundError("Timeline not found for project")
@@ -60,16 +72,16 @@ def orchestrate_edit(
         )
         if not session_record:
             raise SessionNotFoundError(request.session_id)
-        if str(session_record.project_id) != str(project_id):
+        if session_record.project_id != project_uuid:
             raise SessionNotFoundError(request.session_id)
         if session_record.status != "active":
             raise SessionClosedError(request.session_id)
     else:
         session_record = EditSession(
             session_id=uuid4(),
-            project_id=project_id,
+            project_id=project_uuid,
             timeline_id=timeline.timeline_id,
-            created_by=user_id,
+            created_by=user_uuid,
             title=request.message[:80],
             messages=[],
             pending_patches=[],
@@ -140,8 +152,8 @@ def orchestrate_edit(
                 result = execute_tool(
                     tool_name=tool_name,
                     arguments=tool_args,
-                    project_id=project_id,
-                    user_id=user_id,
+                    project_id=str(project_uuid),
+                    user_id=str(user_uuid),
                     timeline_id=str(session_record.timeline_id),
                     db=db,
                 )
@@ -202,7 +214,7 @@ def orchestrate_edit(
     session_record.updated_at = datetime.now(timezone.utc)
     db.commit()
 
-    _log_run(db, project_id, trace, pending_patch_entries, final_message)
+    _log_run(db, project_uuid, trace, pending_patch_entries, final_message)
 
     pending_patches = [
         PendingPatch(
@@ -281,7 +293,7 @@ def _parse_final_json(content: str) -> dict[str, Any]:
 
 def _log_run(
     db: Session,
-    project_id: str,
+    project_id: UUID,
     trace: list[dict],
     pending_patches: list[dict],
     final_message: str,

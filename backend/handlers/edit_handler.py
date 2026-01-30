@@ -7,25 +7,24 @@ Provides endpoints for:
 """
 
 import logging
-from datetime import datetime
-from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from database.base import get_db
 from database.models import Project, Timeline
+from dependencies.auth import SessionData, get_session as get_auth_session
+from dependencies.project import require_project
 from agent.edit_agent import (
     EditRequest,
     EditSessionStatus,
-    PendingPatch,
     SessionNotFoundError,
     SessionClosedError,
     clear_pending_patches,
     delete_session,
     execute_patch,
-    get_session,
+    get_session as get_edit_session_data,
     list_sessions,
     orchestrate_edit,
     update_session_status,
@@ -47,38 +46,26 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def _get_user_id(x_user_id: Annotated[str | None, Header()] = None) -> str:
-    """Extract user ID from header."""
-    if not x_user_id:
-        raise HTTPException(status_code=401, detail="X-User-Id header required")
-    return x_user_id
-
-
-def _validate_project(project_id: str, db: Session) -> Project:
-    """Validate project exists."""
-    project = (
-        db.query(Project)
-        .filter(Project.project_id == project_id)
-        .first()
-    )
-    if not project:
-        raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
-    return project
+def _require_user_id(session: SessionData) -> UUID:
+    if session.user_id is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return session.user_id
 
 
 @router.post("", response_model=EditResponse)
 async def send_edit_request(
-    project_id: str,
+    project_id: UUID,
     body: EditRequestBody,
+    project: Project = Depends(require_project),
     db: Session = Depends(get_db),
-    user_id: str = Depends(_get_user_id),
+    session: SessionData = Depends(get_auth_session),
 ) -> EditResponse:
     """Send an edit request to the edit agent.
 
     This processes the user's natural language request and returns
     proposed edit patches for review.
     """
-    _validate_project(project_id, db)
+    user_id = _require_user_id(session)
 
     request = EditRequest(
         message=body.message,
@@ -87,7 +74,7 @@ async def send_edit_request(
 
     try:
         result = orchestrate_edit(
-            project_id=project_id,
+            project_id=project.project_id,
             user_id=user_id,
             request=request,
             db=db,
@@ -122,15 +109,16 @@ async def send_edit_request(
 
 @router.get("/sessions", response_model=EditSessionListResponse)
 async def list_edit_sessions(
-    project_id: str,
+    project_id: UUID,
     limit: int = 20,
     offset: int = 0,
     status: str | None = None,
+    project: Project = Depends(require_project),
     db: Session = Depends(get_db),
-    user_id: str = Depends(_get_user_id),
+    session: SessionData = Depends(get_auth_session),
 ) -> EditSessionListResponse:
     """List edit sessions for a project."""
-    _validate_project(project_id, db)
+    _require_user_id(session)
 
     status_filter = None
     if status:
@@ -144,7 +132,7 @@ async def list_edit_sessions(
 
     sessions, total = list_sessions(
         db=db,
-        project_id=project_id,
+        project_id=str(project.project_id),
         limit=limit,
         offset=offset,
         status=status_filter,
@@ -156,7 +144,7 @@ async def list_edit_sessions(
             EditSessionResponse(
                 ok=True,
                 session_id=s.session_id,
-                project_id=project_id,
+                project_id=str(project.project_id),
                 timeline_id="",  # Summary doesn't include this
                 title=s.title,
                 status=s.status.value,
@@ -173,21 +161,22 @@ async def list_edit_sessions(
 
 @router.get("/sessions/{session_id}", response_model=EditSessionDetailResponse)
 async def get_edit_session(
-    project_id: str,
+    project_id: UUID,
     session_id: str,
+    project: Project = Depends(require_project),
     db: Session = Depends(get_db),
-    user_id: str = Depends(_get_user_id),
+    session: SessionData = Depends(get_auth_session),
 ) -> EditSessionDetailResponse:
     """Get full details of an edit session including messages and patches."""
-    _validate_project(project_id, db)
+    _require_user_id(session)
 
     try:
-        session = get_session(db, session_id)
+        session = get_edit_session_data(db, session_id)
     except SessionNotFoundError:
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
 
     # Verify session belongs to project
-    if session.project_id != project_id:
+    if session.project_id != str(project.project_id):
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
 
     return EditSessionDetailResponse(
@@ -206,24 +195,25 @@ async def get_edit_session(
 
 @router.post("/sessions/{session_id}/apply", response_model=ApplyPatchesResponse)
 async def apply_session_patches(
-    project_id: str,
+    project_id: UUID,
     session_id: str,
     body: ApplyPatchesRequestBody,
+    project: Project = Depends(require_project),
     db: Session = Depends(get_db),
-    user_id: str = Depends(_get_user_id),
+    session: SessionData = Depends(get_auth_session),
 ) -> ApplyPatchesResponse:
     """Apply pending patches from a session to the timeline.
 
     This creates a new timeline checkpoint with the applied changes.
     """
-    _validate_project(project_id, db)
+    _require_user_id(session)
 
     try:
-        session = get_session(db, session_id)
+        session = get_edit_session_data(db, session_id)
     except SessionNotFoundError:
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
 
-    if session.project_id != project_id:
+    if session.project_id != str(project.project_id):
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
 
     if session.status != EditSessionStatus.ACTIVE:
@@ -235,7 +225,7 @@ async def apply_session_patches(
     # Get timeline for this project
     timeline = (
         db.query(Timeline)
-        .filter(Timeline.project_id == project_id)
+        .filter(Timeline.project_id == project.project_id)
         .first()
     )
     if not timeline:
@@ -321,20 +311,21 @@ async def apply_session_patches(
 
 @router.post("/sessions/{session_id}/complete", response_model=EditSessionCloseResponse)
 async def complete_session(
-    project_id: str,
+    project_id: UUID,
     session_id: str,
+    project: Project = Depends(require_project),
     db: Session = Depends(get_db),
-    user_id: str = Depends(_get_user_id),
+    session: SessionData = Depends(get_auth_session),
 ) -> EditSessionCloseResponse:
     """Mark an edit session as completed."""
-    _validate_project(project_id, db)
+    _require_user_id(session)
 
     try:
-        session = get_session(db, session_id)
+        session = get_edit_session_data(db, session_id)
     except SessionNotFoundError:
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
 
-    if session.project_id != project_id:
+    if session.project_id != str(project.project_id):
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
 
     update_session_status(db, session_id, EditSessionStatus.COMPLETED)
@@ -344,20 +335,21 @@ async def complete_session(
 
 @router.post("/sessions/{session_id}/cancel", response_model=EditSessionCloseResponse)
 async def cancel_session(
-    project_id: str,
+    project_id: UUID,
     session_id: str,
+    project: Project = Depends(require_project),
     db: Session = Depends(get_db),
-    user_id: str = Depends(_get_user_id),
+    session: SessionData = Depends(get_auth_session),
 ) -> EditSessionCloseResponse:
     """Cancel an edit session and discard pending patches."""
-    _validate_project(project_id, db)
+    _require_user_id(session)
 
     try:
-        session = get_session(db, session_id)
+        session = get_edit_session_data(db, session_id)
     except SessionNotFoundError:
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
 
-    if session.project_id != project_id:
+    if session.project_id != str(project.project_id):
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
 
     # Clear all pending patches
@@ -371,20 +363,21 @@ async def cancel_session(
 
 @router.delete("/sessions/{session_id}", response_model=EditSessionCloseResponse)
 async def delete_edit_session(
-    project_id: str,
+    project_id: UUID,
     session_id: str,
+    project: Project = Depends(require_project),
     db: Session = Depends(get_db),
-    user_id: str = Depends(_get_user_id),
+    session: SessionData = Depends(get_auth_session),
 ) -> EditSessionCloseResponse:
     """Delete an edit session permanently."""
-    _validate_project(project_id, db)
+    _require_user_id(session)
 
     try:
-        session = get_session(db, session_id)
+        session = get_edit_session_data(db, session_id)
     except SessionNotFoundError:
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
 
-    if session.project_id != project_id:
+    if session.project_id != str(project.project_id):
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
 
     delete_session(db, session_id)
