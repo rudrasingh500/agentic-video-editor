@@ -106,8 +106,7 @@ const ProjectSelect = ({
                   <button
                     key={project.project_id}
                     onClick={() => onSelect(project)}
-                    className="group flex items-center gap-4 rounded-xl border border-white/10 bg-base-800/60 p-4 text-left opacity-0 transition hover:border-accent-500/60 hover:bg-base-700/80 animate-fade-in-up"
-                    style={{ animationDelay: `${index * 40}ms` }}
+                    className="group flex items-center gap-4 rounded-xl border border-white/10 bg-base-800/60 p-4 text-left transition hover:border-accent-500/60 hover:bg-base-700/80"
                   >
                     <div className="h-14 w-20 rounded-lg bg-gradient-to-br from-accent-500/80 via-glow-violet/70 to-glow-magenta/70 opacity-90 shadow-soft transition group-hover:opacity-100" />
                     <div className="flex-1">

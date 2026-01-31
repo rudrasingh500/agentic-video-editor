@@ -50,11 +50,18 @@ def init_bucket(bucket_name: str) -> bool:
         return False
 
 
-def upload_file(bucket_name: str, contents: bytes, destination_blob_name: str) -> dict:
+def upload_file(
+    bucket_name: str,
+    contents: bytes,
+    destination_blob_name: str,
+    content_type: str | None = None,
+) -> dict:
     try:
         bucket = _get_bucket(bucket_name)
         blob = bucket.blob(destination_blob_name)
-        blob.upload_from_file(io.BytesIO(contents))
+        if content_type:
+            blob.content_type = content_type
+        blob.upload_from_file(io.BytesIO(contents), content_type=content_type)
         blob.reload()
 
         return {

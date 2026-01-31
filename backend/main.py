@@ -1,5 +1,8 @@
 import logging
 import os
+from pathlib import Path
+
+from dotenv import load_dotenv
 
 import uvicorn
 from fastapi import FastAPI
@@ -12,6 +15,9 @@ from handlers.health_handler import router as health_router
 from handlers.project_handler import router as project_router
 from handlers.render_handler import router as render_router
 from handlers.timeline_handler import router as timeline_router
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+load_dotenv(ROOT_DIR / ".env")
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(

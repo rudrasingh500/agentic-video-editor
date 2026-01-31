@@ -1,4 +1,5 @@
 import os
+import mimetypes
 from datetime import datetime, timezone
 from uuid import UUID
 
@@ -13,14 +14,29 @@ from utils.gcs_utils import delete_file, upload_file
 ASSET_BUCKET = os.getenv("GCS_BUCKET", "video-editor")
 
 
+def _resolve_content_type(
+    asset_name: str, content_type: str | None
+) -> str:
+    if content_type and content_type != "application/octet-stream":
+        return content_type
+    guessed, _ = mimetypes.guess_type(asset_name)
+    return guessed or content_type or "application/octet-stream"
+
+
 def upload_asset(
-    db: DBSession, project_id: UUID, asset_name: str, content: bytes
+    db: DBSession,
+    project_id: UUID,
+    asset_name: str,
+    content: bytes,
+    content_type: str | None = None,
 ) -> Assets:
     blob_path = f"{project_id}/{asset_name}"
+    resolved_type = _resolve_content_type(asset_name, content_type)
     asset_info = upload_file(
         bucket_name=ASSET_BUCKET,
         contents=content,
         destination_blob_name=blob_path,
+        content_type=resolved_type,
     )
 
     if not asset_info:
@@ -29,10 +45,12 @@ def upload_asset(
     asset = Assets(
         asset_name=asset_name,
         asset_url=asset_info["path"],
-        asset_type=asset_info.get("content_type", "application/octet-stream"),
+        asset_type=asset_info.get("content_type") or resolved_type,
         project_id=project_id,
         uploaded_at=datetime.now(timezone.utc),
         asset_summary="",
+        indexing_status="pending",
+        indexing_attempts=0,
     )
     db.add(asset)
     db.commit()

@@ -72,7 +72,13 @@ async def asset_upload(
         raise HTTPException(status_code=400, detail="File is empty")
 
     try:
-        asset = upload_asset(db, project.project_id, file.filename, content)
+        asset = upload_asset(
+            db,
+            project.project_id,
+            file.filename,
+            content,
+            file.content_type,
+        )
     except Exception:
         db.rollback()
         logger.exception(

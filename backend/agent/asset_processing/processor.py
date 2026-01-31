@@ -1,5 +1,6 @@
 import os
 import logging
+import mimetypes
 from datetime import datetime, timezone
 
 from database.base import get_db
@@ -51,7 +52,13 @@ def process_asset(asset_id: str, project_id: str) -> None:
             )
             return
 
-        metadata = extract_metadata(content, asset.asset_type)
+        content_type = asset.asset_type
+        if not content_type or content_type == "application/octet-stream":
+            guessed, _ = mimetypes.guess_type(asset.asset_name)
+            if guessed:
+                content_type = guessed
+                asset.asset_type = guessed
+        metadata = extract_metadata(content, content_type)
 
         if metadata:
             asset.asset_summary = metadata.get("summary", "")

@@ -48,8 +48,16 @@ def delete_project(project_id: UUID, db: DBSession) -> bool:
 
 
 def list_projects(user_id: UUID, db: DBSession) -> list[Project]:
-    projects = db.query(Project).filter(Project.owner_id == user_id).all()
-    return projects
+    return (
+        db.query(Project)
+        .filter(Project.owner_id == user_id)
+        .order_by(Project.updated_at.desc())
+        .all()
+    )
+
+
+def list_all_projects(db: DBSession) -> list[Project]:
+    return db.query(Project).order_by(Project.updated_at.desc()).all()
 
 
 def get_video_output(project_id: UUID, db: DBSession) -> bytes:

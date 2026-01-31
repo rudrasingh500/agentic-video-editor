@@ -1,12 +1,14 @@
 import os
 import secrets
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import Cookie, Depends, Header, HTTPException, status
 from sqlalchemy.orm import Session
 
 from database.base import get_db
+from database.models import User
 from operators.auth_operator import validate_session
 
 
@@ -69,6 +71,7 @@ def get_session(
             detail="Invalid bearer token",
         )
     if dev_session:
+        _ensure_dev_user(db, dev_session.user_id)
         return dev_session
     if not sid:
         raise HTTPException(
@@ -109,6 +112,7 @@ def get_optional_session(
     if dev_session is False:
         return None
     if dev_session:
+        _ensure_dev_user(db, dev_session.user_id)
         return dev_session
     if not sid:
         return None
@@ -140,3 +144,18 @@ def require_scope(required_scope: str):
         return session
 
     return checker
+
+
+def _ensure_dev_user(db: Session, user_id: UUID | None) -> None:
+    if user_id is None:
+        return
+    existing = db.query(User).filter(User.session_id == user_id).first()
+    if existing:
+        return
+    now = datetime.now(timezone.utc)
+    user = User(session_id=user_id, last_activity=now, created_at=now)
+    try:
+        db.add(user)
+        db.commit()
+    except Exception:
+        db.rollback()

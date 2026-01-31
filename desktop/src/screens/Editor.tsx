@@ -1,4 +1,11 @@
-import { useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ChangeEvent,
+} from 'react'
 import type { AppConfig } from '../lib/config'
 import { api } from '../lib/api'
 import { loadAssetCache, saveAssetCache, type AssetCacheIndex } from '../lib/assetCache'
@@ -66,33 +73,54 @@ const Editor = ({ project, config, onBack, onOpenSettings }: EditorProps) => {
   const [renderState, setRenderState] = useState<RenderState>({})
   const [previewPath, setPreviewPath] = useState<string | null>(null)
   const [assetCache, setAssetCache] = useState<AssetCacheIndex>(() => loadAssetCache())
+  const assetsRef = useRef<Asset[]>([])
   const fileInputRef = useRef<HTMLInputElement | null>(null)
 
-  useEffect(() => {
-    let active = true
-    const loadAssets = async () => {
-      setAssetsLoading(true)
+  const fetchAssets = useCallback(
+    async (silent = false) => {
+      if (!silent) {
+        setAssetsLoading(true)
+      }
       setAssetsError(null)
       try {
         const response = await api.listAssets(config, project.project_id)
-        if (active) {
-          setAssets(response.assets ?? [])
-        }
+        const nextAssets = response.assets ?? []
+        assetsRef.current = nextAssets
+        setAssets(nextAssets)
       } catch (error) {
-        if (active) {
-          setAssetsError((error as Error).message)
-        }
+        setAssetsError((error as Error).message)
       } finally {
-        if (active) {
+        if (!silent) {
           setAssetsLoading(false)
         }
       }
-    }
-    loadAssets()
+    },
+    [config, project.project_id],
+  )
+
+  useEffect(() => {
+    let mounted = true
+    fetchAssets().catch(() => {})
+
+    const interval = window.setInterval(() => {
+      if (!mounted) {
+        return
+      }
+      const hasPending = assetsRef.current.some(
+        (asset) =>
+          asset.indexing_status === 'pending' ||
+          asset.indexing_status === 'processing',
+      )
+      if (hasPending) {
+        fetchAssets(true).catch(() => {})
+      }
+    }, 4000)
+
     return () => {
-      active = false
+      mounted = false
+      window.clearInterval(interval)
     }
-  }, [config, project.project_id])
+  }, [fetchAssets])
 
   useEffect(() => {
     let active = true
@@ -195,7 +223,11 @@ const Editor = ({ project, config, onBack, onOpenSettings }: EditorProps) => {
     for (const file of Array.from(files)) {
       try {
         const response = await api.uploadAsset(config, project.project_id, file)
-        setAssets((prev) => [response.asset, ...prev])
+      setAssets((prev) => {
+        const next = [response.asset, ...prev]
+        assetsRef.current = next
+        return next
+      })
 
         const localPath = (file as File & { path?: string }).path
         if (localPath) {
@@ -512,14 +544,10 @@ const Editor = ({ project, config, onBack, onOpenSettings }: EditorProps) => {
               <div className="text-xs uppercase tracking-[0.2em] text-ink-400">
                 Assistant
               </div>
-              <div className="text-sm font-semibold text-ink-100">GPT-4o</div>
               <div className="text-xs text-ink-400">
                 GPU: {gpuInfo?.available ? 'NVENC ready' : 'CPU only'}
               </div>
             </div>
-            <button className="rounded-full border border-white/10 px-2 py-1 text-xs text-ink-300">
-              ⋯
-            </button>
           </div>
 
           <div className="flex-1 space-y-3 overflow-auto rounded-xl border border-white/5 bg-base-900/60 p-3 text-xs text-ink-200">
@@ -563,13 +591,12 @@ const Editor = ({ project, config, onBack, onOpenSettings }: EditorProps) => {
               >
                 Send
               </button>
-              <button className="text-xs text-ink-400">Change alias</button>
             </div>
           </div>
 
-          <div className="rounded-xl border border-white/10 bg-base-900/80 p-3 text-xs text-ink-300">
-            <div className="mb-2 font-semibold text-ink-100">Change Set</div>
-            {pendingPatches.length > 0 ? (
+          {pendingPatches.length > 0 ? (
+            <div className="rounded-xl border border-white/10 bg-base-900/80 p-3 text-xs text-ink-300">
+              <div className="mb-2 font-semibold text-ink-100">Change Set</div>
               <ul className="space-y-1">
                 {pendingPatches.map((patch) => (
                   <li key={patch.patch_id}>
@@ -577,21 +604,19 @@ const Editor = ({ project, config, onBack, onOpenSettings }: EditorProps) => {
                   </li>
                 ))}
               </ul>
-            ) : (
-              <div className="text-ink-400">No pending changes.</div>
-            )}
-            <div className="mt-3 flex gap-2">
-              <button className="rounded-full border border-white/10 px-3 py-1 text-xs text-ink-200">
-                Preview Changes
-              </button>
-              <button
-                onClick={handleApplyPatches}
-                className="rounded-full bg-accent-500 px-3 py-1 text-xs font-semibold text-white"
-              >
-                Apply
-              </button>
+              <div className="mt-3 flex gap-2">
+                <button className="rounded-full border border-white/10 px-3 py-1 text-xs text-ink-200">
+                  Preview Changes
+                </button>
+                <button
+                  onClick={handleApplyPatches}
+                  className="rounded-full bg-accent-500 px-3 py-1 text-xs font-semibold text-white"
+                >
+                  Apply
+                </button>
+              </div>
             </div>
-          </div>
+          ) : null}
         </aside>
       </div>
 

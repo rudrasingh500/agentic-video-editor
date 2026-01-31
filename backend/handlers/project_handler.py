@@ -26,6 +26,7 @@ from operators.project_operator import (
     create_project,
     create_video_output,
     get_video_output,
+    list_all_projects,
     list_projects,
 )
 from utils.gcs_utils import generate_signed_upload_url
@@ -44,6 +45,8 @@ async def project_create(
     db: Session = Depends(get_db),
     session: SessionData = Depends(get_session),
 ):
+    if session.user_id is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
     try:
         project = create_project(session.user_id, request.name, db)
     except Exception:
@@ -63,8 +66,13 @@ async def project_list(
     db: Session = Depends(get_db),
     session: SessionData = Depends(get_session),
 ):
+    if session.user_id is None and "dev" not in session.scopes:
+        raise HTTPException(status_code=401, detail="Not authenticated")
     try:
-        projects = list_projects(session.user_id, db)
+        if "dev" in session.scopes:
+            projects = list_all_projects(db)
+        else:
+            projects = list_projects(session.user_id, db)
     except Exception:
         db.rollback()
         logger.exception("Failed to list projects for user %s", session.user_id)
