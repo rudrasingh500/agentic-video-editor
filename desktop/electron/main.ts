@@ -1,0 +1,327 @@
+import { app, BrowserWindow, dialog, ipcMain } from 'electron'
+import { fileURLToPath } from 'node:url'
+import path from 'node:path'
+import fs from 'node:fs'
+import { createServer } from 'node:http'
+import { execFile, spawn } from 'node:child_process'
+import { promisify } from 'node:util'
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
+const execFileAsync = promisify(execFile)
+
+// The built directory structure
+//
+// ├─┬─┬ dist
+// │ │ └── index.html
+// │ │
+// │ ├─┬ dist-electron
+// │ │ ├── main.js
+// │ │ └── preload.mjs
+// │
+process.env.APP_ROOT = path.join(__dirname, '..')
+
+// 🚧 Use ['ENV_NAME'] avoid vite:define plugin - Vite@2.x
+export const VITE_DEV_SERVER_URL = process.env['VITE_DEV_SERVER_URL']
+export const MAIN_DIST = path.join(process.env.APP_ROOT, 'dist-electron')
+export const RENDERER_DIST = path.join(process.env.APP_ROOT, 'dist')
+
+process.env.VITE_PUBLIC = VITE_DEV_SERVER_URL ? path.join(process.env.APP_ROOT, 'public') : RENDERER_DIST
+
+let win: BrowserWindow | null
+
+type RenderStartArgs = {
+  jobId: string
+  projectId: string
+  manifest: Record<string, unknown>
+  outputName?: string
+}
+
+type RenderProgressPayload = {
+  job_id?: string
+  status?: string
+  progress?: number
+  message?: string
+  error_message?: string
+  output_url?: string | null
+  output_size_bytes?: number | null
+}
+
+const renderProcesses = new Map<string, ReturnType<typeof spawn>>()
+
+const ensureDir = (target: string) => {
+  fs.mkdirSync(target, { recursive: true })
+}
+
+const resolveRenderJobDir = () => {
+  const candidates = [
+    process.env.RENDER_JOB_DIR,
+    path.resolve(process.env.APP_ROOT, '..', 'render-job'),
+    path.resolve(process.env.APP_ROOT, 'render-job'),
+    path.resolve(process.cwd(), 'render-job'),
+  ].filter(Boolean) as string[]
+
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      return candidate
+    }
+  }
+
+  return candidates[0] ?? path.resolve(process.cwd(), 'render-job')
+}
+
+const getAssetCacheRoot = () =>
+  path.join(app.getPath('userData'), 'cache', 'assets')
+
+const getRenderRoot = () => path.join(app.getPath('userData'), 'renders')
+
+const getOutputRoot = (projectId: string) =>
+  path.join(app.getPath('videos'), 'Granite Edit', projectId)
+
+const createProgressServer = async (
+  onPayload: (payload: RenderProgressPayload) => void,
+) => {
+  const server = createServer((req, res) => {
+    if (req.method !== 'POST' || req.url !== '/render-status') {
+      res.statusCode = 404
+      res.end()
+      return
+    }
+
+    let body = ''
+    req.on('data', (chunk) => {
+      body += chunk
+    })
+    req.on('end', () => {
+      try {
+        const payload = JSON.parse(body) as RenderProgressPayload
+        onPayload(payload)
+        res.statusCode = 200
+        res.end('ok')
+      } catch (error) {
+        res.statusCode = 400
+        res.end('invalid payload')
+      }
+    })
+  })
+
+  await new Promise<void>((resolve) => {
+    server.listen(0, '127.0.0.1', () => resolve())
+  })
+
+  const address = server.address()
+  const port = typeof address === 'object' && address ? address.port : 0
+
+  return { server, port }
+}
+
+const detectGpu = async () => {
+  const ffmpegBin = process.env.FFMPEG_BIN || 'ffmpeg'
+  try {
+    const { stdout } = await execFileAsync(ffmpegBin, ['-hide_banner', '-encoders'])
+    if (stdout.includes('h264_nvenc') || stdout.includes('hevc_nvenc')) {
+      return { available: true, detail: 'NVENC detected via FFmpeg' }
+    }
+  } catch (error) {
+    // Ignore and fallback to nvidia-smi check.
+  }
+
+  try {
+    const { stdout } = await execFileAsync('nvidia-smi', ['-L'])
+    if (stdout.toLowerCase().includes('gpu')) {
+      return { available: true, detail: 'GPU detected via nvidia-smi' }
+    }
+  } catch (error) {
+    // Ignore.
+  }
+
+  return { available: false, detail: 'No NVIDIA GPU detected' }
+}
+
+function createWindow() {
+  win = new BrowserWindow({
+    icon: path.join(process.env.VITE_PUBLIC, 'electron-vite.svg'),
+    width: 1420,
+    height: 920,
+    minWidth: 1100,
+    minHeight: 720,
+    backgroundColor: '#0b0f1c',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.mjs'),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  })
+
+  // Test active push message to Renderer-process.
+  win.webContents.on('did-finish-load', () => {
+    win?.webContents.send('main-process-message', (new Date).toLocaleString())
+  })
+
+  if (VITE_DEV_SERVER_URL) {
+    win.loadURL(VITE_DEV_SERVER_URL)
+  } else {
+    // win.loadFile('dist/index.html')
+    win.loadFile(path.join(RENDERER_DIST, 'index.html'))
+  }
+}
+
+// Quit when all windows are closed, except on macOS. There, it's common
+// for applications and their menu bar to stay active until the user quits
+// explicitly with Cmd + Q.
+app.on('window-all-closed', () => {
+  if (process.platform !== 'darwin') {
+    app.quit()
+    win = null
+  }
+})
+
+app.on('activate', () => {
+  // On OS X it's common to re-create a window in the app when the
+  // dock icon is clicked and there are no other windows open.
+  if (BrowserWindow.getAllWindows().length === 0) {
+    createWindow()
+  }
+})
+
+app.whenReady().then(createWindow)
+
+ipcMain.handle('dialog:open-files', async () => {
+  if (!win) {
+    return []
+  }
+
+  const result = await dialog.showOpenDialog(win, {
+    properties: ['openFile', 'multiSelections'],
+    filters: [
+      { name: 'Media', extensions: ['mp4', 'mov', 'mkv', 'mp3', 'wav', 'png', 'jpg', 'jpeg'] },
+    ],
+  })
+
+  if (result.canceled) {
+    return []
+  }
+
+  return result.filePaths
+})
+
+ipcMain.handle('paths:get', async () => ({
+  userData: app.getPath('userData'),
+  videos: app.getPath('videos'),
+  documents: app.getPath('documents'),
+  temp: app.getPath('temp'),
+}))
+
+ipcMain.handle('system:gpu', async () => detectGpu())
+
+ipcMain.handle(
+  'assets:cache',
+  async (_event, args: { assetId: string; sourcePath: string }) => {
+    const { assetId, sourcePath } = args
+    const cacheRoot = getAssetCacheRoot()
+    const fileName = path.basename(sourcePath)
+    const destDir = path.join(cacheRoot, assetId)
+    const destPath = path.join(destDir, fileName)
+
+    ensureDir(destDir)
+    fs.copyFileSync(sourcePath, destPath)
+
+    return { path: destPath }
+  },
+)
+
+ipcMain.handle(
+  'assets:download',
+  async (_event, args: { assetId: string; url: string; filename?: string }) => {
+    const { assetId, url, filename } = args
+    const cacheRoot = getAssetCacheRoot()
+    const destDir = path.join(cacheRoot, assetId)
+    const name = filename ?? path.basename(new URL(url).pathname)
+    const destPath = path.join(destDir, name)
+
+    ensureDir(destDir)
+
+    const response = await fetch(url)
+    if (!response.ok) {
+      throw new Error(`Failed to download asset: ${response.status}`)
+    }
+    const buffer = Buffer.from(await response.arrayBuffer())
+    fs.writeFileSync(destPath, buffer)
+
+    return { path: destPath }
+  },
+)
+
+ipcMain.handle('render:start', async (_event, args: RenderStartArgs) => {
+  const { jobId, projectId, manifest, outputName } = args
+
+  const outputRoot = getOutputRoot(projectId)
+  ensureDir(outputRoot)
+  const outputPath = path.join(outputRoot, outputName ?? `${jobId}.mp4`)
+
+  const renderRoot = path.join(getRenderRoot(), jobId)
+  ensureDir(renderRoot)
+
+  const manifestPath = path.join(renderRoot, 'manifest.json')
+  const manifestToWrite = {
+    ...manifest,
+    output_path: outputPath,
+    output_bucket: 'local',
+    input_bucket: 'local',
+    execution_mode: 'local',
+  }
+
+  fs.writeFileSync(manifestPath, JSON.stringify(manifestToWrite, null, 2), 'utf-8')
+
+  const { server, port } = await createProgressServer((payload) => {
+    win?.webContents.send('render:progress', {
+      jobId,
+      outputPath,
+      payload,
+    })
+  })
+
+  const renderJobDir = resolveRenderJobDir()
+  const entrypoint = path.join(renderJobDir, 'entrypoint.py')
+  const pythonBin = process.env.PYTHON_BIN || 'python'
+  const tempDir = path.join(app.getPath('temp'), 'granite-render')
+
+  ensureDir(tempDir)
+
+  const env = {
+    ...process.env,
+    CALLBACK_URL: `http://127.0.0.1:${port}/render-status`,
+    RENDER_INPUT_DIR: getAssetCacheRoot(),
+    RENDER_OUTPUT_DIR: outputRoot,
+    RENDER_TEMP_DIR: tempDir,
+  }
+
+  const child = spawn(pythonBin, [entrypoint, '--manifest', manifestPath, '--job-id', jobId], {
+    cwd: renderJobDir,
+    env,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+
+  renderProcesses.set(jobId, child)
+
+  child.stdout.on('data', (data) => {
+    const message = data.toString()
+    win?.webContents.send('render:log', { jobId, message })
+  })
+
+  child.stderr.on('data', (data) => {
+    const message = data.toString()
+    win?.webContents.send('render:log', { jobId, message })
+  })
+
+  child.on('close', (code) => {
+    renderProcesses.delete(jobId)
+    server.close()
+    win?.webContents.send('render:complete', {
+      jobId,
+      outputPath,
+      code,
+    })
+  })
+
+  return { outputPath }
+})
