@@ -9,6 +9,7 @@ from utils.gcs_utils import download_file
 from utils.embeddings import get_embedding, build_embedding_text
 
 from .analyzers import extract_metadata
+from .entity_linker import link_asset_entities
 
 ASSET_BUCKET = os.getenv("GCS_BUCKET", "video-editor")
 logger = logging.getLogger(__name__)
@@ -87,6 +88,22 @@ def process_asset(asset_id: str, project_id: str) -> None:
             asset.indexing_completed_at = datetime.now(timezone.utc)
             db.commit()
             logger.info("Completed indexing asset %s", asset_id)
+
+            # Link entities and compute cross-asset similarities
+            try:
+                link_result = link_asset_entities(asset, db)
+                logger.info(
+                    "Entity linking for asset %s: %d entities, %d potential matches",
+                    asset_id,
+                    link_result.get("entities_created", 0),
+                    link_result.get("similarities_found", 0),
+                )
+            except Exception as e:
+                logger.warning(
+                    "Entity linking failed for asset %s: %s (non-fatal)",
+                    asset_id,
+                    str(e),
+                )
         else:
             asset.indexing_status = "failed"
             asset.indexing_error = f"Unsupported media type: {asset.asset_type}"

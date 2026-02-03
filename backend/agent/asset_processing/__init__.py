@@ -13,6 +13,7 @@ from .prompts import (
     VIDEO_ANALYSIS_PROMPT,
     AUDIO_ANALYSIS_PROMPT,
 )
+from .entity_linker import link_asset_entities
 
 __all__ = [
     "process_asset",
@@ -26,4 +27,5 @@ __all__ = [
     "IMAGE_ANALYSIS_PROMPT",
     "VIDEO_ANALYSIS_PROMPT",
     "AUDIO_ANALYSIS_PROMPT",
+    "link_asset_entities",
 ]

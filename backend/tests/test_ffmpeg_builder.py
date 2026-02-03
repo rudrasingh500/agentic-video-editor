@@ -3,7 +3,9 @@ from uuid import uuid4
 
 from models.timeline_models import (
     Clip,
+    Effect,
     ExternalReference,
+    FreezeFrame,
     Gap,
     GeneratorReference,
     LinearTimeWarp,
@@ -245,6 +247,36 @@ def timeline_with_speed_effect() -> Timeline:
 
 
 @pytest.fixture
+def timeline_with_freeze_frame() -> Timeline:
+    clip = Clip(
+        name="Freeze Frame Clip",
+        media_reference=ExternalReference(
+            asset_id=uuid4(),
+            target_url="gs://bucket/clip1.mp4",
+        ),
+        source_range=TimeRange(
+            start_time=RationalTime(value=0, rate=24),
+            duration=RationalTime(value=48, rate=24),
+        ),
+        effects=[FreezeFrame()],
+    )
+
+    video_track = Track(
+        name="Video 1",
+        kind=TrackKind.VIDEO,
+        children=[clip],
+    )
+
+    return Timeline(
+        name="Freeze Timeline",
+        tracks=Stack(
+            name="Timeline Stack",
+            children=[video_track],
+        ),
+    )
+
+
+@pytest.fixture
 def timeline_with_generator() -> Timeline:
     generator_clip = Clip(
         name="Black Screen",
@@ -435,6 +467,7 @@ class TestFilterGeneration:
 
         assert "xfade=" in cmd.filter_complex
         assert "dissolve" in cmd.filter_complex
+        assert "offset=2.0" in cmd.filter_complex
 
     def test_generate_speed_filter(self, timeline_with_speed_effect, draft_preset):
         clip = timeline_with_speed_effect.find_clips()[0]
@@ -449,6 +482,46 @@ class TestFilterGeneration:
         assert "setpts=" in cmd.filter_complex
 
         assert "2.0*PTS" in cmd.filter_complex or "2*PTS" in cmd.filter_complex
+
+    def test_generate_freeze_frame_filter(
+        self, timeline_with_freeze_frame, draft_preset
+    ):
+        clip = timeline_with_freeze_frame.find_clips()[0]
+        asset_id = str(clip.media_reference.asset_id)
+        asset_map = {asset_id: "/inputs/clip1.mp4"}
+
+        converter = TimelineToFFmpeg(
+            timeline_with_freeze_frame, asset_map, draft_preset, "/outputs/render.mp4"
+        )
+        cmd = converter.build()
+
+        assert "tpad=stop_mode=clone" in cmd.filter_complex
+        assert "loop=loop=-1" not in cmd.filter_complex
+
+    def test_position_normalized_coords(self, simple_timeline, draft_preset):
+        clip = simple_timeline.find_clips()[0]
+        clip.effects.append(
+            Effect(
+                effect_name="Position",
+                metadata={
+                    "type": "position",
+                    "width": 0.5,
+                    "height": 0.5,
+                    "x": 0.25,
+                    "y": 0.25,
+                },
+            )
+        )
+        asset_id = str(clip.media_reference.asset_id)
+        asset_map = {asset_id: "/inputs/clip1.mp4"}
+
+        converter = TimelineToFFmpeg(
+            simple_timeline, asset_map, draft_preset, "/outputs/render.mp4"
+        )
+        cmd = converter.build()
+
+        assert "scale=640:360" in cmd.filter_complex
+        assert "pad=1280:720:320:180" in cmd.filter_complex
 
     def test_generate_solid_color(self, timeline_with_generator, draft_preset):
         converter = TimelineToFFmpeg(

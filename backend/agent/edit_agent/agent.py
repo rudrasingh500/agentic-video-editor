@@ -29,7 +29,7 @@ from .types import (
 logger = logging.getLogger(__name__)
 
 MODEL = "google/gemini-3-pro-preview"
-MAX_ITERATIONS = 20
+MAX_ITERATIONS = int(os.getenv("EDIT_AGENT_MAX_ITERATIONS", "0"))
 LOG_PAYLOADS = os.getenv("EDIT_AGENT_LOG_PAYLOADS", "").lower() in {"1", "true", "yes"}
 LOG_MAX_CHARS = int(os.getenv("EDIT_AGENT_LOG_MAX_CHARS", "2000"))
 
@@ -107,8 +107,12 @@ def orchestrate_edit(
     new_version = None
     final_content = ""
 
-    for iteration in range(MAX_ITERATIONS):
-        logger.debug(f"Edit agent iteration {iteration + 1}/{MAX_ITERATIONS}")
+    iteration = 0
+    while True:
+        if MAX_ITERATIONS > 0 and iteration >= MAX_ITERATIONS:
+            logger.warning("Edit agent max iterations reached")
+            break
+        logger.debug("Edit agent iteration %s", iteration + 1)
         try:
             response = client.chat.completions.create(
                 model=MODEL,
@@ -183,12 +187,14 @@ def orchestrate_edit(
                     {"name": tool_name, "result": result},
                 )
 
-                if tool_name == "execute_edit":
+                if tool_name == "edit_timeline":
                     applied = result.get("applied", applied)
                     new_version = result.get("new_version", new_version)
                     warnings.extend(result.get("warnings", []))
-                    if result.get("pending_patch"):
-                        pending_patch_entries.append(result["pending_patch"])
+                    if result.get("errors"):
+                        warnings.extend(result["errors"])
+                elif result.get("error"):
+                    warnings.append(f"{tool_name}: {result['error']}")
 
                 messages.append(
                     {
@@ -198,22 +204,16 @@ def orchestrate_edit(
                     }
                 )
 
-            remaining = MAX_ITERATIONS - iteration - 1
-            messages.append(
-                {
-                    "role": "user",
-                    "content": _iteration_notice(iteration + 1, remaining),
-                }
-            )
-
         if response.choices[0].finish_reason == "stop" and not message.tool_calls:
             break
+
+        iteration += 1
 
     final_payload = _parse_final_json(final_content)
     final_message = final_payload.get("message", final_content or "")
     applied = final_payload.get("applied", applied)
     new_version = final_payload.get("new_version", new_version)
-    warnings.extend(final_payload.get("warnings", []))
+    # Only include warnings produced by tools or internal validation.
     _log_payload(
         "final_response",
         {
@@ -292,19 +292,6 @@ def _serialize_messages(messages: list[EditMessage]) -> list[dict[str, Any]]:
         }
         for msg in messages
     ]
-
-
-def _iteration_notice(iteration: int, remaining: int) -> str:
-    notice = (
-        f"[System: Iteration {iteration}/{MAX_ITERATIONS} complete. "
-        f"{remaining} iterations remaining. "
-    )
-    if remaining <= 2:
-        notice += "URGENT: You must return your final JSON response now."
-    elif remaining <= 5:
-        notice += "You are running low on iterations."
-    notice += "]"
-    return notice
 
 
 def _parse_final_json(content: str) -> dict[str, Any]:

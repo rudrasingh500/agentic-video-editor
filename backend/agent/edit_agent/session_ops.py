@@ -14,6 +14,7 @@ from models.timeline_models import (
     LinearTimeWarp,
     RationalTime,
     TimeRange,
+    TrackKind,
     TransitionType,
 )
 
@@ -217,7 +218,19 @@ def _apply_operation(
     data = operation.operation_data
     op_type = operation.operation_type
 
-    if op_type == "trim_clip":
+    if op_type == "add_track":
+        kind_value = data.get("kind")
+        kind = TrackKind(kind_value) if kind_value else TrackKind.VIDEO
+        checkpoint = timeline_editor.add_track(
+            db,
+            timeline_id,
+            name=data["name"],
+            kind=kind,
+            index=data.get("index"),
+            actor=actor,
+            expected_version=expected_version,
+        )
+    elif op_type == "trim_clip":
         new_range = TimeRange.model_validate(data["new_source_range"])
         checkpoint = timeline_editor.trim_clip(
             db,

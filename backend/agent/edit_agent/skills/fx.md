@@ -1,102 +1,296 @@
 ---
 id: fx
 title: FX
-summary: Transitions, speed ramps, freeze frames, and stylized effects.
+summary: Patch operations for transitions, speed ramps, freeze frames, and stylized effects.
 ---
 
 ## transition - Transition
-Summary: Add a transition at a track position.
+Summary: Add a transition with a duration in milliseconds.
 ```json
 {
   "type": "object",
   "properties": {
-    "track_index": {"type": "integer"},
-    "position": {"type": "integer"},
-    "duration_ms": {"type": "number"},
-    "transition_type": {"type": "string"}
+    "description": {"type": "string"},
+    "operations": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "properties": {
+          "operation_type": {"const": "add_transition"},
+          "operation_data": {
+            "type": "object",
+            "properties": {
+              "track_index": {"type": "integer"},
+              "position": {"type": "integer"},
+              "duration_ms": {"type": "number"},
+              "transition_type": {"type": "string"}
+            },
+            "required": ["track_index", "position", "duration_ms"]
+          }
+        },
+        "required": ["operation_type", "operation_data"]
+      }
+    }
   },
-  "required": ["track_index", "position", "duration_ms"]
+  "required": ["description", "operations"]
 }
 ```
 
 ## speed_ramp - Speed Ramp
-Summary: Apply variable speed segments within a clip.
+Summary: Use split_clip operations to isolate segments, then add LinearTimeWarp effects.
 ```json
 {
   "type": "object",
   "properties": {
-    "track_index": {"type": "integer"},
-    "clip_index": {"type": "integer"},
-    "segments": {
+    "description": {"type": "string"},
+    "operations": {
       "type": "array",
+      "minItems": 2,
       "items": {
-        "type": "object",
-        "properties": {
-          "start_ms": {"type": "number"},
-          "end_ms": {"type": "number"},
-          "speed": {"type": "number"}
-        },
-        "required": ["start_ms", "end_ms", "speed"]
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "operation_type": {"const": "split_clip"},
+              "operation_data": {
+                "type": "object",
+                "properties": {
+                  "track_index": {"type": "integer"},
+                  "clip_index": {"type": "integer"},
+                  "split_ms": {"type": "number"}
+                },
+                "required": ["track_index", "clip_index", "split_ms"]
+              }
+            },
+            "required": ["operation_type", "operation_data"]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "operation_type": {"const": "add_effect"},
+              "operation_data": {
+                "type": "object",
+                "properties": {
+                  "track_index": {"type": "integer"},
+                  "item_index": {"type": "integer"},
+                  "effect": {
+                    "type": "object",
+                    "properties": {
+                      "OTIO_SCHEMA": {"const": "LinearTimeWarp.1"},
+                      "time_scalar": {"type": "number"}
+                    },
+                    "required": ["OTIO_SCHEMA", "time_scalar"]
+                  }
+                },
+                "required": ["track_index", "item_index", "effect"]
+              }
+            },
+            "required": ["operation_type", "operation_data"]
+          }
+        ]
       }
     }
   },
-  "required": ["track_index", "clip_index", "segments"]
+  "required": ["description", "operations"]
 }
 ```
 
 ## freeze_frame - Freeze Frame
-Summary: Insert a freeze frame at a timestamp.
+Summary: Split around a time range, then add a FreezeFrame effect to the middle clip.
 ```json
 {
   "type": "object",
   "properties": {
-    "track_index": {"type": "integer"},
-    "clip_index": {"type": "integer"},
-    "at_ms": {"type": "number"},
-    "duration_ms": {"type": "number"}
+    "description": {"type": "string"},
+    "operations": {
+      "type": "array",
+      "minItems": 2,
+      "items": {
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "operation_type": {"const": "split_clip"},
+              "operation_data": {
+                "type": "object",
+                "properties": {
+                  "track_index": {"type": "integer"},
+                  "clip_index": {"type": "integer"},
+                  "split_ms": {"type": "number"}
+                },
+                "required": ["track_index", "clip_index", "split_ms"]
+              }
+            },
+            "required": ["operation_type", "operation_data"]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "operation_type": {"const": "add_effect"},
+              "operation_data": {
+                "type": "object",
+                "properties": {
+                  "track_index": {"type": "integer"},
+                  "item_index": {"type": "integer"},
+                  "effect": {
+                    "type": "object",
+                    "properties": {
+                      "OTIO_SCHEMA": {"const": "FreezeFrame.1"}
+                    },
+                    "required": ["OTIO_SCHEMA"]
+                  }
+                },
+                "required": ["track_index", "item_index", "effect"]
+              }
+            },
+            "required": ["operation_type", "operation_data"]
+          }
+        ]
+      }
+    }
   },
-  "required": ["track_index", "clip_index", "at_ms", "duration_ms"]
+  "required": ["description", "operations"]
 }
 ```
 
 ## blur - Blur
-Summary: Apply a full-frame blur.
+Summary: Apply a blur via add_effect.
 ```json
 {
   "type": "object",
   "properties": {
-    "track_index": {"type": "integer"},
-    "clip_index": {"type": "integer"},
-    "radius": {"type": "number"}
+    "description": {"type": "string"},
+    "operations": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "properties": {
+          "operation_type": {"const": "add_effect"},
+          "operation_data": {
+            "type": "object",
+            "properties": {
+              "track_index": {"type": "integer"},
+              "item_index": {"type": "integer"},
+              "effect": {
+                "type": "object",
+                "properties": {
+                  "OTIO_SCHEMA": {"const": "Effect.1"},
+                  "effect_name": {"const": "Blur"},
+                  "metadata": {
+                    "type": "object",
+                    "properties": {
+                      "type": {"const": "blur"},
+                      "radius": {"type": "number"}
+                    },
+                    "required": ["type"]
+                  }
+                },
+                "required": ["OTIO_SCHEMA", "effect_name", "metadata"]
+              }
+            },
+            "required": ["track_index", "item_index", "effect"]
+          }
+        },
+        "required": ["operation_type", "operation_data"]
+      }
+    }
   },
-  "required": ["track_index", "clip_index"]
+  "required": ["description", "operations"]
 }
 ```
 
 ## vignette - Vignette
-Summary: Apply a vignette effect.
+Summary: Apply a vignette via add_effect.
 ```json
 {
   "type": "object",
   "properties": {
-    "track_index": {"type": "integer"},
-    "clip_index": {"type": "integer"},
-    "strength": {"type": "number"}
+    "description": {"type": "string"},
+    "operations": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "properties": {
+          "operation_type": {"const": "add_effect"},
+          "operation_data": {
+            "type": "object",
+            "properties": {
+              "track_index": {"type": "integer"},
+              "item_index": {"type": "integer"},
+              "effect": {
+                "type": "object",
+                "properties": {
+                  "OTIO_SCHEMA": {"const": "Effect.1"},
+                  "effect_name": {"const": "Vignette"},
+                  "metadata": {
+                    "type": "object",
+                    "properties": {
+                      "type": {"const": "vignette"},
+                      "strength": {"type": "number"}
+                    },
+                    "required": ["type"]
+                  }
+                },
+                "required": ["OTIO_SCHEMA", "effect_name", "metadata"]
+              }
+            },
+            "required": ["track_index", "item_index", "effect"]
+          }
+        },
+        "required": ["operation_type", "operation_data"]
+      }
+    }
   },
-  "required": ["track_index", "clip_index"]
+  "required": ["description", "operations"]
 }
 ```
 
 ## grain - Grain
-Summary: Apply film grain noise.
+Summary: Apply grain via add_effect.
 ```json
 {
   "type": "object",
   "properties": {
-    "track_index": {"type": "integer"},
-    "clip_index": {"type": "integer"},
-    "amount": {"type": "number"}
+    "description": {"type": "string"},
+    "operations": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "properties": {
+          "operation_type": {"const": "add_effect"},
+          "operation_data": {
+            "type": "object",
+            "properties": {
+              "track_index": {"type": "integer"},
+              "item_index": {"type": "integer"},
+              "effect": {
+                "type": "object",
+                "properties": {
+                  "OTIO_SCHEMA": {"const": "Effect.1"},
+                  "effect_name": {"const": "Grain"},
+                  "metadata": {
+                    "type": "object",
+                    "properties": {
+                      "type": {"const": "grain"},
+                      "amount": {"type": "number"}
+                    },
+                    "required": ["type"]
+                  }
+                },
+                "required": ["OTIO_SCHEMA", "effect_name", "metadata"]
+              }
+            },
+            "required": ["track_index", "item_index", "effect"]
+          }
+        },
+        "required": ["operation_type", "operation_data"]
+      }
+    }
   },
-  "required": ["track_index", "clip_index"]
+  "required": ["description", "operations"]
 }
 ```

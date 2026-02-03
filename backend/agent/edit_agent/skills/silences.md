@@ -1,29 +1,58 @@
 ---
 id: silences
 title: Silences
-summary: Remove silent ranges using transcript or silence analysis.
+summary: Patch operations to remove silent ranges from clips.
 ---
 
 ## remove - Remove Silence Segments
-Summary: Remove silent ranges from a clip using start/end offsets.
+Summary: Use split_clip and remove_clip operations to delete silent ranges. For each
+segment, split at end_ms, split at start_ms, then remove the middle clip. Process
+segments in reverse order to keep indices stable.
 ```json
 {
   "type": "object",
   "properties": {
-    "track_index": {"type": "integer"},
-    "clip_index": {"type": "integer"},
-    "segments": {
+    "description": {"type": "string"},
+    "operations": {
       "type": "array",
+      "minItems": 1,
       "items": {
-        "type": "object",
-        "properties": {
-          "start_ms": {"type": "number"},
-          "end_ms": {"type": "number"}
-        },
-        "required": ["start_ms", "end_ms"]
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "operation_type": {"const": "split_clip"},
+              "operation_data": {
+                "type": "object",
+                "properties": {
+                  "track_index": {"type": "integer"},
+                  "clip_index": {"type": "integer"},
+                  "split_ms": {"type": "number"}
+                },
+                "required": ["track_index", "clip_index", "split_ms"]
+              }
+            },
+            "required": ["operation_type", "operation_data"]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "operation_type": {"const": "remove_clip"},
+              "operation_data": {
+                "type": "object",
+                "properties": {
+                  "track_index": {"type": "integer"},
+                  "clip_index": {"type": "integer"}
+                },
+                "required": ["track_index", "clip_index"]
+              }
+            },
+            "required": ["operation_type", "operation_data"]
+          }
+        ]
       }
     }
   },
-  "required": ["track_index", "clip_index", "segments"]
+  "required": ["description", "operations"]
 }
 ```

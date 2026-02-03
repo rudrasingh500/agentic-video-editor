@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -119,6 +120,36 @@ class TimelineToFFmpeg:
             output_options=output_options,
             output_file=self.output_path,
         )
+
+    def _normalize_to_pixels(
+        self, value: float | None, max_value: int
+    ) -> float | None:
+        if value is None:
+            return None
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            return None
+        if 0.0 <= numeric <= 1.0:
+            return numeric * max_value
+        return numeric
+
+    def _normalize_ratio(
+        self, value: float | None, max_value: int, default: float
+    ) -> float:
+        if value is None:
+            return default
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            return default
+        if 0.0 <= numeric <= 1.0:
+            ratio = numeric
+        elif max_value > 0:
+            ratio = numeric / max_value
+        else:
+            ratio = default
+        return max(0.0, min(1.0, ratio))
 
     def build_command_string(self) -> str:
         cmd = self.build()
@@ -251,17 +282,21 @@ class TimelineToFFmpeg:
             return None
 
         segment_outputs: list[str] = []
+        segment_durations: list[float] = []
 
         for seg_idx, segment in enumerate(segments):
             seg_out = self._process_video_segment(segment, track_idx, seg_idx)
             if seg_out:
                 segment_outputs.append(seg_out)
+                segment_durations.append(segment.duration)
 
         if not segment_outputs:
             return None
 
         if transitions and len(segment_outputs) > 1:
-            return self._apply_video_transitions(segment_outputs, transitions)
+            return self._apply_video_transitions(
+                segment_outputs, transitions, segment_durations
+            )
         if len(segment_outputs) == 1:
             return segment_outputs[0]
         return self._concat_video_segments(segment_outputs)
@@ -274,17 +309,21 @@ class TimelineToFFmpeg:
             return None
 
         segment_outputs: list[str] = []
+        segment_durations: list[float] = []
 
         for seg_idx, segment in enumerate(segments):
             seg_out = self._process_audio_segment(segment, track_idx, seg_idx)
             if seg_out:
                 segment_outputs.append(seg_out)
+                segment_durations.append(segment.duration)
 
         if not segment_outputs:
             return None
 
         if transitions and len(segment_outputs) > 1:
-            return self._apply_audio_transitions(segment_outputs, transitions)
+            return self._apply_audio_transitions(
+                segment_outputs, transitions, segment_durations
+            )
         elif len(segment_outputs) == 1:
             return segment_outputs[0]
         else:
@@ -474,7 +513,20 @@ class TimelineToFFmpeg:
         filters.append("setpts=PTS-STARTPTS")
 
         if segment.is_freeze:
-            filters.append("select='eq(n,0)',loop=loop=-1:size=1")
+            framerate = self.preset.video.framerate or self.timeline.metadata.get(
+                "default_rate", 24.0
+            )
+            try:
+                framerate = float(framerate)
+            except (TypeError, ValueError):
+                framerate = 24.0
+            frame_duration = 1.0 / framerate if framerate > 0 else 0.0
+            stop_duration = max(0.0, segment.duration - frame_duration)
+            filters.append("select='eq(n,0)'")
+            if stop_duration > 0:
+                filters.append(
+                    f"tpad=stop_mode=clone:stop_duration={stop_duration}"
+                )
         elif segment.speed_factor != 1.0:
             pts_factor = 1.0 / segment.speed_factor
             filters.append(f"setpts={pts_factor}*PTS")
@@ -663,9 +715,15 @@ class TimelineToFFmpeg:
                 )
                 continue
             if effect_type == "vignette":
-                strength = metadata.get("strength", 0.5)
+                strength = float(metadata.get("strength", 0.5))
+                if strength <= 0:
+                    continue
+                strength = min(1.0, strength)
+                min_angle = math.pi / 12
+                max_angle = math.pi / 3
+                angle = min_angle + (max_angle - min_angle) * strength
                 current = self._apply_simple_video_filter(
-                    current, f"vignette=angle={strength}"
+                    current, f"vignette=angle={angle:.4f}"
                 )
                 continue
             if effect_type == "grain":
@@ -794,24 +852,32 @@ class TimelineToFFmpeg:
         return self._apply_simple_video_filter(input_label, expr)
 
     def _apply_reframe(self, input_label: str, metadata: dict[str, Any]) -> str:
-        width = metadata.get("width")
-        height = metadata.get("height")
-        if width is None or height is None:
-            return input_label
-        x = metadata.get("x", 0)
-        y = metadata.get("y", 0)
         canvas_w = self.preset.video.width or 1920
         canvas_h = self.preset.video.height or 1080
+        width_value = self._normalize_to_pixels(metadata.get("width"), canvas_w)
+        height_value = self._normalize_to_pixels(metadata.get("height"), canvas_h)
+        width = None if width_value is None else max(1, int(round(width_value)))
+        height = None if height_value is None else max(1, int(round(height_value)))
+        if width is None or height is None:
+            return input_label
+        x_value = self._normalize_to_pixels(metadata.get("x"), canvas_w)
+        y_value = self._normalize_to_pixels(metadata.get("y"), canvas_h)
+        x = int(round(0 if x_value is None else x_value))
+        y = int(round(0 if y_value is None else y_value))
         expr = f"crop={width}:{height}:{x}:{y},scale={canvas_w}:{canvas_h}"
         return self._apply_simple_video_filter(input_label, expr)
 
     def _apply_position(self, input_label: str, metadata: dict[str, Any]) -> str:
         canvas_w = self.preset.video.width or 1920
         canvas_h = self.preset.video.height or 1080
-        width = metadata.get("width", canvas_w)
-        height = metadata.get("height", canvas_h)
-        x = metadata.get("x", 0)
-        y = metadata.get("y", 0)
+        width_value = self._normalize_to_pixels(metadata.get("width"), canvas_w)
+        height_value = self._normalize_to_pixels(metadata.get("height"), canvas_h)
+        width = canvas_w if width_value is None else max(1, int(round(width_value)))
+        height = canvas_h if height_value is None else max(1, int(round(height_value)))
+        x_value = self._normalize_to_pixels(metadata.get("x"), canvas_w)
+        y_value = self._normalize_to_pixels(metadata.get("y"), canvas_h)
+        x = int(round(0 if x_value is None else x_value))
+        y = int(round(0 if y_value is None else y_value))
         expr = (
             f"scale={width}:{height},format=rgba,"
             f"pad={canvas_w}:{canvas_h}:{x}:{y}:color=0x00000000"
@@ -821,12 +887,16 @@ class TimelineToFFmpeg:
     def _apply_mask(self, input_label: str, metadata: dict[str, Any]) -> str:
         canvas_w = self.preset.video.width or 1920
         canvas_h = self.preset.video.height or 1080
-        width = metadata.get("width")
-        height = metadata.get("height")
+        width_value = self._normalize_to_pixels(metadata.get("width"), canvas_w)
+        height_value = self._normalize_to_pixels(metadata.get("height"), canvas_h)
+        width = None if width_value is None else max(1, int(round(width_value)))
+        height = None if height_value is None else max(1, int(round(height_value)))
         if width is None or height is None:
             return input_label
-        x = metadata.get("x", 0)
-        y = metadata.get("y", 0)
+        x_value = self._normalize_to_pixels(metadata.get("x"), canvas_w)
+        y_value = self._normalize_to_pixels(metadata.get("y"), canvas_h)
+        x = int(round(0 if x_value is None else x_value))
+        y = int(round(0 if y_value is None else y_value))
         expr = (
             f"crop={width}:{height}:{x}:{y},format=rgba,"
             f"pad={canvas_w}:{canvas_h}:{x}:{y}:color=0x00000000"
@@ -834,12 +904,18 @@ class TimelineToFFmpeg:
         return self._apply_simple_video_filter(input_label, expr)
 
     def _apply_mask_blur(self, input_label: str, metadata: dict[str, Any]) -> str:
-        width = metadata.get("width")
-        height = metadata.get("height")
+        canvas_w = self.preset.video.width or 1920
+        canvas_h = self.preset.video.height or 1080
+        width_value = self._normalize_to_pixels(metadata.get("width"), canvas_w)
+        height_value = self._normalize_to_pixels(metadata.get("height"), canvas_h)
+        width = None if width_value is None else max(1, int(round(width_value)))
+        height = None if height_value is None else max(1, int(round(height_value)))
         if width is None or height is None:
             return input_label
-        x = metadata.get("x", 0)
-        y = metadata.get("y", 0)
+        x_value = self._normalize_to_pixels(metadata.get("x"), canvas_w)
+        y_value = self._normalize_to_pixels(metadata.get("y"), canvas_h)
+        x = int(round(0 if x_value is None else x_value))
+        y = int(round(0 if y_value is None else y_value))
         radius = metadata.get("radius", 8)
 
         base_label = f"vblur_base_{self._filter_counter}"
@@ -865,11 +941,10 @@ class TimelineToFFmpeg:
     ) -> str:
         start_zoom = float(metadata.get("start_zoom", 1.0))
         end_zoom = float(metadata.get("end_zoom", 1.0))
-        center_x = float(metadata.get("center_x", 0.5))
-        center_y = float(metadata.get("center_y", 0.5))
-
         canvas_w = self.preset.video.width or 1920
         canvas_h = self.preset.video.height or 1080
+        center_x = self._normalize_ratio(metadata.get("center_x"), canvas_w, 0.5)
+        center_y = self._normalize_ratio(metadata.get("center_y"), canvas_h, 0.5)
         framerate = self.preset.video.framerate or self.timeline.metadata.get(
             "default_rate", 24.0
         )
@@ -935,17 +1010,24 @@ class TimelineToFFmpeg:
         )
 
     def _apply_video_transitions(
-        self, segments: list[str], transitions: list[TransitionInfo]
+        self,
+        segments: list[str],
+        transitions: list[TransitionInfo],
+        segment_durations: list[float],
     ) -> str:
         if not transitions:
             return self._concat_video_segments(segments)
 
         result = segments[0]
+        result_duration = segment_durations[0] if segment_durations else 0.0
         transition_idx = 0
 
         for i in range(1, len(segments)):
             out_label = f"vtrans_{self._filter_counter}"
             self._filter_counter += 1
+            next_duration = (
+                segment_durations[i] if i < len(segment_durations) else 0.0
+            )
 
             trans = None
             if transition_idx < len(transitions):
@@ -955,33 +1037,52 @@ class TimelineToFFmpeg:
 
             if trans:
                 trans_type = self._map_transition_type(trans.transition_type)
-                offset = max(0, trans.duration / 2)
-
-                self._video_filters.append(
-                    f"[{result}][{segments[i]}]xfade=transition={trans_type}:"
-                    f"duration={trans.duration}:offset={offset}[{out_label}]"
+                transition_duration = max(
+                    0.0, min(trans.duration, result_duration, next_duration)
                 )
+                if transition_duration > 0:
+                    offset = max(0.0, result_duration - transition_duration)
+                    self._video_filters.append(
+                        f"[{result}][{segments[i]}]xfade=transition={trans_type}:"
+                        f"duration={transition_duration}:offset={offset}[{out_label}]"
+                    )
+                    result_duration = (
+                        result_duration + next_duration - transition_duration
+                    )
+                else:
+                    self._video_filters.append(
+                        f"[{result}][{segments[i]}]concat=n=2:v=1:a=0[{out_label}]"
+                    )
+                    result_duration += next_duration
             else:
                 self._video_filters.append(
                     f"[{result}][{segments[i]}]concat=n=2:v=1:a=0[{out_label}]"
                 )
+                result_duration += next_duration
 
             result = out_label
 
         return result
 
     def _apply_audio_transitions(
-        self, segments: list[str], transitions: list[TransitionInfo]
+        self,
+        segments: list[str],
+        transitions: list[TransitionInfo],
+        segment_durations: list[float],
     ) -> str:
         if not transitions:
             return self._concat_audio_segments(segments)
 
         result = segments[0]
+        result_duration = segment_durations[0] if segment_durations else 0.0
         transition_idx = 0
 
         for i in range(1, len(segments)):
             out_label = f"atrans_{self._filter_counter}"
             self._filter_counter += 1
+            next_duration = (
+                segment_durations[i] if i < len(segment_durations) else 0.0
+            )
 
             trans = None
             if transition_idx < len(transitions):
@@ -990,13 +1091,27 @@ class TimelineToFFmpeg:
                     transition_idx += 1
 
             if trans:
-                self._audio_filters.append(
-                    f"[{result}][{segments[i]}]acrossfade=d={trans.duration}[{out_label}]"
+                transition_duration = max(
+                    0.0, min(trans.duration, result_duration, next_duration)
                 )
+                if transition_duration > 0:
+                    self._audio_filters.append(
+                        f"[{result}][{segments[i]}]acrossfade=d={transition_duration}"
+                        f"[{out_label}]"
+                    )
+                    result_duration = (
+                        result_duration + next_duration - transition_duration
+                    )
+                else:
+                    self._audio_filters.append(
+                        f"[{result}][{segments[i]}]concat=n=2:v=0:a=1[{out_label}]"
+                    )
+                    result_duration += next_duration
             else:
                 self._audio_filters.append(
                     f"[{result}][{segments[i]}]concat=n=2:v=0:a=1[{out_label}]"
                 )
+                result_duration += next_duration
 
             result = out_label
 

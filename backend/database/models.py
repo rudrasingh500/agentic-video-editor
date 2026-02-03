@@ -8,6 +8,7 @@ from sqlalchemy import (
     ForeignKey,
     Computed,
     Boolean,
+    Float,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID, ARRAY, TSVECTOR
 from sqlalchemy.sql import func
@@ -354,4 +355,111 @@ class RenderJob(Base):
             f"<RenderJob job_id={self.job_id} "
             f"project_id={self.project_id} "
             f"status={self.status} progress={self.progress}%>"
+        )
+
+
+class ProjectEntity(Base):
+    """
+    A detected element (face, object, speaker, location) from an asset.
+    Each detection = one entity. Users/agents can merge entities that represent
+    the same real-world thing.
+    """
+
+    __tablename__ = "project_entities"
+
+    entity_id = Column(
+        UUID, unique=True, index=True, nullable=False, primary_key=True, default=uuid4
+    )
+    project_id = Column(
+        UUID,
+        ForeignKey("projects.project_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    asset_id = Column(
+        UUID,
+        ForeignKey("assets.asset_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    entity_type = Column(String, nullable=False)  # "face", "object", "speaker", "location"
+    name = Column(String, nullable=False)  # Auto-generated, user can edit
+    description = Column(String, nullable=True)  # Full description from AI
+
+    embedding = Column(Vector(EMBEDDING_DIMENSIONS), nullable=True)
+
+    source_data = Column(JSONB, nullable=False)  # Original detection data (timestamps, etc.)
+
+    # If this entity was merged into another, points to the primary entity
+    merged_into_id = Column(
+        UUID, ForeignKey("project_entities.entity_id"), nullable=True
+    )
+
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
+    updated_at = Column(
+        DateTime, nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (
+        Index("ix_project_entities_project_id", project_id),
+        Index("ix_project_entities_asset_id", asset_id),
+        Index("ix_project_entities_type", entity_type),
+        Index("ix_project_entities_merged", merged_into_id),
+        Index(
+            "ix_project_entities_embedding",
+            embedding,
+            postgresql_using="ivfflat",
+            postgresql_ops={"embedding": "vector_cosine_ops"},
+        ),
+    )
+
+    def __repr__(self):
+        return (
+            f"<ProjectEntity entity_id={self.entity_id} "
+            f"type={self.entity_type} name={self.name[:30]}>"
+        )
+
+
+class EntitySimilarity(Base):
+    """
+    Pre-computed similarity between two entities of the same type.
+    Used to surface 'potential matches' to agent/user for verification.
+    """
+
+    __tablename__ = "entity_similarities"
+
+    id = Column(
+        UUID, unique=True, index=True, nullable=False, primary_key=True, default=uuid4
+    )
+
+    entity_a_id = Column(
+        UUID,
+        ForeignKey("project_entities.entity_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    entity_b_id = Column(
+        UUID,
+        ForeignKey("project_entities.entity_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    similarity_score = Column(Float, nullable=False)  # 0.0 - 1.0
+
+    # Verification status: null=pending, True=confirmed same, False=confirmed different
+    is_confirmed = Column(Boolean, nullable=True, default=None)
+    confirmed_by = Column(String, nullable=True)  # "user" or "agent"
+    confirmed_at = Column(DateTime, nullable=True)
+
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        Index("ix_entity_similarities_entity_a", entity_a_id),
+        Index("ix_entity_similarities_entity_b", entity_b_id),
+        Index("ix_entity_similarities_score", similarity_score.desc()),
+        Index("ix_entity_similarities_unconfirmed", is_confirmed, postgresql_where=(is_confirmed.is_(None))),
+    )
+
+    def __repr__(self):
+        return (
+            f"<EntitySimilarity {self.entity_a_id} <-> {self.entity_b_id} "
+            f"score={self.similarity_score:.2f} confirmed={self.is_confirmed}>"
         )

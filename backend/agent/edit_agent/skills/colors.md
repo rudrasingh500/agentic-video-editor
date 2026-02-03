@@ -1,68 +1,200 @@
 ---
 id: colors
 title: Colors
-summary: Apply LUTs, grading, curves, and white balance adjustments.
+summary: Patch operations for LUTs, grading, curves, and white balance.
 ---
 
 ## lut - Apply LUT
-Summary: Apply a 3D LUT file with optional intensity.
+Summary: Apply a LUT via add_effect.
 ```json
 {
   "type": "object",
   "properties": {
-    "track_index": {"type": "integer"},
-    "clip_index": {"type": "integer"},
-    "lut_path": {"type": "string"},
-    "intensity": {"type": "number"}
+    "description": {"type": "string"},
+    "operations": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "properties": {
+          "operation_type": {"const": "add_effect"},
+          "operation_data": {
+            "type": "object",
+            "properties": {
+              "track_index": {"type": "integer"},
+              "item_index": {"type": "integer"},
+              "effect": {
+                "type": "object",
+                "properties": {
+                  "OTIO_SCHEMA": {"const": "Effect.1"},
+                  "effect_name": {"const": "LUT"},
+                  "metadata": {
+                    "type": "object",
+                    "properties": {
+                      "type": {"const": "lut"},
+                      "path": {"type": "string"},
+                      "intensity": {"type": "number"}
+                    },
+                    "required": ["type", "path"]
+                  }
+                },
+                "required": ["OTIO_SCHEMA", "effect_name", "metadata"]
+              }
+            },
+            "required": ["track_index", "item_index", "effect"]
+          }
+        },
+        "required": ["operation_type", "operation_data"]
+      }
+    }
   },
-  "required": ["track_index", "clip_index", "lut_path"]
+  "required": ["description", "operations"]
 }
 ```
 
 ## grade - Basic Grade
-Summary: Apply brightness, contrast, saturation, and gamma adjustments.
+Summary: Apply brightness/contrast/saturation/gamma via add_effect.
 ```json
 {
   "type": "object",
   "properties": {
-    "track_index": {"type": "integer"},
-    "clip_index": {"type": "integer"},
-    "brightness": {"type": "number"},
-    "contrast": {"type": "number"},
-    "saturation": {"type": "number"},
-    "gamma": {"type": "number"}
+    "description": {"type": "string"},
+    "operations": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "properties": {
+          "operation_type": {"const": "add_effect"},
+          "operation_data": {
+            "type": "object",
+            "properties": {
+              "track_index": {"type": "integer"},
+              "item_index": {"type": "integer"},
+              "effect": {
+                "type": "object",
+                "properties": {
+                  "OTIO_SCHEMA": {"const": "Effect.1"},
+                  "effect_name": {"const": "ColorGrade"},
+                  "metadata": {
+                    "type": "object",
+                    "properties": {
+                      "type": {"const": "grade"},
+                      "brightness": {"type": "number"},
+                      "contrast": {"type": "number"},
+                      "saturation": {"type": "number"},
+                      "gamma": {"type": "number"}
+                    },
+                    "required": ["type"]
+                  }
+                },
+                "required": ["OTIO_SCHEMA", "effect_name", "metadata"]
+              }
+            },
+            "required": ["track_index", "item_index", "effect"]
+          }
+        },
+        "required": ["operation_type", "operation_data"]
+      }
+    }
   },
-  "required": ["track_index", "clip_index"]
+  "required": ["description", "operations"]
 }
 ```
 
 ## curves - Curves
-Summary: Apply a curves preset or explicit points.
+Summary: Apply curves via add_effect.
 ```json
 {
   "type": "object",
   "properties": {
-    "track_index": {"type": "integer"},
-    "clip_index": {"type": "integer"},
-    "preset": {"type": "string"},
-    "points": {"type": "string"}
+    "description": {"type": "string"},
+    "operations": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "properties": {
+          "operation_type": {"const": "add_effect"},
+          "operation_data": {
+            "type": "object",
+            "properties": {
+              "track_index": {"type": "integer"},
+              "item_index": {"type": "integer"},
+              "effect": {
+                "type": "object",
+                "properties": {
+                  "OTIO_SCHEMA": {"const": "Effect.1"},
+                  "effect_name": {"const": "Curves"},
+                  "metadata": {
+                    "type": "object",
+                    "properties": {
+                      "type": {"const": "curves"},
+                      "preset": {"type": "string"},
+                      "points": {"type": "string"}
+                    },
+                    "required": ["type"]
+                  }
+                },
+                "required": ["OTIO_SCHEMA", "effect_name", "metadata"]
+              }
+            },
+            "required": ["track_index", "item_index", "effect"]
+          }
+        },
+        "required": ["operation_type", "operation_data"]
+      }
+    }
   },
-  "required": ["track_index", "clip_index"]
+  "required": ["description", "operations"]
 }
 ```
 
 ## white_balance - White Balance
-Summary: Adjust white balance offsets for RGB channels.
+Summary: Adjust white balance via add_effect.
 ```json
 {
   "type": "object",
   "properties": {
-    "track_index": {"type": "integer"},
-    "clip_index": {"type": "integer"},
-    "red": {"type": "number"},
-    "green": {"type": "number"},
-    "blue": {"type": "number"}
+    "description": {"type": "string"},
+    "operations": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "properties": {
+          "operation_type": {"const": "add_effect"},
+          "operation_data": {
+            "type": "object",
+            "properties": {
+              "track_index": {"type": "integer"},
+              "item_index": {"type": "integer"},
+              "effect": {
+                "type": "object",
+                "properties": {
+                  "OTIO_SCHEMA": {"const": "Effect.1"},
+                  "effect_name": {"const": "WhiteBalance"},
+                  "metadata": {
+                    "type": "object",
+                    "properties": {
+                      "type": {"const": "white_balance"},
+                      "red": {"type": "number"},
+                      "green": {"type": "number"},
+                      "blue": {"type": "number"}
+                    },
+                    "required": ["type"]
+                  }
+                },
+                "required": ["OTIO_SCHEMA", "effect_name", "metadata"]
+              }
+            },
+            "required": ["track_index", "item_index", "effect"]
+          }
+        },
+        "required": ["operation_type", "operation_data"]
+      }
+    }
   },
-  "required": ["track_index", "clip_index"]
+  "required": ["description", "operations"]
 }
 ```
