@@ -98,6 +98,11 @@ def report_status(
 
     import requests
 
+    headers = {}
+    webhook_secret = os.environ.get("RENDER_WEBHOOK_SECRET")
+    if webhook_secret:
+        headers["X-Render-Webhook-Secret"] = webhook_secret
+
     try:
         payload = {
             "job_id": job_id,
@@ -107,7 +112,12 @@ def report_status(
             "output_url": output_url,
             "output_size_bytes": output_size_bytes,
         }
-        response = requests.post(callback_url, json=payload, timeout=10)
+        response = requests.post(
+            callback_url,
+            json=payload,
+            headers=headers or None,
+            timeout=10,
+        )
         response.raise_for_status()
     except Exception as e:
         logger.warning(f"Failed to report status: {e}")

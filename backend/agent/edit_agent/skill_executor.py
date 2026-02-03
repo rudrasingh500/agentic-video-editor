@@ -416,6 +416,14 @@ def execute_skill(
     elif skill_id == "captions.add":
         captions = arguments["captions"]
         track_index = arguments.get("track_index")
+        if track_index is not None:
+            snapshot = get_timeline_snapshot(db, timeline_id)
+            if track_index >= len(snapshot.timeline.tracks.children):
+                track_index = None
+            else:
+                track_name = getattr(snapshot.timeline.tracks.children[track_index], "name", "")
+                if track_name.lower() != "captions":
+                    track_index = None
         if track_index is None:
             track_index, expected_version = _ensure_named_track(
                 db,
@@ -424,6 +432,7 @@ def execute_skill(
                 actor,
                 expected_version,
             )
+        captions = sorted(captions, key=lambda entry: entry.get("start_ms", 0))
         for entry in captions:
             start_ms = entry["start_ms"]
             end_ms = entry["end_ms"]

@@ -9,7 +9,15 @@ import {
 import type { AppConfig } from '../lib/config'
 import { api } from '../lib/api'
 import { loadAssetCache, saveAssetCache, type AssetCacheIndex } from '../lib/assetCache'
-import type { Asset, EditPatchSummary, Project } from '../lib/types'
+import { loadSessionId, saveSessionId } from '../lib/chatSessions'
+import type {
+  Asset,
+  EditPatchSummary,
+  EditSessionDetail,
+  EditSessionPendingPatch,
+  EditSessionSummary,
+  Project,
+} from '../lib/types'
 
 type EditorProps = {
   project: Project
@@ -29,6 +37,10 @@ type RenderState = {
   status?: string
   progress?: number
   outputPath?: string
+}
+
+type UploadResult = {
+  sizeBytes: number
 }
 
 const buildStandardPreset = (useGpu: boolean) => ({
@@ -55,7 +67,8 @@ const buildStandardPreset = (useGpu: boolean) => ({
 
 const toFileUrl = (filePath: string) => {
   const normalized = filePath.replace(/\\/g, '/')
-  return `file://${normalized.startsWith('/') ? '' : '/'}${normalized}`
+  const prefix = normalized.startsWith('/') ? '' : '/'
+  return encodeURI(`file://${prefix}${normalized}`)
 }
 
 const Editor = ({ project, config, onBack, onOpenSettings }: EditorProps) => {
@@ -71,10 +84,81 @@ const Editor = ({ project, config, onBack, onOpenSettings }: EditorProps) => {
     null,
   )
   const [renderState, setRenderState] = useState<RenderState>({})
+  const [renderLogs, setRenderLogs] = useState<string[]>([])
   const [previewPath, setPreviewPath] = useState<string | null>(null)
+  const [previewKey, setPreviewKey] = useState(0)
   const [assetCache, setAssetCache] = useState<AssetCacheIndex>(() => loadAssetCache())
   const assetsRef = useRef<Asset[]>([])
   const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const [sessions, setSessions] = useState<EditSessionSummary[]>([])
+  const [sessionsLoading, setSessionsLoading] = useState(false)
+  const [sessionsError, setSessionsError] = useState<string | null>(null)
+
+  const mapSessionMessages = (session: EditSessionDetail): ChatMessage[] =>
+    (session.messages || []).map((message, index) => ({
+      id: message.created_at ?? `${session.session_id}-${index}`,
+      role: message.role === 'assistant' ? 'assistant' : 'user',
+      content: message.content ?? '',
+    }))
+
+  const mapPendingPatches = (
+    patches: EditSessionPendingPatch[] | undefined,
+  ): EditPatchSummary[] =>
+    (patches || []).map((patch) => ({
+      patch_id: patch.patch_id,
+      agent_type: patch.agent_type ?? 'edit_agent',
+      operation_count: patch.patch?.operations?.length ?? 0,
+      description: patch.patch?.description ?? '',
+      created_at: patch.created_at ?? new Date().toISOString(),
+    }))
+
+  const loadSession = useCallback(
+    async (nextSessionId: string) => {
+      setSessionsError(null)
+      const detail = await api.getEditSession(
+        config,
+        project.project_id,
+        nextSessionId,
+      )
+      setSessionId(detail.session_id)
+      saveSessionId(project.project_id, detail.session_id)
+      setMessages(mapSessionMessages(detail))
+      setPendingPatches(mapPendingPatches(detail.pending_patches))
+    },
+    [config, project.project_id],
+  )
+
+  const refreshSessions = useCallback(
+    async (selectSessionId?: string | null) => {
+      setSessionsLoading(true)
+      setSessionsError(null)
+      try {
+        const response = await api.listEditSessions(config, project.project_id)
+        setSessions(response.sessions || [])
+        const stored = loadSessionId(project.project_id)
+        const nextSessionId = selectSessionId || stored || response.sessions?.[0]?.session_id
+        if (nextSessionId) {
+          await loadSession(nextSessionId)
+        } else {
+          setSessionId(null)
+          setMessages([])
+          setPendingPatches([])
+        }
+      } catch (error) {
+        setSessionsError((error as Error).message)
+      } finally {
+        setSessionsLoading(false)
+      }
+    },
+    [config, project.project_id, loadSession],
+  )
+
+  const handleNewSession = useCallback(() => {
+    setSessionId(null)
+    setMessages([])
+    setPendingPatches([])
+    saveSessionId(project.project_id, null)
+  }, [project.project_id])
 
   const fetchAssets = useCallback(
     async (silent = false) => {
@@ -121,6 +205,10 @@ const Editor = ({ project, config, onBack, onOpenSettings }: EditorProps) => {
       window.clearInterval(interval)
     }
   }, [fetchAssets])
+
+  useEffect(() => {
+    refreshSessions().catch(() => {})
+  }, [refreshSessions])
 
   useEffect(() => {
     let active = true
@@ -190,17 +278,85 @@ const Editor = ({ project, config, onBack, onOpenSettings }: EditorProps) => {
       }
       setRenderState((prev) => ({
         ...prev,
-        status: event.code === 0 ? 'completed' : 'failed',
+        status: event.code === 0 ? 'uploading' : 'failed',
         outputPath: event.outputPath,
       }))
       setPreviewPath(event.outputPath)
+      setPreviewKey((prev) => prev + 1)
+      if (event.code === 0) {
+        void uploadRenderOutput(event.jobId, event.outputPath)
+      }
+    })
+
+    const unsubscribeLogs = window.desktopApi.onRenderLog((event) => {
+      if (event.jobId !== renderState.jobId) {
+        return
+      }
+      const lines = event.message.split(/\r?\n/).filter(Boolean)
+      if (lines.length === 0) {
+        return
+      }
+      setRenderLogs((prev) => {
+        const next = [...prev, ...lines]
+        return next.length > 200 ? next.slice(next.length - 200) : next
+      })
     })
 
     return () => {
       unsubscribeProgress()
       unsubscribeComplete()
+      unsubscribeLogs()
     }
   }, [config, project.project_id, renderState.jobId])
+
+  const uploadRenderOutput = useCallback(
+    async (jobId: string, outputPath: string) => {
+      try {
+        const filename = outputPath.split(/[\\/]/).pop() || `${jobId}.mp4`
+        const uploadInfo = await api.getOutputUploadUrl(
+          config,
+          project.project_id,
+          filename,
+          'video/mp4',
+        )
+
+        const uploadResult = (await window.desktopApi.uploadRenderOutput({
+          filePath: outputPath,
+          uploadUrl: uploadInfo.upload_url,
+          contentType: 'video/mp4',
+        })) as UploadResult
+
+        await api.shareOutput(config, project.project_id, uploadInfo.gcs_path, null)
+
+        await api.reportRenderProgress(config, project.project_id, jobId, {
+          job_id: jobId,
+          status: 'completed',
+          progress: 100,
+          output_url: uploadInfo.gcs_path,
+          output_size_bytes: uploadResult.sizeBytes,
+        })
+
+        setRenderState((prev) => ({
+          ...prev,
+          status: 'completed',
+        }))
+      } catch (error) {
+        setRenderState((prev) => ({
+          ...prev,
+          status: 'failed',
+        }))
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: crypto.randomUUID(),
+            role: 'assistant',
+            content: `Render upload failed: ${(error as Error).message}`,
+          },
+        ])
+      }
+    },
+    [config, project.project_id],
+  )
 
   const updateAssetCache = (assetId: string, path: string) => {
     setAssetCache((prev) => {
@@ -266,7 +422,10 @@ const Editor = ({ project, config, onBack, onOpenSettings }: EditorProps) => {
         trimmed,
         sessionId,
       )
-      setSessionId(response.session_id)
+      if (response.session_id && response.session_id !== sessionId) {
+        setSessionId(response.session_id)
+        saveSessionId(project.project_id, response.session_id)
+      }
       setPendingPatches(response.pending_patches ?? [])
       setMessages((prev) => [
         ...prev,
@@ -276,6 +435,7 @@ const Editor = ({ project, config, onBack, onOpenSettings }: EditorProps) => {
           content: response.message,
         },
       ])
+      refreshSessions(response.session_id).catch(() => {})
     } catch (error) {
       setMessages((prev) => [
         ...prev,
@@ -316,6 +476,16 @@ const Editor = ({ project, config, onBack, onOpenSettings }: EditorProps) => {
     }
   }
 
+  const handleSessionChange = (value: string) => {
+    if (!value) {
+      handleNewSession()
+      return
+    }
+    loadSession(value).catch((error) => {
+      setSessionsError((error as Error).message)
+    })
+  }
+
   const handleRender = async () => {
     const useGpu = gpuInfo?.available ?? false
     try {
@@ -327,6 +497,7 @@ const Editor = ({ project, config, onBack, onOpenSettings }: EditorProps) => {
       })
 
       const jobId = jobResponse.job.job_id
+      setRenderLogs([])
       setRenderState({ jobId, status: 'queued', progress: 0 })
 
       const manifestResponse = await api.getRenderManifest(
@@ -343,8 +514,12 @@ const Editor = ({ project, config, onBack, onOpenSettings }: EditorProps) => {
         manifestData.asset_map as Record<string, string>,
       )) {
         if (assetCache[assetId]) {
-          updatedAssetMap[assetId] = assetCache[assetId]
-          continue
+          const cachedPath = assetCache[assetId]
+          const exists = await window.desktopApi.fileExists({ path: cachedPath })
+          if (exists) {
+            updatedAssetMap[assetId] = cachedPath
+            continue
+          }
         }
 
         const download = await api.getAssetDownloadUrl(
@@ -452,6 +627,7 @@ const Editor = ({ project, config, onBack, onOpenSettings }: EditorProps) => {
               <div className="flex h-[360px] items-center justify-center rounded-xl border border-white/5 bg-base-800/40">
                 {previewUrl ? (
                   <video
+                    key={previewKey}
                     src={previewUrl}
                     controls
                     className="h-full w-full rounded-xl object-contain"
@@ -477,6 +653,29 @@ const Editor = ({ project, config, onBack, onOpenSettings }: EditorProps) => {
                   <span>{renderState.progress ?? 0}%</span>
                 </div>
               ) : null}
+            </div>
+
+            <div className="rounded-2xl border border-white/10 bg-panel-glass p-4 shadow-soft">
+              <div className="flex items-center justify-between text-xs text-ink-300">
+                <span>Render logs</span>
+                {renderLogs.length > 0 ? (
+                  <button
+                    onClick={() => setRenderLogs([])}
+                    className="rounded-full border border-white/10 px-2 py-1 text-[11px] text-ink-300 hover:border-white/30"
+                  >
+                    Clear
+                  </button>
+                ) : null}
+              </div>
+              <div className="mt-3 max-h-40 overflow-auto rounded-lg border border-white/5 bg-base-900/60 px-3 py-2 text-[11px] text-ink-200 font-mono whitespace-pre-wrap break-all">
+                {renderLogs.length > 0 ? (
+                  renderLogs.map((line, index) => (
+                    <div key={`${index}-${line.slice(0, 12)}`}>{line}</div>
+                  ))
+                ) : (
+                  <div className="text-ink-500">No render logs yet.</div>
+                )}
+              </div>
             </div>
 
             <div className="rounded-2xl border border-white/10 bg-panel-glass p-4 shadow-soft">
@@ -548,6 +747,40 @@ const Editor = ({ project, config, onBack, onOpenSettings }: EditorProps) => {
                 GPU: {gpuInfo?.available ? 'NVENC ready' : 'CPU only'}
               </div>
             </div>
+            <button
+              onClick={handleNewSession}
+              className="rounded-full border border-white/10 px-3 py-1 text-[11px] text-ink-200 hover:border-white/30"
+            >
+              New session
+            </button>
+          </div>
+
+          <div className="rounded-xl border border-white/10 bg-base-900/80 p-3 text-xs text-ink-200">
+            <div className="mb-2 flex items-center justify-between text-[11px] text-ink-400">
+              <span>Session</span>
+              {sessionsLoading ? <span>Loading...</span> : null}
+            </div>
+            <select
+              value={sessionId ?? ''}
+              onChange={(event) => handleSessionChange(event.target.value)}
+              className="w-full rounded-lg border border-white/10 bg-base-800 px-2 py-2 text-xs text-ink-100"
+            >
+              <option value="">New session</option>
+              {sessions.map((session) => {
+                const label = session.title?.trim() || `Session ${session.session_id.slice(0, 8)}`
+                const status = session.status ? ` - ${session.status}` : ''
+                return (
+                  <option key={session.session_id} value={session.session_id}>
+                    {label}{status}
+                  </option>
+                )
+              })}
+            </select>
+            {sessionsError ? (
+              <div className="mt-2 rounded-md border border-red-500/40 bg-red-500/10 px-2 py-1 text-[11px] text-red-200">
+                {sessionsError}
+              </div>
+            ) : null}
           </div>
 
           <div className="flex-1 space-y-3 overflow-auto rounded-xl border border-white/5 bg-base-900/60 p-3 text-xs text-ink-200">

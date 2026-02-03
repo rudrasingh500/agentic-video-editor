@@ -6,7 +6,9 @@ electron.contextBridge.exposeInMainWorld("desktopApi", {
   getGpuInfo: () => electron.ipcRenderer.invoke("system:gpu"),
   cacheAsset: (args) => electron.ipcRenderer.invoke("assets:cache", args),
   downloadAsset: (args) => electron.ipcRenderer.invoke("assets:download", args),
+  fileExists: (args) => electron.ipcRenderer.invoke("fs:exists", args),
   startRender: (args) => electron.ipcRenderer.invoke("render:start", args),
+  uploadRenderOutput: (args) => electron.ipcRenderer.invoke("render:upload-output", args),
   onRenderProgress: (callback) => {
     const listener = (_event, payload) => {
       callback(payload);

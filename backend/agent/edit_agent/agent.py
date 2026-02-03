@@ -30,6 +30,8 @@ logger = logging.getLogger(__name__)
 
 MODEL = "google/gemini-3-pro-preview"
 MAX_ITERATIONS = 20
+LOG_PAYLOADS = os.getenv("EDIT_AGENT_LOG_PAYLOADS", "").lower() in {"1", "true", "yes"}
+LOG_MAX_CHARS = int(os.getenv("EDIT_AGENT_LOG_MAX_CHARS", "2000"))
 
 
 def _get_client() -> OpenAI:
@@ -95,6 +97,7 @@ def orchestrate_edit(
     history = list(session_record.messages or [])
     messages.extend(_history_messages(history))
     messages.append({"role": "user", "content": request.message})
+    _log_payload("user_message", request.message)
 
     client = _get_client()
     trace: list[dict] = []
@@ -119,6 +122,15 @@ def orchestrate_edit(
 
         message = response.choices[0].message
         final_content = message.content or ""
+        _log_payload("assistant_message", final_content)
+
+        reasoning = getattr(message, "reasoning", None)
+        if not reasoning:
+            model_extra = getattr(message, "model_extra", None)
+            if isinstance(model_extra, dict):
+                reasoning = model_extra.get("reasoning")
+        if reasoning:
+            _log_payload("assistant_reasoning", reasoning)
 
         assistant_msg: dict[str, Any] = {"role": "assistant", "content": message.content}
         if message.tool_calls:
@@ -143,6 +155,11 @@ def orchestrate_edit(
                 except json.JSONDecodeError:
                     tool_args = {}
 
+                _log_payload(
+                    "tool_call",
+                    {"name": tool_name, "arguments": tool_args},
+                )
+
                 trace_entry = {
                     "iteration": iteration,
                     "tool": tool_name,
@@ -160,6 +177,11 @@ def orchestrate_edit(
 
                 trace_entry["result"] = result
                 trace.append(trace_entry)
+
+                _log_payload(
+                    "tool_result",
+                    {"name": tool_name, "result": result},
+                )
 
                 if tool_name == "execute_edit":
                     applied = result.get("applied", applied)
@@ -192,6 +214,15 @@ def orchestrate_edit(
     applied = final_payload.get("applied", applied)
     new_version = final_payload.get("new_version", new_version)
     warnings.extend(final_payload.get("warnings", []))
+    _log_payload(
+        "final_response",
+        {
+            "message": final_message,
+            "applied": applied,
+            "new_version": new_version,
+            "warnings": warnings,
+        },
+    )
 
     existing_messages = list(session_record.messages or [])
     session_record.messages = existing_messages + _serialize_messages(
@@ -326,3 +357,18 @@ def _parse_iso(value: str | None) -> datetime | None:
         return datetime.fromisoformat(value)
     except ValueError:
         return None
+
+
+def _log_payload(label: str, payload: Any) -> None:
+    if not LOG_PAYLOADS:
+        return
+    if isinstance(payload, str):
+        message = payload
+    else:
+        try:
+            message = json.dumps(payload, default=str, ensure_ascii=True)
+        except TypeError:
+            message = str(payload)
+    if LOG_MAX_CHARS > 0 and len(message) > LOG_MAX_CHARS:
+        message = f"{message[:LOG_MAX_CHARS]}... [truncated]"
+    logger.info("Edit agent %s: %s", label, message)

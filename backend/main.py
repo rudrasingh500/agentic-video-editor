@@ -25,6 +25,26 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
 )
 
+EDIT_AGENT_LOG_FILE = os.getenv("EDIT_AGENT_LOG_FILE", "").strip()
+if EDIT_AGENT_LOG_FILE:
+    log_path = Path(EDIT_AGENT_LOG_FILE)
+    if not log_path.is_absolute():
+        log_path = ROOT_DIR / log_path
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    file_handler = logging.FileHandler(log_path, encoding="utf-8")
+    file_handler.setLevel(LOG_LEVEL)
+    file_handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s")
+    )
+    edit_logger = logging.getLogger("agent.edit_agent")
+    if not any(
+        isinstance(handler, logging.FileHandler)
+        and getattr(handler, "baseFilename", None) == str(log_path)
+        for handler in edit_logger.handlers
+    ):
+        edit_logger.addHandler(file_handler)
+    edit_logger.setLevel(LOG_LEVEL)
+
 app = FastAPI(app_name="Agent Editor Backend")
 
 

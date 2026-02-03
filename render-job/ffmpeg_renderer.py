@@ -50,6 +50,7 @@ class TrackSegment:
     speed_factor: float = 1.0
     is_freeze: bool = False
     effects: list[dict[str, Any]] = field(default_factory=list)
+    transparent: bool = False
 
 
 @dataclass
@@ -132,9 +133,40 @@ class TimelineToFFmpeg:
         if not tracks:
             return None
 
-        track_outputs: list[str] = []
+        track_data: list[tuple[int, list[TrackSegment], list[TransitionInfo], float]] = []
         for track_idx, track in enumerate(tracks):
-            segments, transitions = self._extract_track_segments(track)
+            track_name = str(track.get("name", ""))
+            align_generator_start = track_name.lower() == "captions"
+            transparent_gaps = track_idx > 0
+            segments, transitions = self._extract_track_segments(
+                track,
+                align_generator_start=align_generator_start,
+                transparent_gaps=transparent_gaps,
+            )
+            duration = sum(seg.duration for seg in segments)
+            track_data.append((track_idx, segments, transitions, duration))
+
+        if not track_data:
+            return None
+
+        base_duration = track_data[0][3]
+        target_duration = base_duration or max((d for _, _, _, d in track_data), default=0)
+
+        track_outputs: list[str] = []
+        for track_idx, segments, transitions, duration in track_data:
+            if track_idx > 0 and target_duration > duration:
+                pad_duration = target_duration - duration
+                segments.append(
+                    TrackSegment(
+                        start_time=duration,
+                        duration=pad_duration,
+                        source_start=0,
+                        source_duration=pad_duration,
+                        input_index=None,
+                        is_gap=True,
+                        transparent=True,
+                    )
+                )
             segment_outputs: list[str] = []
             for seg_idx, segment in enumerate(segments):
                 seg_out = self._process_video_segment(segment, track_idx, seg_idx)
@@ -180,7 +212,10 @@ class TimelineToFFmpeg:
         return self._mix_audio_tracks(track_outputs)
 
     def _extract_track_segments(
-        self, track: dict[str, Any]
+        self,
+        track: dict[str, Any],
+        align_generator_start: bool = False,
+        transparent_gaps: bool = False,
     ) -> tuple[list[TrackSegment], list[TransitionInfo]]:
         segments: list[TrackSegment] = []
         transitions: list[TransitionInfo] = []
@@ -205,6 +240,7 @@ class TimelineToFFmpeg:
                         source_duration=duration,
                         input_index=None,
                         is_gap=True,
+                        transparent=transparent_gaps,
                     )
                 )
                 current_time += duration
@@ -235,6 +271,22 @@ class TimelineToFFmpeg:
             else:
                 input_index = None
 
+            if is_generator and align_generator_start and source_start > current_time:
+                gap_duration = source_start - current_time
+                segments.append(
+                    TrackSegment(
+                        start_time=current_time,
+                        duration=gap_duration,
+                        source_start=0,
+                        source_duration=gap_duration,
+                        input_index=None,
+                        is_gap=True,
+                        transparent=transparent_gaps,
+                    )
+                )
+                current_time += gap_duration
+                position += 1
+
             speed_factor, is_freeze, effects = self._parse_effects(item.get("effects", []))
 
             segments.append(
@@ -250,6 +302,7 @@ class TimelineToFFmpeg:
                     speed_factor=speed_factor,
                     is_freeze=is_freeze,
                     effects=effects,
+                    transparent=bool(input_index is None and not is_generator and transparent_gaps),
                 )
             )
             current_time += source_duration / speed_factor if speed_factor else source_duration
@@ -327,6 +380,7 @@ class TimelineToFFmpeg:
             f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
             f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2"
         )
+        filters.append("setsar=1")
 
         filter_chain = ",".join(filters)
         self._video_filters.append(f"[{input_label}]{filter_chain}[{label}]")
@@ -656,9 +710,16 @@ class TimelineToFFmpeg:
         width = self._video_width()
         height = self._video_height()
         framerate = self._framerate()
-        self._video_filters.append(
-            f"color=c=black:s={width}x{height}:d={segment.duration}:r={framerate}[{label}]"
-        )
+        if segment.transparent:
+            self._video_filters.append(
+                f"color=c=black@0.0:s={width}x{height}:d={segment.duration}:r={framerate},"
+                f"format=rgba,setsar=1[{label}]"
+            )
+        else:
+            self._video_filters.append(
+                f"color=c=black:s={width}x{height}:d={segment.duration}:r={framerate},"
+                f"setsar=1[{label}]"
+            )
         return label
 
     def _generate_gap_audio(self, segment: TrackSegment, label: str) -> str:
@@ -680,11 +741,19 @@ class TimelineToFFmpeg:
         if kind.lower() == "caption":
             text = self._escape_drawtext(str(params.get("text", "")))
             font = params.get("font")
-            size = params.get("size", 48)
-            color = params.get("color", "white")
+            size = params.get("size")
+            if not isinstance(size, (int, float)) or size <= 0:
+                size = 48
+            color = params.get("color")
+            if not color:
+                color = "white"
             bg_color = params.get("bg_color")
-            x = params.get("x", "(w-text_w)/2")
-            y = params.get("y", "h-120")
+            x = params.get("x")
+            if x is None or str(x).strip() == "":
+                x = "(w-text_w)/2"
+            y = params.get("y")
+            if y is None or str(y).strip() == "":
+                y = "h-120"
 
             drawtext_parts = [
                 f"text='{text}'",
@@ -706,20 +775,23 @@ class TimelineToFFmpeg:
             drawtext = "drawtext=" + ":".join(drawtext_parts)
             self._video_filters.append(
                 f"color=c=black@0.0:s={width}x{height}:d={segment.duration}:r={framerate},"
-                f"format=rgba,{drawtext}[{label}]"
+                f"format=rgba,{drawtext},setsar=1[{label}]"
             )
         elif kind == "SolidColor":
             color = params.get("color", "black")
             self._video_filters.append(
-                f"color=c={color}:s={width}x{height}:d={segment.duration}:r={framerate}[{label}]"
+                f"color=c={color}:s={width}x{height}:d={segment.duration}:r={framerate},"
+                f"setsar=1[{label}]"
             )
         elif kind == "Bars":
             self._video_filters.append(
-                f"smptebars=s={width}x{height}:d={segment.duration}:r={framerate}[{label}]"
+                f"smptebars=s={width}x{height}:d={segment.duration}:r={framerate},"
+                f"setsar=1[{label}]"
             )
         else:
             self._video_filters.append(
-                f"color=c=black:s={width}x{height}:d={segment.duration}:r={framerate}[{label}]"
+                f"color=c=black:s={width}x{height}:d={segment.duration}:r={framerate},"
+                f"setsar=1[{label}]"
             )
 
         return label
@@ -966,9 +1038,14 @@ class FFmpegRenderer:
         if progress_callback:
             progress_callback(10, "Built FFmpeg command")
 
-        logger.info(f"FFmpeg command: {' '.join(ffmpeg_cmd[:10])}...")
+        logger.info("FFmpeg command: %s", self._format_command(ffmpeg_cmd))
 
         output_path = Path(self._execute_ffmpeg(ffmpeg_cmd, progress_callback))
+        output_duration = self._probe_output_duration(output_path)
+        if output_duration is not None:
+            logger.info("Output duration: %.3fs", output_duration)
+            if output_duration <= 0.05:
+                raise RenderError("FFmpeg produced zero-duration output")
         output_url = self._upload_output(output_path)
 
         logger.info(f"Render complete: {output_path}")
@@ -1206,16 +1283,24 @@ class FFmpegRenderer:
         use_gpu = preset.get("use_gpu", False)
 
         codec = video.get("codec", "h264")
+        video_encoder = ""
         if use_gpu:
             if codec == "h264":
-                options.extend(["-c:v", "h264_nvenc"])
+                video_encoder = "h264_nvenc"
+                options.extend(["-c:v", video_encoder])
             elif codec == "h265":
-                options.extend(["-c:v", "hevc_nvenc"])
+                video_encoder = "hevc_nvenc"
+                options.extend(["-c:v", video_encoder])
         else:
             if codec == "h264":
-                options.extend(["-c:v", "libx264"])
+                video_encoder = "libx264"
+                options.extend(["-c:v", video_encoder])
             elif codec == "h265":
-                options.extend(["-c:v", "libx265"])
+                video_encoder = "libx265"
+                options.extend(["-c:v", video_encoder])
+
+        if video_encoder:
+            logger.info("Using video encoder: %s", video_encoder)
 
         crf = video.get("crf", 23)
         if use_gpu:
@@ -1299,18 +1384,24 @@ class FFmpegRenderer:
             process = subprocess.Popen(
                 cmd_with_progress,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                universal_newlines=True,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
             )
 
             duration = None
             last_progress = 10
+            output_tail: list[str] = []
 
             if process.stdout is None:
                 raise RenderError("FFmpeg did not provide a stdout stream")
 
             for line in process.stdout:
                 line = line.strip()
+                if line:
+                    output_tail.append(line)
+                    if len(output_tail) > 200:
+                        output_tail = output_tail[-200:]
 
                 if line.startswith("Duration:"):
                     match = re.search(r"Duration: (\d+):(\d+):(\d+)", line)
@@ -1334,10 +1425,12 @@ class FFmpegRenderer:
             process.wait()
 
             if process.returncode != 0:
-                stderr = process.stderr.read() if process.stderr else ""
+                tail_text = "\n".join(output_tail[-40:])
                 raise RenderError(
-                    f"FFmpeg failed (code {process.returncode}): {stderr}"
+                    f"FFmpeg failed (code {process.returncode}). Output:\n{tail_text}"
                 )
+            if output_tail:
+                logger.info("FFmpeg output (tail): %s", "\n".join(output_tail[-20:]))
 
             if progress_callback:
                 progress_callback(95, "Finalizing output")
@@ -1346,6 +1439,33 @@ class FFmpegRenderer:
 
         except subprocess.SubprocessError as e:
             raise RenderError(f"Failed to execute FFmpeg: {e}")
+
+    def _probe_output_duration(self, output_path: Path) -> float | None:
+        cmd = [
+            self._ffprobe_bin,
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            str(output_path),
+        ]
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            value = result.stdout.strip()
+            if not value:
+                return None
+            return float(value)
+        except (FileNotFoundError, subprocess.CalledProcessError, ValueError) as exc:
+            logger.warning("Failed to probe output duration: %s", exc)
+            return None
+
+    def _format_command(self, cmd: list[str]) -> str:
+        text = " ".join(cmd)
+        if len(text) > 4000:
+            return f"{text[:4000]}... [truncated]"
+        return text
 
     def cleanup(self):
         if self.temp_dir.exists():

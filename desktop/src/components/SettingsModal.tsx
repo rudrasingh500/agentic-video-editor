@@ -12,6 +12,9 @@ type SettingsModalProps = {
 const SettingsModal = ({ open, config, onClose, onSave }: SettingsModalProps) => {
   const [baseUrl, setBaseUrl] = useState(config.baseUrl)
   const [devToken, setDevToken] = useState(config.devToken)
+  const [renderWebhookSecret, setRenderWebhookSecret] = useState(
+    config.renderWebhookSecret,
+  )
 
   useEffect(() => {
     if (!open) {
@@ -19,10 +22,15 @@ const SettingsModal = ({ open, config, onClose, onSave }: SettingsModalProps) =>
     }
     setBaseUrl(config.baseUrl)
     setDevToken(config.devToken)
-  }, [config.baseUrl, config.devToken, open])
+    setRenderWebhookSecret(config.renderWebhookSecret)
+  }, [config.baseUrl, config.devToken, config.renderWebhookSecret, open])
 
   const handleSave = () => {
-    onSave({ baseUrl: baseUrl.trim(), devToken: devToken.trim() })
+    onSave({
+      baseUrl: baseUrl.trim(),
+      devToken: devToken.trim(),
+      renderWebhookSecret: renderWebhookSecret.trim(),
+    })
     onClose()
   }
 
@@ -45,6 +53,15 @@ const SettingsModal = ({ open, config, onClose, onSave }: SettingsModalProps) =>
             onChange={(event) => setDevToken(event.target.value)}
             className="mt-2 w-full rounded-xl border border-white/10 bg-base-800 px-3 py-2 text-ink-100 shadow-inner"
             placeholder="your-dev-token"
+          />
+        </label>
+        <label className="block text-sm text-ink-200">
+          Render Webhook Secret
+          <input
+            value={renderWebhookSecret}
+            onChange={(event) => setRenderWebhookSecret(event.target.value)}
+            className="mt-2 w-full rounded-xl border border-white/10 bg-base-800 px-3 py-2 text-ink-100 shadow-inner"
+            placeholder="render-webhook-secret"
           />
         </label>
         <div className="flex justify-end gap-3 pt-2">

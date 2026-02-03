@@ -228,6 +228,10 @@ def add_clip(
     ) -> TimelineCheckpointModel:
     current = get_timeline_snapshot(db, timeline_id)
     timeline = deepcopy(current.timeline)
+    if not timeline.tracks.children and track_index == 0:
+        timeline.tracks.children.append(
+            Track(name="Video 1", kind=TrackKind.VIDEO, children=[])
+        )
     track = _get_track(timeline, track_index)
     project_id = _get_timeline_project_id(db, timeline_id)
 
@@ -292,6 +296,10 @@ def add_generator_clip(
 ) -> TimelineCheckpointModel:
     current = get_timeline_snapshot(db, timeline_id)
     timeline = deepcopy(current.timeline)
+    if not timeline.tracks.children and track_index == 0:
+        timeline.tracks.children.append(
+            Track(name="Video 1", kind=TrackKind.VIDEO, children=[])
+        )
     track = _get_track(timeline, track_index)
 
     if name is None:

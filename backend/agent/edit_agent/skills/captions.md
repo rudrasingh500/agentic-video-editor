@@ -5,7 +5,7 @@ summary: Caption and text overlay generation tied to transcript ranges.
 ---
 
 ## add - Add Captions
-Summary: Add caption clips with text and styling.
+Summary: Add caption clips with text and styling. Omit track_index to auto-create/use the "Captions" overlay track.
 ```json
 {
   "type": "object",

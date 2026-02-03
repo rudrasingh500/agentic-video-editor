@@ -50,6 +50,7 @@ class TrackSegment:
     speed_factor: float = 1.0
     is_freeze: bool = False
     effects: list[dict[str, Any]] = field(default_factory=list)
+    transparent: bool = False
 
 
 @dataclass
@@ -163,10 +164,44 @@ class TimelineToFFmpeg:
         if not video_tracks:
             return None
 
-        track_outputs: list[str] = []
-
+        track_data: list[tuple[int, Track, list[TrackSegment], list[TransitionInfo], float]] = []
         for track_idx, track in enumerate(video_tracks):
-            track_out = self._process_video_track(track, track_idx)
+            track_name = (track.name or "").lower()
+            align_generator_start = track_name == "captions"
+            transparent_gaps = track_idx > 0
+            segments = self._extract_track_segments(
+                track,
+                align_generator_start=align_generator_start,
+                transparent_gaps=transparent_gaps,
+            )
+            transitions = self._extract_transitions(track)
+            duration = sum(seg.duration for seg in segments)
+            track_data.append((track_idx, track, segments, transitions, duration))
+
+        if not track_data:
+            return None
+
+        base_duration = track_data[0][4]
+        target_duration = base_duration or max((d for _, _, _, _, d in track_data), default=0)
+
+        track_outputs: list[str] = []
+        for track_idx, track, segments, transitions, duration in track_data:
+            if track_idx > 0 and target_duration > duration:
+                pad_duration = target_duration - duration
+                segments.append(
+                    TrackSegment(
+                        start_time=duration,
+                        duration=pad_duration,
+                        source_start=0,
+                        source_duration=pad_duration,
+                        input_index=None,
+                        is_gap=True,
+                        transparent=True,
+                    )
+                )
+            track_out = self._process_video_track_from_segments(
+                segments, transitions, track_idx
+            )
             if track_out:
                 track_outputs.append(track_out)
 
@@ -204,7 +239,14 @@ class TimelineToFFmpeg:
     def _process_video_track(self, track: Track, track_idx: int) -> str | None:
         segments = self._extract_track_segments(track)
         transitions = self._extract_transitions(track)
+        return self._process_video_track_from_segments(segments, transitions, track_idx)
 
+    def _process_video_track_from_segments(
+        self,
+        segments: list[TrackSegment],
+        transitions: list[TransitionInfo],
+        track_idx: int,
+    ) -> str | None:
         if not segments:
             return None
 
@@ -220,10 +262,9 @@ class TimelineToFFmpeg:
 
         if transitions and len(segment_outputs) > 1:
             return self._apply_video_transitions(segment_outputs, transitions)
-        elif len(segment_outputs) == 1:
+        if len(segment_outputs) == 1:
             return segment_outputs[0]
-        else:
-            return self._concat_video_segments(segment_outputs)
+        return self._concat_video_segments(segment_outputs)
 
     def _process_audio_track(self, track: Track, track_idx: int) -> str | None:
         segments = self._extract_track_segments(track)
@@ -249,7 +290,12 @@ class TimelineToFFmpeg:
         else:
             return self._concat_audio_segments(segment_outputs)
 
-    def _extract_track_segments(self, track: Track) -> list[TrackSegment]:
+    def _extract_track_segments(
+        self,
+        track: Track,
+        align_generator_start: bool = False,
+        transparent_gaps: bool = False,
+    ) -> list[TrackSegment]:
         segments: list[TrackSegment] = []
         current_time = 0.0
 
@@ -258,7 +304,27 @@ class TimelineToFFmpeg:
                 continue
 
             elif isinstance(child, Clip):
-                segment = self._clip_to_segment(child, current_time)
+                is_generator = isinstance(child.media_reference, GeneratorReference)
+                if is_generator and align_generator_start:
+                    start_time = child.source_range.start_time.to_seconds()
+                    if start_time > current_time:
+                        gap_duration = start_time - current_time
+                        segments.append(
+                            TrackSegment(
+                                start_time=current_time,
+                                duration=gap_duration,
+                                source_start=0,
+                                source_duration=gap_duration,
+                                input_index=None,
+                                is_gap=True,
+                                transparent=transparent_gaps,
+                            )
+                        )
+                        current_time += gap_duration
+
+                segment = self._clip_to_segment(
+                    child, current_time, transparent_gaps=transparent_gaps
+                )
                 segments.append(segment)
                 current_time += segment.duration
 
@@ -272,6 +338,7 @@ class TimelineToFFmpeg:
                         source_duration=duration,
                         input_index=None,
                         is_gap=True,
+                        transparent=transparent_gaps,
                     )
                 )
                 current_time += duration
@@ -286,13 +353,16 @@ class TimelineToFFmpeg:
                         source_duration=stack_duration,
                         input_index=None,
                         is_gap=True,
+                        transparent=transparent_gaps,
                     )
                 )
                 current_time += stack_duration
 
         return segments
 
-    def _clip_to_segment(self, clip: Clip, timeline_start: float) -> TrackSegment:
+    def _clip_to_segment(
+        self, clip: Clip, timeline_start: float, transparent_gaps: bool = False
+    ) -> TrackSegment:
         source_start = clip.source_range.start_time.to_seconds()
         source_duration = clip.source_range.duration.to_seconds()
 
@@ -319,6 +389,7 @@ class TimelineToFFmpeg:
                 source_duration=source_duration,
                 input_index=None,
                 is_gap=True,
+                transparent=transparent_gaps,
             )
 
         effects_data: list[dict[str, Any]] = []
@@ -355,6 +426,7 @@ class TimelineToFFmpeg:
             speed_factor=speed_factor,
             is_freeze=is_freeze,
             effects=effects_data,
+            transparent=False,
         )
 
     def _extract_transitions(self, track: Track) -> list[TransitionInfo]:
@@ -412,6 +484,7 @@ class TimelineToFFmpeg:
                 f"scale={self.preset.video.width}:{self.preset.video.height}:force_original_aspect_ratio=decrease,"
                 f"pad={self.preset.video.width}:{self.preset.video.height}:(ow-iw)/2:(oh-ih)/2"
             )
+            filters.append("setsar=1")
 
         filter_chain = ",".join(filters)
         self._video_filters.append(f"[{input_label}]{filter_chain}[{base_label}]")
@@ -472,9 +545,16 @@ class TimelineToFFmpeg:
         height = self.preset.video.height or 1080
         framerate = self.preset.video.framerate or 24
 
-        self._video_filters.append(
-            f"color=c=black:s={width}x{height}:d={segment.duration}:r={framerate}[{label}]"
-        )
+        if segment.transparent:
+            self._video_filters.append(
+                f"color=c=black@0.0:s={width}x{height}:d={segment.duration}:r={framerate},"
+                f"format=rgba,setsar=1[{label}]"
+            )
+        else:
+            self._video_filters.append(
+                f"color=c=black:s={width}x{height}:d={segment.duration}:r={framerate},"
+                f"setsar=1[{label}]"
+            )
         return label
 
     def _generate_gap_audio(self, segment: TrackSegment, label: str) -> str:
@@ -498,11 +578,19 @@ class TimelineToFFmpeg:
         if kind.lower() == "caption":
             text = self._escape_drawtext(str(params.get("text", "")))
             font = params.get("font")
-            size = params.get("size", 48)
-            color = params.get("color", "white")
+            size = params.get("size")
+            if not isinstance(size, (int, float)) or size <= 0:
+                size = 48
+            color = params.get("color")
+            if not color:
+                color = "white"
             bg_color = params.get("bg_color")
-            x = params.get("x", "(w-text_w)/2")
-            y = params.get("y", "h-120")
+            x = params.get("x")
+            if x is None or str(x).strip() == "":
+                x = "(w-text_w)/2"
+            y = params.get("y")
+            if y is None or str(y).strip() == "":
+                y = "h-120"
 
             drawtext_parts = [
                 f"text='{text}'",
@@ -524,20 +612,23 @@ class TimelineToFFmpeg:
             drawtext = "drawtext=" + ":".join(drawtext_parts)
             self._video_filters.append(
                 f"color=c=black@0.0:s={width}x{height}:d={segment.duration}:r={framerate},"
-                f"format=rgba,{drawtext}[{label}]"
+                f"format=rgba,{drawtext},setsar=1[{label}]"
             )
         elif kind == "SolidColor":
             color = params.get("color", "black")
             self._video_filters.append(
-                f"color=c={color}:s={width}x{height}:d={segment.duration}:r={framerate}[{label}]"
+                f"color=c={color}:s={width}x{height}:d={segment.duration}:r={framerate},"
+                f"setsar=1[{label}]"
             )
         elif kind == "Bars":
             self._video_filters.append(
-                f"smptebars=s={width}x{height}:d={segment.duration}:r={framerate}[{label}]"
+                f"smptebars=s={width}x{height}:d={segment.duration}:r={framerate},"
+                f"setsar=1[{label}]"
             )
         else:
             self._video_filters.append(
-                f"color=c=black:s={width}x{height}:d={segment.duration}:r={framerate}[{label}]"
+                f"color=c=black:s={width}x{height}:d={segment.duration}:r={framerate},"
+                f"setsar=1[{label}]"
             )
 
         return label

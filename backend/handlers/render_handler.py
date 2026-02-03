@@ -35,6 +35,7 @@ from operators.render_operator import (
     create_render_job,
     delete_render_job,
     dispatch_render_job,
+    ensure_render_manifest,
     get_render_job,
     list_render_jobs,
     poll_job_status,
@@ -157,7 +158,18 @@ async def get_render_manifest(
     metadata = job.job_metadata or {}
     manifest_path = metadata.get("manifest_path")
     if not manifest_path:
-        raise HTTPException(status_code=404, detail="Render manifest not available")
+        try:
+            manifest_path = ensure_render_manifest(db, job_id)
+        except MissingAssetsError as e:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Missing assets required for rendering: "
+                    f"{', '.join(e.missing_asset_ids)}"
+                ),
+            )
+        except RenderError as e:
+            raise HTTPException(status_code=500, detail=str(e))
 
     url = generate_signed_url(
         bucket_name=GCS_BUCKET,

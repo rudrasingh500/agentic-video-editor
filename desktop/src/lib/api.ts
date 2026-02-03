@@ -1,5 +1,11 @@
 import type { AppConfig } from './config'
-import type { Asset, EditPatchSummary, Project } from './types'
+import type {
+  Asset,
+  EditPatchSummary,
+  EditSessionDetail,
+  EditSessionSummary,
+  Project,
+} from './types'
 
 const normalizeBaseUrl = (baseUrl: string) => baseUrl.replace(/\/+$/, '')
 
@@ -99,10 +105,20 @@ export const api = {
       warnings: string[]
       applied: boolean
       new_version: number | null
-    }>(config, `/projects/${projectId}/edit`, {
-      method: 'POST',
-      body: JSON.stringify({ message, session_id: sessionId }),
-    }),
+      }>(config, `/projects/${projectId}/edit`, {
+        method: 'POST',
+        body: JSON.stringify({ message, session_id: sessionId }),
+      }),
+  listEditSessions: (config: AppConfig, projectId: string) =>
+    apiFetch<{ ok: boolean; sessions: EditSessionSummary[]; total: number }>(
+      config,
+      `/projects/${projectId}/edit/sessions`,
+    ),
+  getEditSession: (config: AppConfig, projectId: string, sessionId: string) =>
+    apiFetch<{ ok: boolean } & EditSessionDetail>(
+      config,
+      `/projects/${projectId}/edit/sessions/${sessionId}`,
+    ),
   applyPatches: (
     config: AppConfig,
     projectId: string,
@@ -148,6 +164,39 @@ export const api = {
       {
         method: 'POST',
         body: JSON.stringify(payload),
+        headers: config.renderWebhookSecret
+          ? { 'X-Render-Webhook-Secret': config.renderWebhookSecret }
+          : undefined,
       },
     ),
+  getOutputUploadUrl: (
+    config: AppConfig,
+    projectId: string,
+    filename: string,
+    contentType?: string,
+  ) =>
+    apiFetch<{ ok: boolean; upload_url: string; gcs_path: string; expires_in?: number }>(
+      config,
+      `/projects/${projectId}/outputs/upload-url`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ filename, content_type: contentType }),
+      },
+    ),
+  shareOutput: (
+    config: AppConfig,
+    projectId: string,
+    gcsPath: string,
+    changes?: Record<string, unknown> | null,
+  ) =>
+    apiFetch<{
+      ok: boolean
+      video_id: string
+      video_url: string
+      version: number
+      created_at: string
+    }>(config, `/projects/${projectId}/outputs`, {
+      method: 'POST',
+      body: JSON.stringify({ gcs_path: gcsPath, changes }),
+    }),
 }

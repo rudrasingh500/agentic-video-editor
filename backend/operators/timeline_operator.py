@@ -109,12 +109,13 @@ def create_timeline(
         timeline_id=timeline.timeline_id,
         version=0,
         parent_version=None,
-        snapshot=empty_timeline.model_dump(),
+        snapshot=empty_timeline.model_dump(mode="json"),
         description="Initial empty timeline",
         created_by=created_by,
         is_approved=True,
     )
     db.add(checkpoint)
+    db.flush()
 
     operation = TimelineOperationModel(
         checkpoint_id=checkpoint.checkpoint_id,
@@ -287,7 +288,7 @@ def create_checkpoint(
         timeline_id=timeline_id,
         version=new_version,
         parent_version=timeline.current_version,
-        snapshot=snapshot.model_dump(),
+        snapshot=snapshot.model_dump(mode="json"),
         description=description,
         created_by=created_by,
         is_approved=is_approved,

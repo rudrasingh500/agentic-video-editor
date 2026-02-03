@@ -23,7 +23,7 @@ TOOLS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "retrieve_assets",
-            "description": "Find relevant assets for the edit request.",
+            "description": "Search for relevant assets and return IDs (use view_asset to actually view footage).",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -68,7 +68,7 @@ TOOLS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "view_asset",
-            "description": "Get a signed URL to view an asset.",
+            "description": "Get a signed URL to visually inspect an asset (optionally with t0_ms/t1_ms in ms).",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -85,7 +85,7 @@ TOOLS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "render_output",
-            "description": "Render a preview output and return a signed URL.",
+            "description": "Render a preview output and return a signed URL for review.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -128,6 +128,7 @@ def execute_tool(
             **arguments,
         )
     except Exception as exc:
+        db.rollback()
         return {"error": str(exc)}
 
 

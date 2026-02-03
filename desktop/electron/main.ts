@@ -213,6 +213,11 @@ ipcMain.handle('paths:get', async () => ({
 
 ipcMain.handle('system:gpu', async () => detectGpu())
 
+ipcMain.handle('fs:exists', async (_event, args: { path: string }) => {
+  const { path: target } = args
+  return fs.existsSync(target)
+})
+
 ipcMain.handle(
   'assets:cache',
   async (_event, args: { assetId: string; sourcePath: string }) => {
@@ -325,3 +330,33 @@ ipcMain.handle('render:start', async (_event, args: RenderStartArgs) => {
 
   return { outputPath }
 })
+
+ipcMain.handle(
+  'render:upload-output',
+  async (
+    _event,
+    args: { filePath: string; uploadUrl: string; contentType?: string },
+  ) => {
+    const { filePath, uploadUrl, contentType } = args
+    if (!fs.existsSync(filePath)) {
+      throw new Error(`Render output not found: ${filePath}`)
+    }
+
+    const buffer = fs.readFileSync(filePath)
+    const response = await fetch(uploadUrl, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': contentType || 'application/octet-stream',
+      },
+      body: buffer,
+    })
+
+    if (!response.ok) {
+      const message = await response.text()
+      throw new Error(`Failed to upload output: ${response.status} ${message}`)
+    }
+
+    const stats = fs.statSync(filePath)
+    return { sizeBytes: stats.size }
+  },
+)

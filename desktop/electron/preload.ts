@@ -21,12 +21,15 @@ contextBridge.exposeInMainWorld('desktopApi', {
     ipcRenderer.invoke('assets:cache', args),
   downloadAsset: (args: { assetId: string; url: string; filename?: string }) =>
     ipcRenderer.invoke('assets:download', args),
+  fileExists: (args: { path: string }) => ipcRenderer.invoke('fs:exists', args),
   startRender: (args: {
     jobId: string
     projectId: string
     manifest: Record<string, unknown>
     outputName?: string
   }) => ipcRenderer.invoke('render:start', args),
+  uploadRenderOutput: (args: { filePath: string; uploadUrl: string; contentType?: string }) =>
+    ipcRenderer.invoke('render:upload-output', args),
   onRenderProgress: (callback: (event: RenderProgressEvent) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, payload: RenderProgressEvent) => {
       callback(payload)

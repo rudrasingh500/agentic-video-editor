@@ -40,6 +40,11 @@ from models.api_models import (
     EditSessionListResponse,
     EditSessionResponse,
 )
+from operators.timeline_operator import (
+    TimelineAlreadyExistsError,
+    create_timeline,
+    get_timeline_by_project,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +55,24 @@ def _require_user_id(session: SessionData) -> UUID:
     if session.user_id is None:
         raise HTTPException(status_code=401, detail="Not authenticated")
     return session.user_id
+
+
+def _ensure_timeline(db: Session, project: Project, actor: str) -> Timeline:
+    existing = get_timeline_by_project(db, project.project_id)
+    if existing:
+        return existing
+    try:
+        return create_timeline(
+            db=db,
+            project_id=project.project_id,
+            name=project.project_name,
+            created_by=actor,
+        )
+    except TimelineAlreadyExistsError:
+        existing = get_timeline_by_project(db, project.project_id)
+        if existing:
+            return existing
+        raise
 
 
 @router.post("", response_model=EditResponse)
@@ -66,11 +89,19 @@ async def send_edit_request(
     proposed edit patches for review.
     """
     user_id = _require_user_id(session)
+    try:
+        _ensure_timeline(db, project, f"user:{user_id}")
+    except Exception:
+        db.rollback()
+        logger.exception("Failed to initialize timeline for project %s", project.project_id)
+        raise HTTPException(status_code=500, detail="Failed to initialize timeline")
 
     request = EditRequest(
         message=body.message,
         session_id=body.session_id,
     )
+
+    extra_warnings: list[str] = []
 
     try:
         result = orchestrate_edit(
@@ -80,7 +111,28 @@ async def send_edit_request(
             db=db,
         )
     except SessionNotFoundError:
-        raise HTTPException(status_code=404, detail="Session not found")
+        if not request.session_id:
+            raise HTTPException(status_code=404, detail="Session not found")
+        logger.warning(
+            "Edit session %s not found for project %s. Starting new session.",
+            request.session_id,
+            project.project_id,
+        )
+        fallback_request = EditRequest(message=body.message, session_id=None)
+        try:
+            result = orchestrate_edit(
+                project_id=project.project_id,
+                user_id=user_id,
+                request=fallback_request,
+                db=db,
+            )
+        except SessionNotFoundError:
+            raise HTTPException(status_code=404, detail="Session not found")
+        except SessionClosedError:
+            raise HTTPException(status_code=400, detail="Session is closed")
+        extra_warnings.append(
+            "Previous edit session was not found. Started a new session."
+        )
     except SessionClosedError:
         raise HTTPException(status_code=400, detail="Session is closed")
 
@@ -101,7 +153,7 @@ async def send_edit_request(
         session_id=result.session_id,
         message=result.message,
         pending_patches=patch_summaries,
-        warnings=result.warnings,
+        warnings=extra_warnings + result.warnings,
         applied=result.applied,
         new_version=result.new_version,
     )

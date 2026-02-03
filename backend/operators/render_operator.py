@@ -222,11 +222,13 @@ def dispatch_render_job(
     job.job_metadata = job_metadata
 
     try:
-        upload_file(
+        upload_info = upload_file(
             bucket_name=GCS_BUCKET,
             contents=manifest_json.encode("utf-8"),
             destination_blob_name=manifest_path,
         )
+        if not upload_info:
+            raise RenderError("Failed to upload render manifest")
     except Exception as e:
         logger.error(f"Failed to upload manifest for job {job_id}: {e}")
         job.status = RenderJobStatus.FAILED.value
@@ -279,6 +281,82 @@ def dispatch_render_job(
 
 def get_render_job(db: DBSession, job_id: UUID) -> RenderJobModel | None:
     return db.query(RenderJobModel).filter(RenderJobModel.job_id == job_id).first()
+
+
+def ensure_render_manifest(db: DBSession, job_id: UUID) -> str:
+    job = get_render_job(db, job_id)
+    if not job:
+        raise RenderJobNotFoundError(job_id)
+
+    metadata = job.job_metadata or {}
+    manifest_path = metadata.get("manifest_path")
+    if manifest_path:
+        return manifest_path
+
+    checkpoint = (
+        db.query(TimelineCheckpointModel)
+        .filter(
+            TimelineCheckpointModel.timeline_id == job.timeline_id,
+            TimelineCheckpointModel.version == job.timeline_version,
+        )
+        .first()
+    )
+    if not checkpoint:
+        raise RenderError(f"Timeline checkpoint not found for job {job_id}")
+
+    timeline = Timeline.model_validate(checkpoint.snapshot)
+    asset_map = _build_asset_map(db, job.project_id, timeline)  # type: ignore[arg-type]
+    preset = RenderPreset.model_validate(job.preset)
+
+    output_path = metadata.get("output_path")
+    if not output_path:
+        output_filename = job.output_filename or f"{job.job_id}.mp4"
+        output_path = f"{job.project_id}/renders/{output_filename}"
+
+    execution_mode = str(
+        metadata.get("execution_mode", RenderExecutionMode.LOCAL.value)
+    )
+
+    manifest = RenderManifest(
+        job_id=job.job_id,
+        project_id=job.project_id,
+        timeline_version=job.timeline_version,
+        timeline_snapshot=checkpoint.snapshot,
+        asset_map=asset_map,
+        preset=preset,
+        input_bucket=GCS_BUCKET,
+        output_bucket=GCS_RENDER_BUCKET,
+        output_path=output_path,
+        start_frame=metadata.get("start_frame"),
+        end_frame=metadata.get("end_frame"),
+        callback_url=metadata.get("callback_url"),
+        execution_mode=RenderExecutionMode(execution_mode),
+    )
+
+    manifest_path = f"{job.project_id}/manifests/{job.job_id}.json"
+    manifest_json = manifest.model_dump_json()
+
+    upload_info = upload_file(
+        bucket_name=GCS_BUCKET,
+        contents=manifest_json.encode("utf-8"),
+        destination_blob_name=manifest_path,
+    )
+    if not upload_info:
+        raise RenderError("Failed to upload render manifest")
+
+    metadata.update(
+        {
+            "manifest_path": manifest_path,
+            "output_path": output_path,
+            "output_bucket": GCS_RENDER_BUCKET,
+            "execution_mode": execution_mode,
+        }
+    )
+    job.job_metadata = metadata
+    db.commit()
+    db.refresh(job)
+
+    return manifest_path
 
 
 def list_render_jobs(
