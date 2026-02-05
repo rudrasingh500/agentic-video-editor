@@ -637,6 +637,12 @@ class TimelineToFFmpeg:
             if not color:
                 color = "white"
             bg_color = params.get("bg_color")
+            if isinstance(bg_color, str):
+                bg_color = bg_color.strip()
+                if not bg_color:
+                    bg_color = None
+                elif bg_color.lower() in {"transparent", "none", "clear"}:
+                    bg_color = "black@0.0"
             x = params.get("x")
             if x is None or str(x).strip() == "":
                 x = "(w-text_w)/2"

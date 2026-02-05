@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +12,12 @@ class SkillSubskill:
     title: str
     summary: str
     schema: dict[str, Any]
+    complexity: str = "moderate"
+    prerequisites: list[str] = field(default_factory=list)
+    common_errors: list[dict[str, str]] = field(default_factory=list)
+    examples: list[dict[str, Any]] = field(default_factory=list)
+    tips: list[str] = field(default_factory=list)
+    steps: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -20,6 +26,8 @@ class SkillSpec:
     title: str
     summary: str
     subskills: list[SkillSubskill]
+    category: str = "editing"
+    complexity: str = "moderate"
 
 
 SKILLS_DIR = Path(__file__).resolve().parent / "skills"
@@ -66,6 +74,8 @@ def _parse_skill_file(path: Path) -> SkillSpec | None:
     skill_id = front_matter.get("id", path.stem)
     title = front_matter.get("title", skill_id.title())
     summary = front_matter.get("summary", "")
+    category = front_matter.get("category", "editing")
+    skill_complexity = front_matter.get("complexity", "moderate")
 
     subskills: list[SkillSubskill] = []
     while idx < len(lines):
@@ -83,22 +93,92 @@ def _parse_skill_file(path: Path) -> SkillSpec | None:
 
             idx += 1
             sub_summary = ""
+            sub_complexity = "moderate"
+            prerequisites: list[str] = []
+            common_errors: list[dict[str, str]] = []
+            examples: list[dict[str, Any]] = []
+            tips: list[str] = []
             schema: dict[str, Any] = {}
+            expect_example = False
+            steps: list[str] = []
 
             while idx < len(lines) and not lines[idx].startswith("## "):
                 current = lines[idx].strip()
-                if current.lower().startswith("summary:"):
+                lowered = current.lower()
+                if lowered.startswith("summary:"):
                     sub_summary = current.split(":", 1)[1].strip()
+                    idx += 1
+                    continue
+                if lowered.startswith("complexity:"):
+                    sub_complexity = current.split(":", 1)[1].strip()
+                    idx += 1
+                    continue
+                if lowered.startswith("prerequisites:"):
+                    prereq_raw = current.split(":", 1)[1].strip()
+                    if prereq_raw and prereq_raw.lower() != "none":
+                        prerequisites = [p.strip() for p in prereq_raw.split(",") if p.strip()]
+                    idx += 1
+                    continue
+                if lowered.startswith("tip:"):
+                    tips.append(current.split(":", 1)[1].strip())
+                    idx += 1
+                    continue
+                if lowered == "common errors:":
+                    idx += 1
+                    while idx < len(lines):
+                        error_line = lines[idx].strip()
+                        if not error_line.startswith("- "):
+                            break
+                        error_text = error_line[2:].strip()
+                        if ":" in error_text:
+                            error_msg, recovery = error_text.split(":", 1)
+                            common_errors.append(
+                                {
+                                    "error": error_msg.strip(),
+                                    "recovery": recovery.strip(),
+                                }
+                            )
+                        else:
+                            common_errors.append({"error": error_text, "recovery": ""})
+                        idx += 1
+                    continue
+                if lowered == "steps:":
+                    idx += 1
+                    while idx < len(lines):
+                        step_line = lines[idx].strip()
+                        if not step_line or step_line.startswith("## "):
+                            break
+                        if step_line[0].isdigit() and "." in step_line:
+                            steps.append(step_line.split(".", 1)[1].strip())
+                        elif step_line.startswith("- "):
+                            steps.append(step_line[2:].strip())
+                        else:
+                            break
+                        idx += 1
+                    continue
+                if lowered == "example:":
+                    expect_example = True
+                    idx += 1
+                    continue
                 if current.startswith("```json"):
                     idx += 1
                     json_lines: list[str] = []
                     while idx < len(lines) and not lines[idx].startswith("```"):
                         json_lines.append(lines[idx])
                         idx += 1
-                    try:
-                        schema = json.loads("\n".join(json_lines))
-                    except json.JSONDecodeError:
-                        schema = {}
+                    if expect_example:
+                        try:
+                            examples.append(json.loads("\n".join(json_lines)))
+                        except json.JSONDecodeError:
+                            pass
+                        expect_example = False
+                    else:
+                        try:
+                            schema = json.loads("\n".join(json_lines))
+                        except json.JSONDecodeError:
+                            schema = {}
+                    idx += 1
+                    continue
                 idx += 1
 
             subskills.append(
@@ -107,9 +187,22 @@ def _parse_skill_file(path: Path) -> SkillSpec | None:
                     title=sub_title,
                     summary=sub_summary,
                     schema=schema,
+                    complexity=sub_complexity,
+                    prerequisites=prerequisites,
+                    common_errors=common_errors,
+                    examples=examples,
+                    tips=tips,
+                    steps=steps,
                 )
             )
             continue
         idx += 1
 
-    return SkillSpec(id=skill_id, title=title, summary=summary, subskills=subskills)
+    return SkillSpec(
+        id=skill_id,
+        title=title,
+        summary=summary,
+        subskills=subskills,
+        category=category,
+        complexity=skill_complexity,
+    )

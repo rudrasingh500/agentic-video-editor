@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -15,6 +15,33 @@ class EditSessionStatus(str, Enum):
 
 class EditAgentType(str, Enum):
     EDIT_AGENT = "edit_agent"
+
+
+class ErrorSeverity(str, Enum):
+    RECOVERABLE = "recoverable"
+    USER_INPUT = "user_input"
+    STATE_MISMATCH = "state_mismatch"
+    VALIDATION = "validation"
+    SYSTEM = "system"
+
+
+class ToolError(BaseModel):
+    severity: ErrorSeverity
+    code: str
+    message: str
+    recovery_hint: str | None = None
+    affected_field: str | None = None
+    context: dict[str, Any] = Field(default_factory=dict)
+
+    def to_response(self) -> dict[str, Any]:
+        return {
+            "error": self.message,
+            "error_code": self.code,
+            "severity": self.severity.value,
+            "recovery_hint": self.recovery_hint,
+            "affected_field": self.affected_field,
+            "context": self.context,
+        }
 
 
 class EditRequest(BaseModel):
@@ -73,6 +100,9 @@ class PatchExecutionResult(BaseModel):
     successful_operations: int = 0
     errors: list[str] = Field(default_factory=list)
     final_version: int | None = None
+    rolled_back: bool = False
+    rollback_version: int | None = None
+    rollback_target_version: int | None = None
 
 
 class EditAgentResult(BaseModel):
@@ -95,6 +125,38 @@ class VerificationStatus(BaseModel):
     issues_found: list[str] = Field(
         default_factory=list,
         description="Any issues observed during verification"
+    )
+    confidence_score: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description="Confidence that the edits achieved the intended goal"
+    )
+    verification_method: Literal[
+        "visual",
+        "audio",
+        "metadata",
+        "automated",
+        "combined",
+    ] = Field(
+        default="visual",
+        description="Primary verification method used"
+    )
+    timeline_version_verified: int | None = Field(
+        default=None,
+        description="Timeline version that was verified"
+    )
+    frames_examined: int | None = Field(
+        default=None,
+        description="Approximate number of frames examined"
+    )
+    audio_verified: bool = Field(
+        default=False,
+        description="Whether audio was explicitly checked"
+    )
+    quality_metrics: dict[str, Any] | None = Field(
+        default=None,
+        description="Automated quality check results if available"
     )
 
 

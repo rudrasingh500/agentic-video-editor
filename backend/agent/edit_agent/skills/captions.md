@@ -2,10 +2,34 @@
 id: captions
 title: Captions
 summary: Patch operations for caption generator clips.
+category: editing
+complexity: moderate
 ---
 
 ## add - Add Captions
 Summary: Add caption generator clips. If needed, add a "Captions" track first.
+Complexity: moderate
+Prerequisites: get_timeline_snapshot
+
+Example:
+```json
+{
+  "description": "Add a caption clip for the intro",
+  "operations": [
+    {
+      "operation_type": "add_generator_clip",
+      "operation_data": {
+        "track_index": 1,
+        "generator_kind": "caption",
+        "parameters": {"text": "Welcome to the show"},
+        "start_ms": 0,
+        "end_ms": 3000,
+        "name": "Intro caption"
+      }
+    }
+  ]
+}
+```
 ```json
 {
   "type": "object",
@@ -73,6 +97,8 @@ Summary: Add caption generator clips. If needed, add a "Captions" track first.
 
 ## title - Title Overlay
 Summary: Add a single title overlay as a caption generator clip.
+Complexity: simple
+Prerequisites: get_timeline_snapshot
 ```json
 {
   "type": "object",

@@ -2,10 +2,39 @@
 id: colors
 title: Colors
 summary: Patch operations for LUTs, grading, curves, and white balance.
+category: editing
+complexity: moderate
 ---
 
 ## lut - Apply LUT
 Summary: Apply a LUT via add_effect.
+Complexity: simple
+Prerequisites: get_timeline_snapshot
+
+Example:
+```json
+{
+  "description": "Apply a cinematic LUT",
+  "operations": [
+    {
+      "operation_type": "add_effect",
+      "operation_data": {
+        "track_index": 0,
+        "item_index": 0,
+        "effect": {
+          "OTIO_SCHEMA": "Effect.1",
+          "effect_name": "LUT",
+          "metadata": {
+            "type": "lut",
+            "path": "luts/film.cube",
+            "intensity": 0.8
+          }
+        }
+      }
+    }
+  ]
+}
+```
 ```json
 {
   "type": "object",
@@ -54,6 +83,8 @@ Summary: Apply a LUT via add_effect.
 
 ## grade - Basic Grade
 Summary: Apply brightness/contrast/saturation/gamma via add_effect.
+Complexity: simple
+Prerequisites: get_timeline_snapshot
 ```json
 {
   "type": "object",
@@ -104,6 +135,8 @@ Summary: Apply brightness/contrast/saturation/gamma via add_effect.
 
 ## curves - Curves
 Summary: Apply curves via add_effect.
+Complexity: moderate
+Prerequisites: get_timeline_snapshot
 ```json
 {
   "type": "object",
@@ -152,6 +185,8 @@ Summary: Apply curves via add_effect.
 
 ## white_balance - White Balance
 Summary: Adjust white balance via add_effect.
+Complexity: simple
+Prerequisites: get_timeline_snapshot
 ```json
 {
   "type": "object",

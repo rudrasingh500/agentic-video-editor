@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import base64
+import json
 import os
+import re
+import subprocess
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -34,7 +38,14 @@ from models.render_models import (
     RenderPreset,
     RenderRequest,
 )
-from operators.timeline_operator import get_timeline_snapshot
+from operators.timeline_operator import (
+    CheckpointNotFoundError,
+    InvalidOperationError,
+    VersionConflictError,
+    diff_versions,
+    get_timeline_snapshot,
+    rollback_to_version,
+)
 from operators.render_operator import (
     create_render_job,
     dispatch_render_job,
@@ -50,7 +61,7 @@ from utils.video_utils import (
 )
 
 from .session_ops import execute_patch
-from .types import EditOperation, EditPatch
+from .types import EditOperation, EditPatch, ErrorSeverity, ToolError
 
 
 DEFAULT_RENDER_WAIT_SECONDS = int(os.getenv("EDIT_AGENT_RENDER_WAIT_SECONDS", "60"))
@@ -493,6 +504,24 @@ EDIT_AGENT_TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "compare_timeline_versions",
+            "description": (
+                "Compare two timeline versions to see exactly what changed. "
+                "Returns added/removed/modified tracks and clips with a summary."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "version_before": {"type": "integer"},
+                    "version_after": {"type": "integer"},
+                },
+                "required": ["version_before", "version_after"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "edit_timeline",
             "description": "Apply a patch (operations list) to the timeline.",
             "parameters": {
@@ -518,8 +547,40 @@ EDIT_AGENT_TOOLS: list[dict[str, Any]] = [
                         "required": ["description", "operations"],
                     },
                     "apply": {"type": "boolean", "default": True},
+                    "rollback_on_error": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": (
+                            "If true, rollback the timeline to the starting version "
+                            "when any operation in the patch fails."
+                        ),
+                    },
                 },
                 "required": ["patch"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "undo_to_version",
+            "description": (
+                "Restore the timeline to a previous version. "
+                "Use this to undo edits if verification reveals problems."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target_version": {
+                        "type": "integer",
+                        "description": "Timeline version to restore to",
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "Why the timeline is being restored",
+                    },
+                },
+                "required": ["target_version"],
             },
         },
     },
@@ -583,10 +644,149 @@ EDIT_AGENT_TOOLS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "run_quality_checks",
+            "description": (
+                "Run automated quality checks on a completed render. "
+                "Detects common issues like black frames and loudness problems."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "job_id": {"type": "string", "description": "Render job UUID"},
+                    "checks": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "enum": ["black_frames", "audio_levels", "sync", "all"],
+                        },
+                        "description": "Which checks to run (default: all)",
+                    },
+                },
+                "required": ["job_id"],
+            },
+        },
+    },
 ]
+
+
+def _apply_additional_properties(schema: dict[str, Any]) -> None:
+    if not isinstance(schema, dict):
+        return
+
+    schema_type = schema.get("type")
+    if schema_type == "object" and "properties" in schema:
+        schema.setdefault("additionalProperties", False)
+
+    if "properties" in schema:
+        for prop_schema in schema["properties"].values():
+            if isinstance(prop_schema, dict):
+                _apply_additional_properties(prop_schema)
+
+    if "items" in schema:
+        items_schema = schema["items"]
+        if isinstance(items_schema, dict):
+            _apply_additional_properties(items_schema)
+        elif isinstance(items_schema, list):
+            for entry in items_schema:
+                if isinstance(entry, dict):
+                    _apply_additional_properties(entry)
+
+    for key in ("anyOf", "oneOf", "allOf"):
+        if key in schema and isinstance(schema[key], list):
+            for entry in schema[key]:
+                if isinstance(entry, dict):
+                    _apply_additional_properties(entry)
+
+
+def _enforce_strict_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    for tool in tools:
+        function = tool.get("function", {})
+        function.setdefault("strict", True)
+        parameters = function.get("parameters")
+        if isinstance(parameters, dict):
+            _apply_additional_properties(parameters)
+    return tools
+
+
+ASSET_RETRIEVAL_TOOLS = _enforce_strict_tools(ASSET_RETRIEVAL_TOOLS)
+EDIT_AGENT_TOOLS = _enforce_strict_tools(EDIT_AGENT_TOOLS)
 
 # Combined tools list
 TOOLS: list[dict[str, Any]] = ASSET_RETRIEVAL_TOOLS + EDIT_AGENT_TOOLS
+
+
+_ERROR_HINTS: dict[str, tuple[ErrorSeverity, str | None]] = {
+    "UNKNOWN_TOOL": (ErrorSeverity.USER_INPUT, "Use a tool name from the tool list."),
+    "VALIDATION_ERROR": (
+        ErrorSeverity.VALIDATION,
+        "Check the tool schema for required fields and valid types.",
+    ),
+    "INVALID_OPERATION": (
+        ErrorSeverity.STATE_MISMATCH,
+        "Use get_timeline_snapshot to verify indices and timeline state.",
+    ),
+    "VERSION_CONFLICT": (
+        ErrorSeverity.STATE_MISMATCH,
+        "Timeline changed. Refresh with get_timeline_snapshot and retry.",
+    ),
+    "CHECKPOINT_NOT_FOUND": (
+        ErrorSeverity.STATE_MISMATCH,
+        "Verify the target timeline version exists before retrying.",
+    ),
+    "ASSET_NOT_FOUND": (
+        ErrorSeverity.USER_INPUT,
+        "Use list_assets_summaries or get_asset_details to find valid asset IDs.",
+    ),
+    "NETWORK_ERROR": (
+        ErrorSeverity.RECOVERABLE,
+        "Temporary network issue. Retry the operation.",
+    ),
+    "UNKNOWN_ERROR": (ErrorSeverity.SYSTEM, None),
+}
+
+
+def _create_tool_error(
+    code: str,
+    message: str,
+    context: dict[str, Any] | None = None,
+    affected_field: str | None = None,
+    severity: ErrorSeverity | None = None,
+    recovery_hint: str | None = None,
+) -> dict[str, Any]:
+    inferred_severity, inferred_hint = _ERROR_HINTS.get(code, _ERROR_HINTS["UNKNOWN_ERROR"])
+    error = ToolError(
+        severity=severity or inferred_severity,
+        code=code,
+        message=message,
+        recovery_hint=recovery_hint or inferred_hint,
+        affected_field=affected_field,
+        context=context or {},
+    )
+    return error.to_response()
+
+
+def _categorize_exception(exc: Exception) -> tuple[str, ErrorSeverity]:
+    if isinstance(exc, InvalidOperationError):
+        return "INVALID_OPERATION", ErrorSeverity.STATE_MISMATCH
+    if isinstance(exc, VersionConflictError):
+        return "VERSION_CONFLICT", ErrorSeverity.STATE_MISMATCH
+    if isinstance(exc, CheckpointNotFoundError):
+        return "CHECKPOINT_NOT_FOUND", ErrorSeverity.STATE_MISMATCH
+    if isinstance(exc, ValidationError):
+        return "VALIDATION_ERROR", ErrorSeverity.VALIDATION
+    if isinstance(exc, FileNotFoundError) or isinstance(exc, urllib.error.URLError):
+        return "NETWORK_ERROR", ErrorSeverity.RECOVERABLE
+
+    message = str(exc).lower()
+    if "not found" in message:
+        return "ASSET_NOT_FOUND", ErrorSeverity.USER_INPUT
+    if "timeout" in message or "connection" in message or "network" in message:
+        return "NETWORK_ERROR", ErrorSeverity.RECOVERABLE
+
+    return "UNKNOWN_ERROR", ErrorSeverity.SYSTEM
 
 
 def execute_tool(
@@ -618,14 +818,22 @@ def execute_tool(
         # Edit agent tools
         "skills_registry": _skills_registry,
         "get_timeline_snapshot": _get_timeline_snapshot,
+        "compare_timeline_versions": _compare_timeline_versions,
         "edit_timeline": _edit_timeline,
+        "undo_to_version": _undo_to_version,
         "view_asset": _view_asset,
         "render_output": _render_output,
         "view_render_output": _view_render_output,
+        "run_quality_checks": _run_quality_checks,
     }
     tool_fn = tool_map.get(tool_name)
     if not tool_fn:
-        return {"error": f"Unknown tool: {tool_name}"}
+        return _create_tool_error(
+            "UNKNOWN_TOOL",
+            f"Unknown tool: {tool_name}",
+            context={"available_tools": sorted(tool_map.keys())},
+            severity=ErrorSeverity.USER_INPUT,
+        )
 
     try:
         return tool_fn(
@@ -635,9 +843,31 @@ def execute_tool(
             db=db,
             **arguments,
         )
+    except ValidationError as exc:
+        db.rollback()
+        return _create_tool_error(
+            "VALIDATION_ERROR",
+            str(exc),
+            context={"tool": tool_name, "arguments": arguments},
+        )
+    except (InvalidOperationError, VersionConflictError, CheckpointNotFoundError) as exc:
+        db.rollback()
+        code, severity = _categorize_exception(exc)
+        return _create_tool_error(
+            code,
+            str(exc),
+            context={"tool": tool_name, "arguments": arguments},
+            severity=severity,
+        )
     except Exception as exc:
         db.rollback()
-        return {"error": str(exc)}
+        code, severity = _categorize_exception(exc)
+        return _create_tool_error(
+            code,
+            str(exc),
+            context={"tool": tool_name, "arguments": arguments},
+            severity=severity,
+        )
 
 
 # =============================================================================
@@ -1696,11 +1926,14 @@ def _skills_registry(
                     "id": s.id,
                     "title": s.title,
                     "summary": s.summary,
+                    "category": getattr(s, "category", "editing"),
+                    "complexity": getattr(s, "complexity", "moderate"),
                     "subskills": [
                         {
                             "id": sub.id,
                             "title": sub.title,
                             "summary": sub.summary,
+                            "complexity": getattr(sub, "complexity", "moderate"),
                         }
                         for sub in s.subskills
                     ],
@@ -1723,21 +1956,33 @@ def _skills_registry(
             subskills_with_usage = []
             for sub in skill.subskills:
                 op_types = _extract_operation_types(sub.schema)
-                primary_op = op_types[0] if op_types else "unknown"
+                primary_op = op_types[0] if op_types else None
                 subskills_with_usage.append({
                     "id": sub.id,
                     "title": sub.title,
                     "summary": sub.summary,
                     "schema": sub.schema,
+                    "complexity": getattr(sub, "complexity", "moderate"),
+                    "prerequisites": getattr(sub, "prerequisites", []),
+                    "common_errors": getattr(sub, "common_errors", []),
+                    "tips": getattr(sub, "tips", []),
+                    "examples": getattr(sub, "examples", []),
+                    "steps": getattr(sub, "steps", []),
                     "operation_types": op_types,
                     "primary_operation_type": primary_op,
-                    "usage_warning": f"Use operation_type='{primary_op}', NOT '{sub.id}'",
+                    "usage_warning": (
+                        f"Use operation_type='{primary_op}', NOT '{sub.id}'"
+                        if primary_op
+                        else "No operation_type defined for this subskill."
+                    ),
                 })
 
             return {
                 "id": skill.id,
                 "title": skill.title,
                 "summary": skill.summary,
+                "category": getattr(skill, "category", "editing"),
+                "complexity": getattr(skill, "complexity", "moderate"),
                 "hint": (
                     f"You requested parent skill '{skill_id}'. "
                     f"To get the patch schema, use the full subskill ID "
@@ -1763,8 +2008,12 @@ def _skills_registry(
 
         # Extract operation_types and generate example
         operation_types = _extract_operation_types(sub.schema)
-        primary_op_type = operation_types[0] if operation_types else "unknown"
-        example_patch = _generate_example_patch(sub.schema, primary_op_type)
+        primary_op_type = operation_types[0] if operation_types else None
+        example_patch = (
+            _generate_example_patch(sub.schema, primary_op_type)
+            if primary_op_type
+            else None
+        )
 
         return {
             "id": skill.id,
@@ -1774,6 +2023,8 @@ def _skills_registry(
                 "id": sub.id,
                 "title": sub.title,
                 "summary": sub.summary,
+                "complexity": getattr(sub, "complexity", "moderate"),
+                "prerequisites": getattr(sub, "prerequisites", []),
                 "schema": sub.schema,
             },
             "USAGE": {
@@ -1783,9 +2034,15 @@ def _skills_registry(
                     f"Use operation_type='{primary_op_type}' in your patch, "
                     f"NOT operation_type='{skill_id}'. The skill ID is only for "
                     f"looking up the schema; it is NOT a valid operation_type."
+                    if primary_op_type
+                    else "No operation_type defined for this subskill."
                 ),
                 "example_patch": example_patch,
             },
+            "common_errors": getattr(sub, "common_errors", []),
+            "tips": getattr(sub, "tips", []),
+            "examples": getattr(sub, "examples", []),
+            "steps": getattr(sub, "steps", []),
         }
     return {"error": f"Unknown action: {action}"}
 
@@ -1868,6 +2125,23 @@ def _get_timeline_snapshot(
     }
 
 
+def _compare_timeline_versions(
+    project_id: str,
+    user_id: str,
+    timeline_id: str,
+    db: Session,
+    version_before: int,
+    version_after: int,
+) -> dict[str, Any]:
+    diff = diff_versions(
+        db=db,
+        timeline_id=UUID(timeline_id),
+        from_version=version_before,
+        to_version=version_after,
+    )
+    return diff.model_dump()
+
+
 def _edit_timeline(
     project_id: str,
     user_id: str,
@@ -1875,6 +2149,7 @@ def _edit_timeline(
     db: Session,
     patch: dict[str, Any],
     apply: bool = True,
+    rollback_on_error: bool = True,
 ) -> dict[str, Any]:
     try:
         patch_model = EditPatch.model_validate(patch)
@@ -1908,6 +2183,7 @@ def _edit_timeline(
         actor="agent:edit_agent",
         starting_version=int(snapshot.version),
         stop_on_error=True,
+        rollback_on_error=rollback_on_error,
     )
 
     warnings: list[str] = []
@@ -1920,9 +2196,55 @@ def _edit_timeline(
         "operations_applied": result.successful_operations,
         "errors": result.errors,
     }
+    if result.rolled_back:
+        response["rolled_back"] = True
+        response["rollback_version"] = result.rollback_version
+        response["rollback_target_version"] = result.rollback_target_version
     if warnings:
         response["warnings"] = warnings
     return response
+
+
+def _undo_to_version(
+    project_id: str,
+    user_id: str,
+    timeline_id: str,
+    db: Session,
+    target_version: int,
+    reason: str | None = None,
+) -> dict[str, Any]:
+    snapshot = get_timeline_snapshot(db, UUID(timeline_id))
+    current_version = int(snapshot.version)
+
+    if target_version >= current_version:
+        return {
+            "error": (
+                f"Target version {target_version} must be less than current version "
+                f"{current_version}."
+            )
+        }
+    if target_version < 0:
+        return {"error": "Target version must be >= 0."}
+
+    checkpoint = rollback_to_version(
+        db=db,
+        timeline_id=UUID(timeline_id),
+        target_version=target_version,
+        rollback_by=f"agent:{user_id}",
+        expected_version=current_version,
+    )
+
+    return {
+        "success": True,
+        "previous_version": current_version,
+        "restored_version": target_version,
+        "new_version": int(checkpoint.version),
+        "reason": reason,
+        "message": (
+            f"Timeline restored to version {target_version}. "
+            "All changes after that version were discarded."
+        ),
+    }
 
 
 def _view_asset(
@@ -1945,7 +2267,7 @@ def _view_asset(
         return {"error": f"Asset not found: {asset_id}"}
 
     asset_url = str(getattr(asset, "asset_url", "") or "")
-    signed_url = _maybe_sign_url(asset_url)
+    signed_url = _resolve_asset_signed_url(asset_url)
     content_type = asset.asset_type or "video/mp4"
 
     result: dict[str, Any] = {
@@ -2279,6 +2601,109 @@ def _view_render_output(
     return result
 
 
+def _run_quality_checks(
+    project_id: str,
+    user_id: str,
+    timeline_id: str,
+    db: Session,
+    job_id: str,
+    checks: list[str] | None = None,
+) -> dict[str, Any]:
+    resolved = _resolve_render_output(
+        db=db,
+        project_id=project_id,
+        timeline_id=timeline_id,
+        job_id=job_id,
+    )
+    if resolved.get("error"):
+        return resolved
+
+    status = resolved.get("status")
+    if status and status not in {"completed", RenderJobStatus.COMPLETED.value}:
+        return {
+            "error": "Render job is not completed yet",
+            "status": status,
+            "job_id": resolved.get("job_id"),
+        }
+
+    signed_url = resolved.get("signed_url")
+    if not signed_url:
+        return {"error": "Unable to resolve signed URL for render output"}
+
+    content = _download_url_bytes(signed_url, timeout_seconds=120)
+    if content is None:
+        return {"error": "Failed to download render output"}
+
+    checks_to_run = checks or ["all"]
+    run_all = "all" in checks_to_run
+
+    results: dict[str, Any] = {
+        "job_id": job_id,
+        "status": resolved.get("status"),
+        "timeline_version": resolved.get("timeline_version"),
+        "checks_run": [],
+        "issues_detected": [],
+        "metrics": {},
+    }
+
+    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as temp_file:
+        temp_file.write(content)
+        temp_path = temp_file.name
+
+    try:
+        if run_all or "audio_levels" in checks_to_run:
+            results["checks_run"].append("audio_levels")
+            loudness = _analyze_loudness(temp_path)
+            results["metrics"]["loudness"] = loudness
+            if loudness.get("error"):
+                results["issues_detected"].append(loudness["error"])
+            else:
+                integrated = loudness.get("integrated_lufs")
+                true_peak = loudness.get("true_peak_db")
+                if integrated is not None and integrated < -24:
+                    results["issues_detected"].append(
+                        f"Audio may be too quiet (LUFS {integrated:.1f})."
+                    )
+                if true_peak is not None and true_peak > -1:
+                    results["issues_detected"].append(
+                        f"Audio may be clipping (true peak {true_peak:.1f} dB)."
+                    )
+
+        if run_all or "black_frames" in checks_to_run:
+            results["checks_run"].append("black_frames")
+            black_frames = _detect_black_frames(temp_path)
+            results["metrics"]["black_frames"] = black_frames
+            segments = black_frames.get("segments") if isinstance(black_frames, dict) else None
+            if segments:
+                for segment in segments[:5]:
+                    results["issues_detected"].append(
+                        "Black frames detected: "
+                        f"{segment['start_ms']:.0f}ms - {segment['end_ms']:.0f}ms"
+                    )
+
+        if run_all or "sync" in checks_to_run:
+            results["checks_run"].append("sync")
+            sync_check = _check_av_sync(temp_path)
+            results["metrics"]["sync"] = sync_check
+            offset_ms = sync_check.get("offset_ms") if isinstance(sync_check, dict) else None
+            if offset_ms is not None and abs(offset_ms) > 100:
+                results["issues_detected"].append(
+                    f"Possible A/V duration mismatch (~{offset_ms:.0f}ms)."
+                )
+
+    finally:
+        try:
+            os.unlink(temp_path)
+        except Exception:
+            pass
+
+    results["passed"] = len(results["issues_detected"]) == 0
+    results["summary"] = (
+        "All checks passed" if results["passed"] else f"{len(results['issues_detected'])} issue(s) detected"
+    )
+    return results
+
+
 # =============================================================================
 # Helper Functions
 # =============================================================================
@@ -2310,6 +2735,26 @@ def _maybe_sign_url(url: str | None) -> str | None:
         return url
     bucket, blob = parsed
     return generate_signed_url(bucket, blob, expiration=timedelta(hours=1))
+
+
+def _looks_like_url(value: str) -> bool:
+    return bool(re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", value))
+
+
+def _resolve_asset_signed_url(asset_url: str | None) -> str | None:
+    if not asset_url:
+        return None
+    cleaned = asset_url.strip()
+    if not cleaned:
+        return None
+    parsed = parse_gcs_url(cleaned)
+    if parsed:
+        bucket, blob = parsed
+        return generate_signed_url(bucket, blob, expiration=timedelta(hours=1))
+    if _looks_like_url(cleaned):
+        return cleaned
+    bucket = os.getenv("GCS_BUCKET", "video-editor")
+    return generate_signed_url(bucket, cleaned, expiration=timedelta(hours=1))
 
 
 def _resolve_render_output(
@@ -2419,6 +2864,163 @@ def _download_url_bytes(url: str, timeout_seconds: int) -> bytes | None:
             return response.read()
     except Exception:
         return None
+
+
+def _resolve_binary(env_key: str, default: str) -> str:
+    return os.getenv(env_key, default) or default
+
+
+def _run_command(command: list[str], timeout_seconds: int) -> dict[str, Any]:
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+        )
+        return {
+            "returncode": result.returncode,
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+        }
+    except FileNotFoundError:
+        return {"error": f"Binary not found: {command[0]}"}
+    except subprocess.TimeoutExpired:
+        return {"error": "Command timed out"}
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+def _safe_float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _analyze_loudness(video_path: str) -> dict[str, Any]:
+    ffmpeg_bin = _resolve_binary("FFMPEG_BIN", "ffmpeg")
+    command = [
+        ffmpeg_bin,
+        "-i",
+        video_path,
+        "-af",
+        "loudnorm=print_format=json",
+        "-f",
+        "null",
+        "-",
+    ]
+    result = _run_command(command, timeout_seconds=60)
+    if result.get("error"):
+        return {"error": result["error"]}
+    if result.get("returncode") not in {0, None}:
+        stderr = result.get("stderr", "")
+        return {"error": "Loudness analysis failed", "details": stderr[-500:]}
+
+    stderr = result.get("stderr", "")
+    match = re.search(r"\{[\s\S]*\}", stderr)
+    if not match:
+        return {"error": "Unable to parse loudnorm output"}
+
+    try:
+        data = json.loads(match.group(0))
+    except json.JSONDecodeError:
+        return {"error": "Invalid loudnorm JSON output"}
+
+    integrated = _safe_float(data.get("output_i") or data.get("input_i"))
+    true_peak = _safe_float(data.get("output_tp") or data.get("input_tp"))
+    lra = _safe_float(data.get("output_lra") or data.get("input_lra"))
+
+    return {
+        "integrated_lufs": integrated,
+        "true_peak_db": true_peak,
+        "lra": lra,
+    }
+
+
+def _detect_black_frames(video_path: str) -> dict[str, Any]:
+    ffmpeg_bin = _resolve_binary("FFMPEG_BIN", "ffmpeg")
+    command = [
+        ffmpeg_bin,
+        "-i",
+        video_path,
+        "-vf",
+        "blackdetect=d=0.1:pix_th=0.10",
+        "-f",
+        "null",
+        "-",
+    ]
+    result = _run_command(command, timeout_seconds=120)
+    if result.get("error"):
+        return {"error": result["error"]}
+
+    stderr = result.get("stderr", "")
+    pattern = re.compile(
+        r"black_start:(?P<start>\d+(?:\.\d+)?)\s+"
+        r"black_end:(?P<end>\d+(?:\.\d+)?)\s+"
+        r"black_duration:(?P<duration>\d+(?:\.\d+)?)"
+    )
+
+    segments: list[dict[str, Any]] = []
+    total_black_ms = 0.0
+    for match in pattern.finditer(stderr):
+        start = float(match.group("start"))
+        end = float(match.group("end"))
+        duration = float(match.group("duration"))
+        segments.append(
+            {
+                "start_ms": start * 1000.0,
+                "end_ms": end * 1000.0,
+                "duration_ms": duration * 1000.0,
+            }
+        )
+        total_black_ms += duration * 1000.0
+
+    return {
+        "segments": segments,
+        "total_black_ms": total_black_ms,
+    }
+
+
+def _probe_stream_duration(video_path: str, stream_selector: str) -> float | None:
+    ffprobe_bin = _resolve_binary("FFPROBE_BIN", "ffprobe")
+    command = [
+        ffprobe_bin,
+        "-v",
+        "error",
+        "-select_streams",
+        stream_selector,
+        "-show_entries",
+        "stream=duration",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+        video_path,
+    ]
+    result = _run_command(command, timeout_seconds=30)
+    if result.get("error"):
+        return None
+    if result.get("returncode") not in {0, None}:
+        return None
+    return _safe_float(result.get("stdout", "").strip())
+
+
+def _check_av_sync(video_path: str) -> dict[str, Any]:
+    video_duration = _probe_stream_duration(video_path, "v:0")
+    audio_duration = _probe_stream_duration(video_path, "a:0")
+
+    if video_duration is None or audio_duration is None:
+        return {
+            "error": "Unable to determine audio/video durations",
+            "video_duration": video_duration,
+            "audio_duration": audio_duration,
+        }
+
+    offset_ms = (video_duration - audio_duration) * 1000.0
+    return {
+        "video_duration": video_duration,
+        "audio_duration": audio_duration,
+        "offset_ms": offset_ms,
+    }
 
 
 def _format_time_range(time_range: TimeRange) -> dict[str, float]:

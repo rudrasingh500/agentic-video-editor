@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from database.models import EditSession
 from operators import timeline_editor
+from operators.timeline_operator import rollback_to_version
 from models.timeline_models import (
     Effect,
     FreezeFrame,
@@ -120,6 +121,83 @@ def clear_pending_patches(
     db.commit()
 
 
+class PatchTransaction:
+    """Execute patch operations with optional rollback on error."""
+
+    def __init__(
+        self,
+        db: Session,
+        timeline_id: UUID,
+        starting_version: int,
+    ) -> None:
+        self.db = db
+        self.timeline_id = timeline_id
+        self.starting_version = starting_version
+        self.expected_version = starting_version
+        self.applied_operations: int = 0
+        self._logger = logging.getLogger(__name__)
+
+    def execute(
+        self,
+        patch: EditPatch,
+        actor: str,
+        stop_on_error: bool = True,
+        rollback_on_error: bool = True,
+    ) -> PatchExecutionResult:
+        errors: list[str] = []
+        rolled_back = False
+        rollback_version: int | None = None
+        rollback_target_version: int | None = None
+
+        for operation in patch.operations:
+            try:
+                self.expected_version = _apply_operation(
+                    self.db, self.timeline_id, operation, actor, self.expected_version
+                )
+                self.applied_operations += 1
+            except Exception as exc:
+                errors.append(str(exc))
+                if stop_on_error and rollback_on_error and self.applied_operations > 0:
+                    rollback_checkpoint = self._rollback(actor)
+                    if rollback_checkpoint is not None:
+                        rolled_back = True
+                        rollback_version = int(rollback_checkpoint.version)
+                        rollback_target_version = self.starting_version
+                        self.expected_version = rollback_version
+                    else:
+                        errors.append("Rollback failed; timeline may be partially updated.")
+                if stop_on_error:
+                    break
+
+        final_version = self.expected_version if self.applied_operations > 0 else None
+
+        if rolled_back and rollback_version is not None:
+            final_version = rollback_version
+
+        return PatchExecutionResult(
+            success=len(errors) == 0,
+            successful_operations=self.applied_operations,
+            errors=errors,
+            final_version=final_version,
+            rolled_back=rolled_back,
+            rollback_version=rollback_version,
+            rollback_target_version=rollback_target_version,
+        )
+
+    def _rollback(self, actor: str):
+        try:
+            return rollback_to_version(
+                db=self.db,
+                timeline_id=self.timeline_id,
+                target_version=self.starting_version,
+                rollback_by=f"{actor}:rollback",
+                expected_version=self.expected_version,
+            )
+        except Exception as exc:
+            self._logger.error("Rollback failed: %s", exc)
+            return None
+
+
 def execute_patch(
     db: Session,
     timeline_id: UUID,
@@ -127,27 +205,14 @@ def execute_patch(
     actor: str,
     starting_version: int,
     stop_on_error: bool = True,
+    rollback_on_error: bool = True,
 ) -> PatchExecutionResult:
-    errors: list[str] = []
-    expected_version = starting_version
-    successful = 0
-
-    for operation in patch.operations:
-        try:
-            expected_version = _apply_operation(
-                db, timeline_id, operation, actor, expected_version
-            )
-            successful += 1
-        except Exception as exc:
-            errors.append(str(exc))
-            if stop_on_error:
-                break
-
-    return PatchExecutionResult(
-        success=len(errors) == 0,
-        successful_operations=successful,
-        errors=errors,
-        final_version=expected_version if successful > 0 else None,
+    transaction = PatchTransaction(db, timeline_id, starting_version)
+    return transaction.execute(
+        patch=patch,
+        actor=actor,
+        stop_on_error=stop_on_error,
+        rollback_on_error=rollback_on_error,
     )
 
 

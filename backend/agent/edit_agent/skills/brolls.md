@@ -2,11 +2,35 @@
 id: brolls
 title: B-Rolls
 summary: Patch operations for b-roll overlays and picture-in-picture.
+category: editing
+complexity: moderate
 ---
 
 ## add - Add B-Roll Clip
 Summary: Add a b-roll clip and optional effects (position/blur/mask). If needed,
 add a "B-roll" video track first.
+Complexity: moderate
+Prerequisites: get_timeline_snapshot
+
+Example:
+```json
+{
+  "description": "Add a b-roll clip over the main footage",
+  "operations": [
+    {
+      "operation_type": "add_clip",
+      "operation_data": {
+        "track_index": 1,
+        "asset_id": "<asset-id>",
+        "source_start_ms": 0,
+        "source_end_ms": 4000,
+        "insert_index": 0,
+        "name": "B-roll overlay"
+      }
+    }
+  ]
+}
+```
 ```json
 {
   "type": "object",

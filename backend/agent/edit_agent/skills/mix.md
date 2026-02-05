@@ -2,10 +2,14 @@
 id: mix
 title: Mix
 summary: Patch operations for audio transitions, ducking, and loudness normalization.
+category: editing
+complexity: moderate
 ---
 
 ## crossfade - Crossfade
 Summary: Add a transition with a duration in milliseconds.
+Complexity: simple
+Prerequisites: get_timeline_snapshot
 ```json
 {
   "type": "object",
@@ -39,6 +43,8 @@ Summary: Add a transition with a duration in milliseconds.
 
 ## ducking - Audio Ducking
 Summary: Apply ducking via an add_effect operation.
+Complexity: moderate
+Prerequisites: get_timeline_snapshot
 ```json
 {
   "type": "object",
@@ -98,6 +104,34 @@ Summary: Apply ducking via an add_effect operation.
 
 ## loudness - Loudness Normalize
 Summary: Normalize loudness via an add_effect operation.
+Complexity: simple
+Prerequisites: get_timeline_snapshot
+
+Example:
+```json
+{
+  "description": "Normalize dialogue track loudness",
+  "operations": [
+    {
+      "operation_type": "add_effect",
+      "operation_data": {
+        "track_index": 1,
+        "item_index": 0,
+        "effect": {
+          "OTIO_SCHEMA": "Effect.1",
+          "effect_name": "Loudness",
+          "metadata": {
+            "type": "loudness",
+            "target_lufs": -16,
+            "lra": 7,
+            "true_peak": -1
+          }
+        }
+      }
+    }
+  ]
+}
+```
 ```json
 {
   "type": "object",

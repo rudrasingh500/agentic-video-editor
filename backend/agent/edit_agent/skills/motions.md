@@ -2,10 +2,14 @@
 id: motions
 title: Motions
 summary: Patch operations for stabilization, reframing, positioning, and zoom.
+category: editing
+complexity: moderate
 ---
 
 ## stabilize - Stabilize Clip
 Summary: Apply stabilization via add_effect.
+Complexity: moderate
+Prerequisites: get_timeline_snapshot
 ```json
 {
   "type": "object",
@@ -53,6 +57,35 @@ Summary: Apply stabilization via add_effect.
 
 ## reframe - Reframe Crop
 Summary: Apply a reframe via add_effect.
+Complexity: simple
+Prerequisites: get_timeline_snapshot
+
+Example:
+```json
+{
+  "description": "Reframe a clip to a tighter crop",
+  "operations": [
+    {
+      "operation_type": "add_effect",
+      "operation_data": {
+        "track_index": 0,
+        "item_index": 0,
+        "effect": {
+          "OTIO_SCHEMA": "Effect.1",
+          "effect_name": "Reframe",
+          "metadata": {
+            "type": "reframe",
+            "x": 0.1,
+            "y": 0.1,
+            "width": 0.8,
+            "height": 0.8
+          }
+        }
+      }
+    }
+  ]
+}
+```
 ```json
 {
   "type": "object",
@@ -103,6 +136,8 @@ Summary: Apply a reframe via add_effect.
 
 ## position - Position Clip
 Summary: Apply a position effect (PiP) via add_effect.
+Complexity: simple
+Prerequisites: get_timeline_snapshot
 ```json
 {
   "type": "object",
@@ -153,6 +188,8 @@ Summary: Apply a position effect (PiP) via add_effect.
 
 ## zoom - Zoom
 Summary: Apply a zoom effect via add_effect.
+Complexity: simple
+Prerequisites: get_timeline_snapshot
 ```json
 {
   "type": "object",

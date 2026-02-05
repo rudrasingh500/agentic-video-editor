@@ -2,10 +2,36 @@
 id: cuts
 title: Cuts
 summary: Patch operations for trims, splits, inserts, moves, and pacing.
+category: editing
+complexity: moderate
 ---
 
 ## trim - Trim Clip
 Summary: Apply a trim_clip operation (ms convenience fields supported).
+Complexity: simple
+Prerequisites: get_timeline_snapshot
+
+Common Errors:
+- clip not found: Use get_timeline_snapshot to confirm track_index/clip_index.
+- invalid time range: Ensure start_ms < end_ms and within the clip duration.
+
+Example:
+```json
+{
+  "description": "Trim the first clip to start at 2s",
+  "operations": [
+    {
+      "operation_type": "trim_clip",
+      "operation_data": {
+        "track_index": 0,
+        "clip_index": 0,
+        "start_ms": 2000,
+        "end_ms": 12000
+      }
+    }
+  ]
+}
+```
 ```json
 {
   "type": "object",
@@ -39,6 +65,8 @@ Summary: Apply a trim_clip operation (ms convenience fields supported).
 
 ## split - Split Clip
 Summary: Apply a split_clip operation at a millisecond offset.
+Complexity: simple
+Prerequisites: get_timeline_snapshot
 ```json
 {
   "type": "object",
@@ -71,6 +99,28 @@ Summary: Apply a split_clip operation at a millisecond offset.
 
 ## insert - Insert Clip
 Summary: Apply an add_clip operation using a source time range.
+Complexity: simple
+Prerequisites: get_timeline_snapshot
+
+Example:
+```json
+{
+  "description": "Insert a b-roll clip into track 1",
+  "operations": [
+    {
+      "operation_type": "add_clip",
+      "operation_data": {
+        "track_index": 1,
+        "asset_id": "<asset-id>",
+        "source_start_ms": 0,
+        "source_end_ms": 5000,
+        "insert_index": 2,
+        "name": "B-roll insert"
+      }
+    }
+  ]
+}
+```
 ```json
 {
   "type": "object",
@@ -106,6 +156,8 @@ Summary: Apply an add_clip operation using a source time range.
 
 ## overwrite - Overwrite Clip Media
 Summary: Replace clip media, then trim to a new range. Order: replace_clip_media -> trim_clip.
+Complexity: moderate
+Prerequisites: get_timeline_snapshot
 ```json
 {
   "type": "object",
@@ -159,6 +211,8 @@ Summary: Replace clip media, then trim to a new range. Order: replace_clip_media
 
 ## move - Move Clip
 Summary: Move a clip across tracks or positions.
+Complexity: simple
+Prerequisites: get_timeline_snapshot
 ```json
 {
   "type": "object",
@@ -192,6 +246,8 @@ Summary: Move a clip across tracks or positions.
 
 ## slip - Slip Clip
 Summary: Slip a clip's source range by a millisecond offset.
+Complexity: moderate
+Prerequisites: get_timeline_snapshot
 ```json
 {
   "type": "object",
@@ -224,6 +280,8 @@ Summary: Slip a clip's source range by a millisecond offset.
 
 ## slide - Slide Clip
 Summary: Move a clip within the same track.
+Complexity: moderate
+Prerequisites: get_timeline_snapshot
 ```json
 {
   "type": "object",
@@ -277,6 +335,8 @@ Summary: Move a clip within the same track.
 
 ## pacing - Adjust Gap Duration
 Summary: Adjust the duration of a gap.
+Complexity: simple
+Prerequisites: get_timeline_snapshot
 ```json
 {
   "type": "object",

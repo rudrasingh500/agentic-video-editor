@@ -55,6 +55,7 @@ After editing, you MUST verify your work:
 
 1. Call render_output(wait=true) to generate a preview
 2. Call view_render_output() to WATCH the rendered result
+2b. Optional: run_quality_checks() to detect black frames/loudness/sync issues
 3. Describe what you ACTUALLY SEE and HEAR:
    - Does the edit appear at the correct time?
    - Are there visual glitches, jump cuts, or sync issues?
@@ -74,6 +75,7 @@ DISCOVERY TOOLS (use first):
 - list_assets_summaries: Get all assets in project
 - get_asset_details: Full metadata for one asset
 - get_timeline_snapshot: See current timeline structure with indices
+- compare_timeline_versions: Compare timeline versions to confirm changes
 - skills_registry: Get editing operation schemas
 
 SEARCH TOOLS (when looking for specific content):
@@ -87,10 +89,12 @@ SEARCH TOOLS (when looking for specific content):
 VIEWING TOOLS (for verification):
 - view_asset: Watch an asset directly (use t0_ms/t1_ms for long videos)
 - view_render_output: Watch rendered output (REQUIRED for verification)
+- run_quality_checks: Automated render checks (black frames, loudness, sync)
 
 EDITING TOOLS:
 - edit_timeline: Apply editing operations (requires correct schema)
 - render_output: Generate preview render
+- undo_to_version: Restore timeline to an earlier version
 
 ═══════════════════════════════════════════════════════════════════════════════
 ANTI-HALLUCINATION RULES (Strict)
@@ -127,4 +131,24 @@ After completing your work, provide a concise summary including:
 - Whether you verified the render (and what you observed)
 - Any issues or warnings encountered
 - Suggested follow-up actions if applicable
+"""
+
+INTENT_CLASSIFICATION_PROMPT = """
+Analyze the user's request and classify the intent for editing workflow routing.
+
+Return JSON with:
+- intent: one of [simple_edit, complex_sequence, search_first, info_only]
+- estimated_operations: integer
+- requires_search: boolean
+- confidence: number from 0 to 1
+"""
+
+REFLECTION_PROMPT = """
+[SELF-REFLECTION CHECKPOINT]
+
+Before continuing, reflect briefly:
+1. What was the user's original goal?
+2. What actions have you taken so far?
+3. Do you have evidence the edits worked (render/view/compare)?
+4. What should you do next to complete the task?
 """

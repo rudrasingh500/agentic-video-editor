@@ -2,10 +2,32 @@
 id: fx
 title: FX
 summary: Patch operations for transitions, speed ramps, freeze frames, and stylized effects.
+category: editing
+complexity: moderate
 ---
 
 ## transition - Transition
 Summary: Add a transition with a duration in milliseconds.
+Complexity: simple
+Prerequisites: get_timeline_snapshot
+
+Example:
+```json
+{
+  "description": "Add a dissolve transition between the first two clips",
+  "operations": [
+    {
+      "operation_type": "add_transition",
+      "operation_data": {
+        "track_index": 0,
+        "position": 1,
+        "duration_ms": 600,
+        "transition_type": "SMPTE_Dissolve"
+      }
+    }
+  ]
+}
+```
 ```json
 {
   "type": "object",
@@ -39,6 +61,8 @@ Summary: Add a transition with a duration in milliseconds.
 
 ## speed_ramp - Speed Ramp
 Summary: Use split_clip operations to isolate segments, then add LinearTimeWarp effects.
+Complexity: complex
+Prerequisites: get_timeline_snapshot
 ```json
 {
   "type": "object",
@@ -98,6 +122,8 @@ Summary: Use split_clip operations to isolate segments, then add LinearTimeWarp 
 
 ## freeze_frame - Freeze Frame
 Summary: Split around a time range, then add a FreezeFrame effect to the middle clip.
+Complexity: moderate
+Prerequisites: get_timeline_snapshot
 ```json
 {
   "type": "object",
@@ -156,6 +182,8 @@ Summary: Split around a time range, then add a FreezeFrame effect to the middle 
 
 ## blur - Blur
 Summary: Apply a blur via add_effect.
+Complexity: simple
+Prerequisites: get_timeline_snapshot
 ```json
 {
   "type": "object",
@@ -203,6 +231,8 @@ Summary: Apply a blur via add_effect.
 
 ## vignette - Vignette
 Summary: Apply a vignette via add_effect.
+Complexity: simple
+Prerequisites: get_timeline_snapshot
 ```json
 {
   "type": "object",
@@ -250,6 +280,8 @@ Summary: Apply a vignette via add_effect.
 
 ## grain - Grain
 Summary: Apply grain via add_effect.
+Complexity: simple
+Prerequisites: get_timeline_snapshot
 ```json
 {
   "type": "object",
