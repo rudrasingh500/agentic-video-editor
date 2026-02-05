@@ -17,6 +17,7 @@ from .prompts import SYSTEM_PROMPT
 from .session_ops import SessionClosedError, SessionNotFoundError
 from .tools import TOOLS, execute_tool
 from .types import (
+    AgentFinalResponse,
     EditAgentResult,
     EditAgentType,
     EditMessage,
@@ -32,6 +33,151 @@ MODEL = "google/gemini-3-pro-preview"
 MAX_ITERATIONS = int(os.getenv("EDIT_AGENT_MAX_ITERATIONS", "0"))
 LOG_PAYLOADS = os.getenv("EDIT_AGENT_LOG_PAYLOADS", "").lower() in {"1", "true", "yes"}
 LOG_MAX_CHARS = int(os.getenv("EDIT_AGENT_LOG_MAX_CHARS", "2000"))
+
+# JSON Schema for structured output - enforces the final response format
+FINAL_RESPONSE_SCHEMA: dict[str, Any] = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "agent_final_response",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "message": {
+                    "type": "string",
+                    "description": "Summary of changes and outcomes"
+                },
+                "applied": {
+                    "type": "boolean",
+                    "description": "Whether changes were applied to the timeline"
+                },
+                "new_version": {
+                    "type": ["integer", "null"],
+                    "description": "New timeline version after edits, or null if no changes"
+                },
+                "warnings": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Any warnings encountered during editing"
+                },
+                "next_actions": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional suggested follow-up actions"
+                },
+                "verification": {
+                    "type": ["object", "null"],
+                    "description": "Verification status - REQUIRED if edits were applied",
+                    "properties": {
+                        "render_viewed": {
+                            "type": "boolean",
+                            "description": "Did you call view_render_output to watch the result?"
+                        },
+                        "render_job_id": {
+                            "type": ["string", "null"],
+                            "description": "Job ID of the render you verified"
+                        },
+                        "observations": {
+                            "type": ["string", "null"],
+                            "description": "What did you see and hear in the render?"
+                        },
+                        "issues_found": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Any issues observed"
+                        }
+                    },
+                    "required": ["render_viewed"]
+                }
+            },
+            "required": ["message", "applied", "new_version", "warnings", "next_actions", "verification"],
+            "additionalProperties": False
+        }
+    }
+}
+
+# Verification enforcement prompt - injected if edits were made but not verified
+VERIFICATION_ENFORCEMENT_PROMPT = """
+IMPORTANT: You made edits to the timeline but have NOT verified them.
+
+Before you can complete this task, you MUST:
+1. Call render_timeline to render the current timeline
+2. Call view_render_output to watch the result
+3. Report what you observed in your final response
+
+This is a mandatory step. Please verify your edits now.
+"""
+
+
+def _check_verification_needed(trace: list[dict], applied: bool) -> bool:
+    """Check if verification is needed based on trace and applied status.
+    
+    Returns True if:
+    - Edits were applied (applied=True)
+    - view_render_output was NOT called after the last edit
+    """
+    if not applied:
+        return False
+    
+    # Find the last edit operation and check if view_render_output was called after
+    last_edit_index = -1
+    last_view_index = -1
+    
+    for i, entry in enumerate(trace):
+        tool_name = entry.get("tool", "")
+        if tool_name == "apply_timeline_patch":
+            result = entry.get("result", {})
+            if result.get("success") or result.get("applied"):
+                last_edit_index = i
+        elif tool_name == "view_render_output":
+            last_view_index = i
+    
+    # Verification needed if there was an edit but no view after it
+    if last_edit_index >= 0:
+        return last_view_index < last_edit_index
+    
+    return False
+
+
+def _build_progress_context(
+    iteration: int,
+    trace: list[dict],
+    applied: bool,
+    max_iterations: int,
+) -> str | None:
+    """Build a progress context message for injection at each iteration.
+    
+    Returns None for the first iteration (no progress to report).
+    """
+    if iteration == 0:
+        return None
+    
+    # Collect tools used
+    tools_used = [entry.get("tool", "unknown") for entry in trace]
+    unique_tools = list(dict.fromkeys(tools_used))  # preserve order, remove duplicates
+    
+    # Check verification status
+    has_edits = any(
+        entry.get("tool") == "apply_timeline_patch" and 
+        (entry.get("result", {}).get("success") or entry.get("result", {}).get("applied"))
+        for entry in trace
+    )
+    has_verification = any(entry.get("tool") == "view_render_output" for entry in trace)
+    
+    # Build context message
+    remaining = f"{max_iterations - iteration} remaining" if max_iterations > 0 else "unlimited"
+    
+    parts = [
+        f"[PROGRESS UPDATE - Iteration {iteration + 1}, {remaining}]",
+        f"Tools used so far: {', '.join(unique_tools) if unique_tools else 'none'}",
+    ]
+    
+    if has_edits and not has_verification:
+        parts.append("REMINDER: Edits applied but NOT verified. Call render_timeline + view_render_output before completing.")
+    elif has_edits and has_verification:
+        parts.append("✓ Edits verified.")
+    
+    return "\n".join(parts)
 
 
 def _get_client() -> OpenAI:
@@ -93,7 +239,7 @@ def orchestrate_edit(
         db.commit()
         db.refresh(session_record)
 
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    messages: list[dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
     history = list(session_record.messages or [])
     messages.extend(_history_messages(history))
     messages.append({"role": "user", "content": request.message})
@@ -113,6 +259,15 @@ def orchestrate_edit(
             logger.warning("Edit agent max iterations reached")
             break
         logger.debug("Edit agent iteration %s", iteration + 1)
+        
+        # Inject progress context for iterations after the first
+        progress_context = _build_progress_context(iteration, trace, applied, MAX_ITERATIONS)
+        if progress_context:
+            messages.append({
+                "role": "user",
+                "content": progress_context,
+            })
+        
         try:
             response = client.chat.completions.create(
                 model=MODEL,
@@ -196,24 +351,117 @@ def orchestrate_edit(
                 elif result.get("error"):
                     warnings.append(f"{tool_name}: {result['error']}")
 
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "content": json.dumps(result),
-                    }
-                )
+                # Handle multimodal content in tool results
+                multimodal = result.pop("_multimodal", None)
+                
+                # Always append the tool result as text first
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "content": json.dumps(result),
+                })
+                
+                # If there's multimodal content, inject it as a user message
+                if multimodal:
+                    mm_type = multimodal.get("type", "video")
+                    content_type = multimodal.get("content_type", "video/mp4")
+                    b64_data = multimodal.get("data", "")
+
+                    if mm_type == "image":
+                        content_block = {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:{content_type};base64,{b64_data}",
+                            },
+                        }
+                    elif mm_type == "audio":
+                        content_block = {
+                            "type": "audio_url",
+                            "audio_url": {
+                                "url": f"data:{content_type};base64,{b64_data}",
+                            },
+                        }
+                    else:
+                        # Video content
+                        content_block = {
+                            "type": "video_url",
+                            "video_url": {
+                                "url": f"data:{content_type};base64,{b64_data}",
+                            },
+                        }
+
+                    messages.append({
+                        "role": "user",
+                        "content": [
+                            content_block,
+                            {
+                                "type": "text",
+                                "text": f"Here is the visual content from {tool_name}. Please examine it carefully.",
+                            },
+                        ],
+                    })
 
         if response.choices[0].finish_reason == "stop" and not message.tool_calls:
             break
 
         iteration += 1
 
-    final_payload = _parse_final_json(final_content)
-    final_message = final_payload.get("message", final_content or "")
+    # Verification enforcement: if edits were made but not verified, give agent one more chance
+    if _check_verification_needed(trace, applied):
+        if MAX_ITERATIONS <= 0 or iteration < MAX_ITERATIONS:
+            logger.info("Verification needed - injecting enforcement prompt")
+            messages.append({
+                "role": "user",
+                "content": VERIFICATION_ENFORCEMENT_PROMPT,
+            })
+            try:
+                response = client.chat.completions.create(
+                    model=MODEL,
+                    messages=messages,
+                    tools=TOOLS,
+                    tool_choice="auto",
+                )
+                message = response.choices[0].message
+                
+                # Process any tool calls from verification iteration
+                if message.tool_calls:
+                    for tool_call in message.tool_calls:
+                        tool_name = tool_call.function.name
+                        try:
+                            tool_args = json.loads(tool_call.function.arguments)
+                        except json.JSONDecodeError:
+                            tool_args = {}
+                        
+                        result = execute_tool(
+                            tool_name,
+                            tool_args,
+                            str(project_uuid),
+                            str(user_uuid),
+                            str(timeline.timeline_id),
+                            db,
+                        )
+                        trace.append({
+                            "tool": tool_name,
+                            "args": tool_args,
+                            "result": result,
+                        })
+            except Exception as exc:
+                logger.error(f"Verification iteration error: {exc}")
+        else:
+            # Max iterations reached, add warning
+            warnings.append(
+                "Edits were applied but verification was skipped due to iteration limit. "
+                "Consider using view_render_output to verify the changes."
+            )
+
+    # Make a final call with structured output to ensure clean response format
+    final_payload = _get_structured_final_response(
+        client, messages, applied, new_version, warnings
+    )
+    final_message = final_payload.get("message", "Edit completed.")
     applied = final_payload.get("applied", applied)
     new_version = final_payload.get("new_version", new_version)
-    # Only include warnings produced by tools or internal validation.
+    
     _log_payload(
         "final_response",
         {
@@ -294,6 +542,61 @@ def _serialize_messages(messages: list[EditMessage]) -> list[dict[str, Any]]:
     ]
 
 
+def _get_structured_final_response(
+    client: OpenAI,
+    messages: list[dict[str, Any]],
+    applied: bool,
+    new_version: int | None,
+    warnings: list[str],
+) -> dict[str, Any]:
+    """
+    Make a final API call with structured output to ensure clean response format.
+    
+    This uses the OpenAI response_format parameter to enforce JSON schema compliance,
+    guaranteeing the response matches our expected structure without prose or markdown.
+    """
+    # Add a summary prompt to guide the final structured response
+    summary_prompt = (
+        "Provide your final response summarizing what was done. "
+        f"The current state is: applied={applied}, new_version={new_version}, "
+        f"warnings={warnings}. "
+        "Be concise and focus on what changes were made to the timeline."
+    )
+    
+    final_messages = messages + [{"role": "user", "content": summary_prompt}]
+    
+    try:
+        response = client.chat.completions.create(
+            model=MODEL,
+            messages=final_messages,
+            response_format=FINAL_RESPONSE_SCHEMA,
+        )
+        content = response.choices[0].message.content or "{}"
+        payload = json.loads(content)
+        
+        # Validate and return the structured response
+        final_response = AgentFinalResponse.model_validate(payload)
+        return final_response.model_dump()
+        
+    except Exception as exc:
+        logger.warning(f"Structured output failed, using fallback: {exc}")
+        # Fallback: try to parse from the last message content
+        last_content = ""
+        for msg in reversed(messages):
+            if msg.get("role") == "assistant" and msg.get("content"):
+                last_content = msg["content"]
+                break
+        
+        parsed = _parse_final_json(last_content)
+        return {
+            "message": _extract_final_message(parsed, last_content),
+            "applied": parsed.get("applied", applied),
+            "new_version": parsed.get("new_version", new_version),
+            "warnings": warnings,
+            "next_actions": parsed.get("next_actions", []),
+        }
+
+
 def _parse_final_json(content: str) -> dict[str, Any]:
     if not content:
         return {}
@@ -307,6 +610,29 @@ def _parse_final_json(content: str) -> dict[str, Any]:
             return json.loads(json_match.group(0))
         except json.JSONDecodeError:
             return {}
+    return {}
+
+
+def _extract_final_message(final_payload: dict[str, Any], final_content: str) -> str:
+    # Prefer the message from the parsed JSON payload
+    payload_message = final_payload.get("message")
+    if isinstance(payload_message, str) and payload_message.strip():
+        return payload_message.strip()
+    
+    # If no valid message in payload, try to extract just the message from raw content
+    # This handles cases where the agent outputs prose around the JSON
+    if final_content.strip():
+        # If the content looks like it contains JSON, don't return all the prose
+        if "{" in final_content and "}" in final_content:
+            # Try to extract just the message field from any JSON in the content
+            message_match = re.search(r'"message"\s*:\s*"([^"]*)"', final_content)
+            if message_match:
+                return message_match.group(1).strip()
+        # Fall back to the raw content only if it doesn't look like messy JSON output
+        if not re.search(r'```|"applied"|"new_version"|"warnings"', final_content):
+            return final_content.strip()
+    
+    return "Edit completed."
 
 
 def _log_run(

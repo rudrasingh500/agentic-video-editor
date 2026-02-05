@@ -58,6 +58,18 @@ const App = () => {
     }
   }
 
+  const handleDeleteProject = async (projectId: string) => {
+    try {
+      await api.deleteProject(config, projectId)
+      if (activeProject?.project_id === projectId) {
+        setActiveProject(null)
+      }
+      refreshProjects().catch(() => {})
+    } catch (err) {
+      setError((err as Error).message)
+    }
+  }
+
   return (
     <>
       {activeProject ? (
@@ -76,6 +88,7 @@ const App = () => {
           onSelect={setActiveProject}
           onOpenById={handleOpenProject}
           onRefresh={refreshProjects}
+          onDelete={handleDeleteProject}
           onOpenSettings={() => setSettingsOpen(true)}
         />
       )}

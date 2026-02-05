@@ -5,8 +5,8 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session as DBSession
 
-from database.models import Project, VideoOutput
-from utils.gcs_utils import download_file, parse_gcs_url
+from database.models import AgentRun, Assets, Project, VideoOutput
+from utils.gcs_utils import delete_file, download_file, parse_gcs_url
 
 ASSET_BUCKET = os.getenv("GCS_BUCKET", "video-editor")
 RENDER_BUCKET = os.getenv("GCS_RENDER_BUCKET", "video-editor-renders")
@@ -40,11 +40,34 @@ def delete_project(project_id: UUID, db: DBSession) -> bool:
     if not project:
         return False
     try:
+        assets = db.query(Assets).filter(Assets.project_id == project_id).all()
+        for asset in assets:
+            delete_file(bucket_name=ASSET_BUCKET, blob_name=asset.asset_url)
+            db.delete(asset)
+
+        outputs = (
+            db.query(VideoOutput).filter(VideoOutput.project_id == project_id).all()
+        )
+        for output in outputs:
+            bucket_name = RENDER_BUCKET
+            blob_name = output.video_url
+            parsed = parse_gcs_url(output.video_url)
+            if parsed:
+                bucket_name, blob_name = parsed
+            delete_file(bucket_name=bucket_name, blob_name=blob_name)
+            db.delete(output)
+
+        agent_runs = db.query(AgentRun).filter(AgentRun.project_id == project_id).all()
+        for run in agent_runs:
+            db.delete(run)
+
+        db.flush()
         db.delete(project)
         db.commit()
         return True
     except Exception:
-        return False
+        db.rollback()
+        raise
 
 
 def list_projects(user_id: UUID, db: DBSession) -> list[Project]:

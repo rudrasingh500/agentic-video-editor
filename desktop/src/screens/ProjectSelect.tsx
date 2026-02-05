@@ -10,6 +10,7 @@ type ProjectSelectProps = {
   onSelect: (project: Project) => void
   onOpenById: (projectId: string) => void
   onRefresh: () => void
+  onDelete?: (projectId: string) => void
   onOpenSettings: () => void
 }
 
@@ -32,12 +33,14 @@ const ProjectSelect = ({
   onSelect,
   onOpenById,
   onRefresh,
+  onDelete,
   onOpenSettings,
 }: ProjectSelectProps) => {
   const [showCreate, setShowCreate] = useState(false)
   const [showOpen, setShowOpen] = useState(false)
   const [projectName, setProjectName] = useState('')
   const [projectId, setProjectId] = useState('')
+  const [projectToDelete, setProjectToDelete] = useState<Project | null>(null)
 
   const recentProjects = useMemo(() => projects.slice(0, 8), [projects])
 
@@ -102,11 +105,19 @@ const ProjectSelect = ({
                 </div>
               ) : null}
               <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                {recentProjects.map((project, index) => (
-                  <button
+                {recentProjects.map((project) => (
+                  <div
                     key={project.project_id}
+                    role="button"
+                    tabIndex={0}
                     onClick={() => onSelect(project)}
-                    className="group flex items-center gap-4 rounded-xl border border-white/10 bg-base-800/60 p-4 text-left transition hover:border-accent-500/60 hover:bg-base-700/80"
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault()
+                        onSelect(project)
+                      }
+                    }}
+                    className="group flex cursor-pointer items-center gap-4 rounded-xl border border-white/10 bg-base-800/60 p-4 text-left transition hover:border-accent-500/60 hover:bg-base-700/80"
                   >
                     <div className="h-14 w-20 rounded-lg bg-gradient-to-br from-accent-500/80 via-glow-violet/70 to-glow-magenta/70 opacity-90 shadow-soft transition group-hover:opacity-100" />
                     <div className="flex-1">
@@ -117,8 +128,23 @@ const ProjectSelect = ({
                         {formatDate(project.updated_at)}
                       </div>
                     </div>
-                    <span className="text-xs text-ink-400">Open</span>
-                  </button>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-ink-400">Open</span>
+                      {onDelete ? (
+                        <button
+                          type="button"
+                          aria-label={`Delete ${project.project_name}`}
+                          onClick={(event) => {
+                            event.stopPropagation()
+                            setProjectToDelete(project)
+                          }}
+                          className="rounded-full border border-transparent p-1 text-ink-400 transition hover:border-red-400/40 hover:text-red-300"
+                        >
+                          🗑️
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>
                 ))}
                 {recentProjects.length === 0 && !loading ? (
                   <div className="rounded-xl border border-white/10 bg-base-800/40 p-6 text-sm text-ink-300">
@@ -198,6 +224,38 @@ const ProjectSelect = ({
               className="rounded-full bg-accent-500 px-4 py-2 text-xs font-semibold text-white"
             >
               Open
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
+        open={Boolean(projectToDelete)}
+        title="Delete Project"
+        onClose={() => setProjectToDelete(null)}
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-ink-300">
+            Delete {projectToDelete ? `"${projectToDelete.project_name}"` : 'this project'}?
+            This action cannot be undone.
+          </p>
+          <div className="flex justify-end gap-3">
+            <button
+              onClick={() => setProjectToDelete(null)}
+              className="rounded-full border border-white/10 px-4 py-2 text-xs text-ink-300"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={() => {
+                if (projectToDelete && onDelete) {
+                  onDelete(projectToDelete.project_id)
+                }
+                setProjectToDelete(null)
+              }}
+              className="rounded-full bg-red-500 px-4 py-2 text-xs font-semibold text-white"
+            >
+              Delete
             </button>
           </div>
         </div>

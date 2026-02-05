@@ -11,8 +11,9 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
-from database.base import get_db
+from database.base import SessionLocal, get_db
 from database.models import Project, Timeline
 from dependencies.auth import SessionData, get_session as get_auth_session
 from dependencies.project import require_project
@@ -29,6 +30,7 @@ from agent.edit_agent import (
     orchestrate_edit,
     update_session_status,
 )
+from agent.edit_agent.types import EditAgentResult
 from models.api_models import (
     ApplyPatchesRequestBody,
     ApplyPatchesResponse,
@@ -49,6 +51,23 @@ from operators.timeline_operator import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _run_edit_agent_in_thread(
+    project_id: UUID,
+    user_id: UUID,
+    request: EditRequest,
+) -> EditAgentResult:
+    db = SessionLocal()
+    try:
+        return orchestrate_edit(
+            project_id=project_id,
+            user_id=user_id,
+            request=request,
+            db=db,
+        )
+    finally:
+        db.close()
 
 
 def _require_user_id(session: SessionData) -> UUID:
@@ -104,11 +123,11 @@ async def send_edit_request(
     extra_warnings: list[str] = []
 
     try:
-        result = orchestrate_edit(
-            project_id=project.project_id,
-            user_id=user_id,
-            request=request,
-            db=db,
+        result = await run_in_threadpool(
+            _run_edit_agent_in_thread,
+            project.project_id,
+            user_id,
+            request,
         )
     except SessionNotFoundError:
         if not request.session_id:
@@ -120,11 +139,11 @@ async def send_edit_request(
         )
         fallback_request = EditRequest(message=body.message, session_id=None)
         try:
-            result = orchestrate_edit(
-                project_id=project.project_id,
-                user_id=user_id,
-                request=fallback_request,
-                db=db,
+            result = await run_in_threadpool(
+                _run_edit_agent_in_thread,
+                project.project_id,
+                user_id,
+                fallback_request,
             )
         except SessionNotFoundError:
             raise HTTPException(status_code=404, detail="Session not found")

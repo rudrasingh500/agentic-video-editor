@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID, uuid4
@@ -208,6 +209,28 @@ def _parse_dt(value: Any) -> datetime | None:
     return None
 
 
+# Safety fallback: map skill IDs to operation types if agent uses wrong format.
+# This allows recovery when the agent mistakenly uses a skill ID (e.g., "cuts.insert")
+# as an operation_type instead of the correct low-level operation (e.g., "add_clip").
+_SKILL_ID_TO_OPERATION: dict[str, str] = {
+    "cuts.trim": "trim_clip",
+    "cuts.split": "split_clip",
+    "cuts.insert": "add_clip",
+    "cuts.overwrite": "replace_clip_media",
+    "cuts.move": "move_clip",
+    "cuts.slip": "slip_clip",
+    "cuts.slide": "move_clip",
+    "cuts.pacing": "adjust_gap_duration",
+    "silences.remove": "remove_clip",
+    "brolls.add": "add_clip",
+    "captions.add": "add_generator_clip",
+    "mix.crossfade": "add_transition",
+    "fx.transition": "add_transition",
+}
+
+_logger = logging.getLogger(__name__)
+
+
 def _apply_operation(
     db: Session,
     timeline_id: UUID,
@@ -217,6 +240,17 @@ def _apply_operation(
 ) -> int:
     data = operation.operation_data
     op_type = operation.operation_type
+
+    # Safety fallback: map skill IDs to operation types if agent used wrong format
+    if op_type in _SKILL_ID_TO_OPERATION:
+        corrected = _SKILL_ID_TO_OPERATION[op_type]
+        _logger.warning(
+            "Agent used skill ID '%s' as operation_type, mapping to '%s'. "
+            "This indicates the agent prompt/workflow should be reviewed.",
+            op_type,
+            corrected,
+        )
+        op_type = corrected
 
     if op_type == "add_track":
         kind_value = data.get("kind")

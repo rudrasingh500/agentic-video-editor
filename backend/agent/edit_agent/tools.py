@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import os
 import time
 import urllib.error
@@ -14,7 +15,6 @@ from sqlalchemy.dialects.postgresql import array, ARRAY
 from sqlalchemy.types import String
 from sqlalchemy.orm import Session
 
-from agent.asset_processing.analyzers import VIDEO_TYPES, analyze_video
 from database.models import Assets, ProjectEntity, EntitySimilarity, RenderJob
 from models.timeline_models import (
     Clip,
@@ -43,12 +43,17 @@ from operators.render_operator import (
 )
 from utils.gcs_utils import generate_signed_url, parse_gcs_url
 from utils.embeddings import get_query_embedding
+from utils.video_utils import (
+    extract_video_segment,
+    get_video_duration,
+    MAX_VIDEO_DURATION_SECONDS,
+)
 
 from .session_ops import execute_patch
 from .types import EditOperation, EditPatch
 
 
-DEFAULT_RENDER_WAIT_SECONDS = int(os.getenv("EDIT_AGENT_RENDER_WAIT_SECONDS", "0"))
+DEFAULT_RENDER_WAIT_SECONDS = int(os.getenv("EDIT_AGENT_RENDER_WAIT_SECONDS", "60"))
 
 
 # =============================================================================
@@ -459,23 +464,6 @@ EDIT_AGENT_TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
-            "name": "analyze_render_output",
-            "description": "Use video understanding to verify a render output.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "job_id": {"type": "string"},
-                    "timeline_version": {"type": "integer"},
-                    "max_bytes": {"type": "integer", "default": 2147483648},
-                    "timeout_seconds": {"type": "integer", "default": 30},
-                },
-                "required": [],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
             "name": "skills_registry",
             "description": "List or read available skills and JSON schemas.",
             "parameters": {
@@ -539,14 +527,18 @@ EDIT_AGENT_TOOLS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "view_asset",
-            "description": "Get a signed URL to visually inspect an asset (optionally with t0_ms/t1_ms in ms).",
+            "description": (
+                "View an asset's visual content directly. The video/image will be shown to you "
+                "so you can see exactly what it contains. For videos longer than 40 minutes, "
+                "use t0_ms/t1_ms to view specific segments. Also returns cached analysis metadata."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "asset_id": {"type": "string"},
-                    "t0_ms": {"type": "number"},
-                    "t1_ms": {"type": "number"},
-                    "reason": {"type": "string"},
+                    "asset_id": {"type": "string", "description": "UUID of the asset to view"},
+                    "t0_ms": {"type": "number", "description": "Start time in ms (for viewing specific segment)"},
+                    "t1_ms": {"type": "number", "description": "End time in ms (for viewing specific segment)"},
+                    "reason": {"type": "string", "description": "Why you need to view this asset"},
                 },
                 "required": ["asset_id"],
             },
@@ -574,13 +566,18 @@ EDIT_AGENT_TOOLS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "view_render_output",
-            "description": "Verify a render output using the render version or job id.",
+            "description": (
+                "View a render output directly. The rendered video will be shown to you so you "
+                "can visually verify your edits. For renders longer than 40 minutes, use "
+                "t0_ms/t1_ms to view segments around where you made edits."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "job_id": {"type": "string"},
-                    "timeline_version": {"type": "integer"},
-                    "timeout_seconds": {"type": "integer", "default": 10},
+                    "job_id": {"type": "string", "description": "Render job UUID"},
+                    "timeline_version": {"type": "integer", "description": "Timeline version to find render for"},
+                    "t0_ms": {"type": "number", "description": "Start time in ms for segment viewing"},
+                    "t1_ms": {"type": "number", "description": "End time in ms for segment viewing"},
                 },
                 "required": [],
             },
@@ -625,7 +622,6 @@ def execute_tool(
         "view_asset": _view_asset,
         "render_output": _render_output,
         "view_render_output": _view_render_output,
-        "analyze_render_output": _analyze_render_output,
     }
     tool_fn = tool_map.get(tool_name)
     if not tool_fn:
@@ -1607,6 +1603,75 @@ def _find_entity_appearances(
 # =============================================================================
 
 
+def _extract_operation_types(schema: dict) -> list[str]:
+    """Extract all operation_type const values from a skill schema."""
+    operation_types: list[str] = []
+
+    items = schema.get("properties", {}).get("operations", {}).get("items", {})
+
+    # Direct case: items has properties with operation_type const
+    if "properties" in items:
+        op_type = items.get("properties", {}).get("operation_type", {}).get("const")
+        if op_type:
+            operation_types.append(op_type)
+
+    # anyOf case: items contains anyOf with multiple operation types
+    if "anyOf" in items:
+        for variant in items["anyOf"]:
+            op_type = variant.get("properties", {}).get("operation_type", {}).get("const")
+            if op_type and op_type not in operation_types:
+                operation_types.append(op_type)
+
+    return operation_types
+
+
+def _generate_example_patch(schema: dict, operation_type: str) -> dict:
+    """Generate an example patch for a given operation_type based on schema."""
+    # Find the operation_data schema for this operation_type
+    items = schema.get("properties", {}).get("operations", {}).get("items", {})
+    op_data_schema: dict = {}
+
+    # Direct case
+    if "properties" in items:
+        if items.get("properties", {}).get("operation_type", {}).get("const") == operation_type:
+            op_data_schema = items.get("properties", {}).get("operation_data", {})
+    # anyOf case
+    elif "anyOf" in items:
+        for variant in items["anyOf"]:
+            if variant.get("properties", {}).get("operation_type", {}).get("const") == operation_type:
+                op_data_schema = variant.get("properties", {}).get("operation_data", {})
+                break
+
+    # Build example operation_data from required fields
+    example_data: dict = {}
+    required_fields = op_data_schema.get("required", [])
+    props = op_data_schema.get("properties", {})
+
+    for field in required_fields:
+        field_schema = props.get(field, {})
+        field_type = field_schema.get("type", "string")
+        if field_type == "integer":
+            example_data[field] = 0
+        elif field_type == "number":
+            example_data[field] = 0.0
+        elif field_type == "string":
+            example_data[field] = "<value>"
+        elif field_type == "boolean":
+            example_data[field] = True
+        else:
+            example_data[field] = "<value>"
+
+    return {
+        "description": "Describe what this edit does",
+        "operations": [
+            {
+                "operation_type": operation_type,
+                "operation_data": example_data,
+            }
+        ],
+    }
+
+
 def _skills_registry(
     project_id: str,
     user_id: str,
@@ -1620,6 +1685,12 @@ def _skills_registry(
     if action == "list":
         skills = list_skills()
         return {
+            "usage_note": (
+                "IMPORTANT: Skill IDs (e.g., 'cuts.insert') are NOT operation_types. "
+                "After reading a skill's schema, use the operation_type value from the schema's "
+                "'const' field (e.g., 'add_clip', 'trim_clip'). "
+                "Use action='read' with a full subskill ID to get the exact schema."
+            ),
             "skills": [
                 {
                     "id": s.id,
@@ -1635,20 +1706,86 @@ def _skills_registry(
                     ],
                 }
                 for s in skills
-            ]
+            ],
         }
     if action == "read":
         if not skill_id:
             return {"error": "skill_id required for read"}
-        skill = read_skill(skill_id.split(".")[0])
+
+        # Check if this is a parent skill ID (no dot separator)
+        if "." not in skill_id:
+            skill = read_skill(skill_id)
+            if not skill:
+                return {"error": f"Skill not found: {skill_id}"}
+            # Return all subskills with schemas and operation_type hints
+            example_id = skill.subskills[0].id if skill.subskills else f"{skill_id}.xxx"
+
+            subskills_with_usage = []
+            for sub in skill.subskills:
+                op_types = _extract_operation_types(sub.schema)
+                primary_op = op_types[0] if op_types else "unknown"
+                subskills_with_usage.append({
+                    "id": sub.id,
+                    "title": sub.title,
+                    "summary": sub.summary,
+                    "schema": sub.schema,
+                    "operation_types": op_types,
+                    "primary_operation_type": primary_op,
+                    "usage_warning": f"Use operation_type='{primary_op}', NOT '{sub.id}'",
+                })
+
+            return {
+                "id": skill.id,
+                "title": skill.title,
+                "summary": skill.summary,
+                "hint": (
+                    f"You requested parent skill '{skill_id}'. "
+                    f"To get the patch schema, use the full subskill ID "
+                    f"(e.g., skill_id='{example_id}'). "
+                    f"CRITICAL: use the operation_type from the schema (e.g., 'add_clip'), "
+                    f"NOT the skill ID (e.g., 'cuts.insert')."
+                ),
+                "subskills": subskills_with_usage,
+            }
+
+        # Full subskill ID provided
+        parent_id = skill_id.split(".")[0]
+        skill = read_skill(parent_id)
         if not skill:
-            return {"error": f"Skill not found: {skill_id}"}
+            return {"error": f"Skill not found: {parent_id}"}
         sub = next((s for s in skill.subskills if s.id == skill_id), None)
+        if not sub:
+            available = [s.id for s in skill.subskills]
+            return {
+                "error": f"Subskill '{skill_id}' not found.",
+                "available_subskills": available,
+            }
+
+        # Extract operation_types and generate example
+        operation_types = _extract_operation_types(sub.schema)
+        primary_op_type = operation_types[0] if operation_types else "unknown"
+        example_patch = _generate_example_patch(sub.schema, primary_op_type)
+
         return {
             "id": skill.id,
             "title": skill.title,
             "summary": skill.summary,
-            "subskill": sub.__dict__ if sub else None,
+            "subskill": {
+                "id": sub.id,
+                "title": sub.title,
+                "summary": sub.summary,
+                "schema": sub.schema,
+            },
+            "USAGE": {
+                "operation_types_to_use": operation_types,
+                "primary_operation_type": primary_op_type,
+                "warning": (
+                    f"Use operation_type='{primary_op_type}' in your patch, "
+                    f"NOT operation_type='{skill_id}'. The skill ID is only for "
+                    f"looking up the schema; it is NOT a valid operation_type."
+                ),
+                "example_patch": example_patch,
+            },
         }
     return {"error": f"Unknown action: {action}"}
 
@@ -1798,6 +1935,7 @@ def _view_asset(
     t1_ms: float | None = None,
     reason: str | None = None,
 ) -> dict[str, Any]:
+    """View an asset with visual content embedded for direct viewing by the agent."""
     asset = (
         db.query(Assets)
         .filter(Assets.project_id == project_id, Assets.asset_id == asset_id)
@@ -1806,20 +1944,109 @@ def _view_asset(
     if not asset:
         return {"error": f"Asset not found: {asset_id}"}
 
-    asset_url_value = getattr(asset, "asset_url", None)
-    asset_url = str(asset_url_value) if asset_url_value is not None else ""
+    asset_url = str(getattr(asset, "asset_url", "") or "")
     signed_url = _maybe_sign_url(asset_url)
+    content_type = asset.asset_type or "video/mp4"
 
-    return {
+    result: dict[str, Any] = {
         "asset_id": str(asset.asset_id),
         "asset_name": asset.asset_name,
-        "asset_type": asset.asset_type,
-        "asset_url": asset_url,
-        "signed_url": signed_url,
+        "asset_type": content_type,
         "t0_ms": t0_ms,
         "t1_ms": t1_ms,
         "reason": reason,
     }
+
+    # Include cached analysis metadata as context
+    if asset.indexing_status == "completed":
+        result["metadata"] = {
+            "summary": asset.asset_summary,
+            "tags": asset.asset_tags,
+            "transcript": asset.asset_transcript,
+            "events": asset.asset_events,
+            "notable_shots": asset.notable_shots,
+            "faces": asset.asset_faces,
+            "scenes": asset.asset_scenes,
+        }
+
+    # Download content
+    if not signed_url:
+        result["visual_content_included"] = False
+        result["visual_error"] = "No URL available for asset"
+        return result
+
+    content = _download_url_bytes(signed_url, timeout_seconds=120)
+    if content is None:
+        result["visual_content_included"] = False
+        result["visual_error"] = "Failed to download asset content"
+        return result
+
+    # Determine media type
+    if content_type.startswith("video/"):
+        media_type = "video"
+    elif content_type.startswith("image/"):
+        media_type = "image"
+    else:
+        result["visual_content_included"] = False
+        result["visual_error"] = f"Unsupported content type: {content_type}"
+        return result
+
+    # For video, check duration and handle chunking
+    content_to_embed = content
+    if media_type == "video":
+        duration = get_video_duration(content, content_type)
+        result["duration_seconds"] = duration
+
+        # Handle time range request
+        if t0_ms is not None or t1_ms is not None:
+            start_sec = (t0_ms or 0) / 1000.0
+            if t1_ms is not None:
+                duration_sec = (t1_ms - (t0_ms or 0)) / 1000.0
+            else:
+                duration_sec = min(
+                    MAX_VIDEO_DURATION_SECONDS,
+                    (duration or MAX_VIDEO_DURATION_SECONDS) - start_sec,
+                )
+
+            duration_sec = min(duration_sec, MAX_VIDEO_DURATION_SECONDS)
+
+            segment = extract_video_segment(content, start_sec, duration_sec, content_type)
+            if segment:
+                content_to_embed = segment
+                result["segment_extracted"] = True
+                result["segment_start_ms"] = start_sec * 1000
+                result["segment_duration_ms"] = duration_sec * 1000
+            else:
+                result["segment_extraction_failed"] = True
+
+        # If no range specified but video is too long, extract first chunk
+        elif duration and duration > MAX_VIDEO_DURATION_SECONDS:
+            segment = extract_video_segment(content, 0, MAX_VIDEO_DURATION_SECONDS, content_type)
+            if segment:
+                content_to_embed = segment
+                result["chunked"] = True
+                result["chunk_start_ms"] = 0
+                result["chunk_duration_ms"] = MAX_VIDEO_DURATION_SECONDS * 1000
+                result["total_duration_ms"] = duration * 1000
+                result["remaining_duration_ms"] = (duration - MAX_VIDEO_DURATION_SECONDS) * 1000
+                result["chunk_message"] = (
+                    f"Video is {duration / 60:.1f} minutes long. Showing first 40 minutes. "
+                    f"Call view_asset again with t0_ms={int(MAX_VIDEO_DURATION_SECONDS * 1000)} to see more."
+                )
+            else:
+                result["chunk_extraction_failed"] = True
+
+    # Embed the content as base64
+    b64_data = base64.b64encode(content_to_embed).decode("utf-8")
+    result["_multimodal"] = {
+        "type": media_type,
+        "content_type": content_type,
+        "data": b64_data,
+    }
+    result["visual_content_included"] = True
+    result["size_bytes"] = len(content_to_embed)
+
+    return result
 
 
 def _coerce_render_preset(preset: dict[str, Any]) -> RenderPreset:
@@ -1931,98 +2158,40 @@ def _view_render_output(
     db: Session,
     job_id: str | None = None,
     timeline_version: int | None = None,
-    output_url: str | None = None,
-    signed_url: str | None = None,
-    timeout_seconds: int = 10,
+    t0_ms: float | None = None,
+    t1_ms: float | None = None,
 ) -> dict[str, Any]:
+    """View a render output with visual content embedded for direct viewing."""
     resolved = _resolve_render_output(
         db=db,
         project_id=project_id,
         timeline_id=timeline_id,
         job_id=job_id,
         timeline_version=timeline_version,
-        output_url=output_url,
     )
     if resolved.get("error"):
         return resolved
 
-    resolved_signed_url = resolved.get("signed_url")
-    if not resolved_signed_url:
+    signed_url = resolved.get("signed_url")
+    if not signed_url:
         return {
-            "job_id": resolved.get("job_id"),
-            "status": resolved.get("status"),
-            "timeline_version": resolved.get("timeline_version"),
-            "output_url": resolved.get("output_url"),
-            "ready": False,
-            "error": "Unable to resolve signed URL for render output",
+            **resolved,
+            "visual_content_included": False,
+            "visual_error": "Unable to resolve signed URL for render output",
         }
 
-    check = _check_url(resolved_signed_url, timeout_seconds)
-    reachable = bool(check.get("reachable"))
-    ready = bool(resolved.get("ready")) or reachable
-    status = resolved.get("status")
-
-    if reachable and resolved.get("job_id") and not resolved.get("ready"):
-        try:
-            update_job_status(
-                db,
-                UUID(str(resolved["job_id"])),
-                RenderJobStatus.COMPLETED,
-                output_url=resolved.get("output_url"),
-            )
-            status = RenderJobStatus.COMPLETED.value
-        except Exception:
-            pass
-
-    response: dict[str, Any] = {
-        "job_id": resolved.get("job_id"),
-        "status": status,
-        "timeline_version": resolved.get("timeline_version"),
-        "output_url": resolved.get("output_url"),
-        "ready": ready,
-    }
-    response.update(check)
-    return response
-
-
-def _analyze_render_output(
-    project_id: str,
-    user_id: str,
-    timeline_id: str,
-    db: Session,
-    job_id: str | None = None,
-    timeline_version: int | None = None,
-    output_url: str | None = None,
-    signed_url: str | None = None,
-    max_bytes: int = 2_147_483_648,
-    timeout_seconds: int = 30,
-) -> dict[str, Any]:
-    resolved = _resolve_render_output(
-        db=db,
-        project_id=project_id,
-        timeline_id=timeline_id,
-        job_id=job_id,
-        timeline_version=timeline_version,
-        output_url=output_url,
-    )
-    if resolved.get("error"):
-        return resolved
-
-    resolved_signed_url = resolved.get("signed_url")
-    if not resolved_signed_url:
-        return {"error": "Unable to resolve signed URL for render output"}
-
-    check = _check_url(resolved_signed_url, timeout_seconds)
+    # Check reachability
+    check = _check_url(signed_url, timeout_seconds=30)
     if not check.get("reachable"):
         return {
-            "error": "Render output is not reachable",
-            "output_url": resolved.get("output_url"),
-            "job_id": resolved.get("job_id"),
-            "timeline_version": resolved.get("timeline_version"),
-            "details": check,
+            **resolved,
+            "visual_content_included": False,
+            "visual_error": "Render output not reachable",
+            "reachability_check": check,
         }
 
-    if not resolved.get("ready") and resolved.get("job_id"):
+    # Update job status if needed
+    if resolved.get("job_id") and not resolved.get("ready"):
         try:
             update_job_status(
                 db,
@@ -2033,62 +2202,81 @@ def _analyze_render_output(
         except Exception:
             pass
 
-    content_type = check.get("content_type") or "video/mp4"
-    if content_type not in VIDEO_TYPES:
-        return {
-            "error": f"Unsupported content type: {content_type}",
-            "content_type": content_type,
-            "output_url": resolved.get("output_url"),
-            "job_id": resolved.get("job_id"),
-            "timeline_version": resolved.get("timeline_version"),
-        }
-
-    size_value = check.get("content_length")
-    if size_value:
-        try:
-            size_bytes = int(size_value)
-            if size_bytes > max_bytes:
-                return {
-                    "error": "Render output too large for analysis",
-                    "size_bytes": size_bytes,
-                    "max_bytes": max_bytes,
-                    "output_url": resolved.get("output_url"),
-                    "job_id": resolved.get("job_id"),
-                    "timeline_version": resolved.get("timeline_version"),
-                }
-        except (TypeError, ValueError):
-            size_bytes = None
-    else:
-        size_bytes = None
-
-    content = _download_url_bytes(resolved_signed_url, timeout_seconds)
+    # Download the render output
+    content = _download_url_bytes(signed_url, timeout_seconds=120)
     if content is None:
         return {
-            "error": "Failed to download render output",
-            "output_url": resolved.get("output_url"),
-            "job_id": resolved.get("job_id"),
-            "timeline_version": resolved.get("timeline_version"),
+            **resolved,
+            "visual_content_included": False,
+            "visual_error": "Failed to download render output",
         }
 
-    if max_bytes and len(content) > max_bytes:
-        return {
-            "error": "Render output exceeds max_bytes",
-            "size_bytes": len(content),
-            "max_bytes": max_bytes,
-            "output_url": resolved.get("output_url"),
-            "job_id": resolved.get("job_id"),
-            "timeline_version": resolved.get("timeline_version"),
-        }
+    content_type = check.get("content_type") or "video/mp4"
 
-    analysis = analyze_video(content, content_type)
-    return {
-        "analysis": analysis,
-        "content_type": content_type,
-        "size_bytes": len(content),
-        "output_url": resolved.get("output_url"),
+    # Build result
+    result: dict[str, Any] = {
         "job_id": resolved.get("job_id"),
+        "status": "completed",
         "timeline_version": resolved.get("timeline_version"),
+        "content_type": content_type,
     }
+
+    # Check duration and handle chunking
+    content_to_embed = content
+    duration = get_video_duration(content, content_type)
+    result["duration_seconds"] = duration
+
+    # Handle time range request
+    if t0_ms is not None or t1_ms is not None:
+        start_sec = (t0_ms or 0) / 1000.0
+        if t1_ms is not None:
+            duration_sec = (t1_ms - (t0_ms or 0)) / 1000.0
+        else:
+            duration_sec = min(
+                MAX_VIDEO_DURATION_SECONDS,
+                (duration or MAX_VIDEO_DURATION_SECONDS) - start_sec,
+            )
+
+        duration_sec = min(duration_sec, MAX_VIDEO_DURATION_SECONDS)
+
+        segment = extract_video_segment(content, start_sec, duration_sec, content_type)
+        if segment:
+            content_to_embed = segment
+            result["segment_extracted"] = True
+            result["segment_start_ms"] = start_sec * 1000
+            result["segment_duration_ms"] = duration_sec * 1000
+        else:
+            result["segment_extraction_failed"] = True
+
+    # If video is too long, extract first chunk
+    elif duration and duration > MAX_VIDEO_DURATION_SECONDS:
+        segment = extract_video_segment(content, 0, MAX_VIDEO_DURATION_SECONDS, content_type)
+        if segment:
+            content_to_embed = segment
+            result["chunked"] = True
+            result["chunk_start_ms"] = 0
+            result["chunk_duration_ms"] = MAX_VIDEO_DURATION_SECONDS * 1000
+            result["total_duration_ms"] = duration * 1000
+            result["remaining_duration_ms"] = (duration - MAX_VIDEO_DURATION_SECONDS) * 1000
+            result["chunk_message"] = (
+                f"Render is {duration / 60:.1f} minutes long. Showing first 40 minutes. "
+                f"Call view_render_output again with t0_ms={int(MAX_VIDEO_DURATION_SECONDS * 1000)} to see more."
+            )
+        else:
+            result["chunk_extraction_failed"] = True
+
+    # Embed the video content
+    b64_data = base64.b64encode(content_to_embed).decode("utf-8")
+
+    result["_multimodal"] = {
+        "type": "video",
+        "content_type": content_type,
+        "data": b64_data,
+    }
+    result["visual_content_included"] = True
+    result["size_bytes"] = len(content_to_embed)
+
+    return result
 
 
 # =============================================================================

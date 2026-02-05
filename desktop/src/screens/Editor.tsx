@@ -10,6 +10,7 @@ import type { AppConfig } from '../lib/config'
 import { api } from '../lib/api'
 import { loadAssetCache, saveAssetCache, type AssetCacheIndex } from '../lib/assetCache'
 import { loadSessionId, saveSessionId } from '../lib/chatSessions'
+import Modal from '../components/Modal'
 import type {
   Asset,
   EditPatchSummary,
@@ -41,6 +42,16 @@ type RenderState = {
 
 type UploadResult = {
   sizeBytes: number
+}
+
+type RenderJobSummary = {
+  job_id: string
+  status: string
+  job_type?: string
+  progress?: number
+  execution_mode?: string | null
+  timeline_version?: number
+  metadata?: Record<string, unknown>
 }
 
 const buildStandardPreset = (useGpu: boolean) => ({
@@ -90,9 +101,14 @@ const Editor = ({ project, config, onBack, onOpenSettings }: EditorProps) => {
   const [assetCache, setAssetCache] = useState<AssetCacheIndex>(() => loadAssetCache())
   const assetsRef = useRef<Asset[]>([])
   const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const agentRenderRef = useRef<{ running: boolean; lastJobId: string | null }>({
+    running: false,
+    lastJobId: null,
+  })
   const [sessions, setSessions] = useState<EditSessionSummary[]>([])
   const [sessionsLoading, setSessionsLoading] = useState(false)
   const [sessionsError, setSessionsError] = useState<string | null>(null)
+  const [assetToDelete, setAssetToDelete] = useState<Asset | null>(null)
 
   const mapSessionMessages = (session: EditSessionDetail): ChatMessage[] =>
     (session.messages || []).map((message, index) => ({
@@ -160,6 +176,32 @@ const Editor = ({ project, config, onBack, onOpenSettings }: EditorProps) => {
     saveSessionId(project.project_id, null)
   }, [project.project_id])
 
+  const updateAssetCache = useCallback(
+    (assetId: string, path: string) => {
+      setAssetCache((prev) => {
+        const next = { ...prev, [assetId]: path }
+        saveAssetCache(next)
+        return next
+      })
+    },
+    [],
+  )
+
+  const removeAssetCacheEntry = useCallback(
+    (assetId: string) => {
+      setAssetCache((prev) => {
+        if (!prev[assetId]) {
+          return prev
+        }
+        const next = { ...prev }
+        delete next[assetId]
+        saveAssetCache(next)
+        return next
+      })
+    },
+    [],
+  )
+
   const fetchAssets = useCallback(
     async (silent = false) => {
       if (!silent) {
@@ -180,6 +222,24 @@ const Editor = ({ project, config, onBack, onOpenSettings }: EditorProps) => {
       }
     },
     [config, project.project_id],
+  )
+
+  const handleDeleteAsset = useCallback(
+    async (target: Asset) => {
+      setAssetsError(null)
+      try {
+        await api.deleteAsset(config, project.project_id, target.asset_id)
+        removeAssetCacheEntry(target.asset_id)
+        setAssets((prev) => {
+          const next = prev.filter((asset) => asset.asset_id !== target.asset_id)
+          assetsRef.current = next
+          return next
+        })
+      } catch (error) {
+        setAssetsError((error as Error).message)
+      }
+    },
+    [config, project.project_id, removeAssetCacheEntry],
   )
 
   useEffect(() => {
@@ -250,6 +310,55 @@ const Editor = ({ project, config, onBack, onOpenSettings }: EditorProps) => {
     }
   }, [])
 
+  const uploadRenderOutput = useCallback(
+    async (jobId: string, outputPath: string) => {
+      try {
+        const filename = outputPath.split(/[\\/]/).pop() || `${jobId}.mp4`
+        const uploadInfo = await api.getOutputUploadUrl(
+          config,
+          project.project_id,
+          filename,
+          'video/mp4',
+        )
+
+        const uploadResult = (await window.desktopApi.uploadRenderOutput({
+          filePath: outputPath,
+          uploadUrl: uploadInfo.upload_url,
+          contentType: 'video/mp4',
+        })) as UploadResult
+
+        await api.shareOutput(config, project.project_id, uploadInfo.gcs_path, null)
+
+        await api.reportRenderProgress(config, project.project_id, jobId, {
+          job_id: jobId,
+          status: 'completed',
+          progress: 100,
+          output_url: uploadInfo.gcs_path,
+          output_size_bytes: uploadResult.sizeBytes,
+        })
+
+        setRenderState((prev) => ({
+          ...prev,
+          status: 'completed',
+        }))
+      } catch (error) {
+        setRenderState((prev) => ({
+          ...prev,
+          status: 'failed',
+        }))
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: crypto.randomUUID(),
+            role: 'assistant',
+            content: `Render upload failed: ${(error as Error).message}`,
+          },
+        ])
+      }
+    },
+    [config, project.project_id],
+  )
+
   useEffect(() => {
     const unsubscribeProgress = window.desktopApi.onRenderProgress((event) => {
       if (event.jobId !== renderState.jobId) {
@@ -307,64 +416,143 @@ const Editor = ({ project, config, onBack, onOpenSettings }: EditorProps) => {
       unsubscribeComplete()
       unsubscribeLogs()
     }
-  }, [config, project.project_id, renderState.jobId])
+  }, [config, project.project_id, renderState.jobId, uploadRenderOutput])
 
-  const uploadRenderOutput = useCallback(
-    async (jobId: string, outputPath: string) => {
-      try {
-        const filename = outputPath.split(/[\\/]/).pop() || `${jobId}.mp4`
-        const uploadInfo = await api.getOutputUploadUrl(
+  const prepareLocalManifest = useCallback(
+    async (
+      manifestData: Record<string, unknown>,
+      presetOverride?: Record<string, unknown>,
+    ) => {
+      const assetMap =
+        (manifestData.asset_map as Record<string, string> | undefined) ?? {}
+      const updatedAssetMap: Record<string, string> = {}
+
+      for (const assetId of Object.keys(assetMap)) {
+        const cachedPath = assetCache[assetId]
+        if (cachedPath) {
+          const exists = await window.desktopApi.fileExists({ path: cachedPath })
+          if (exists) {
+            updatedAssetMap[assetId] = cachedPath
+            continue
+          }
+        }
+
+        const download = await api.getAssetDownloadUrl(
           config,
           project.project_id,
-          filename,
-          'video/mp4',
+          assetId,
+        )
+        const assetInfo = assetsRef.current.find((asset) => asset.asset_id === assetId)
+        const cached = await window.desktopApi.downloadAsset({
+          assetId,
+          url: download.url,
+          filename: assetInfo?.asset_name,
+        })
+        updatedAssetMap[assetId] = cached.path
+        updateAssetCache(assetId, cached.path)
+      }
+
+      return {
+        ...manifestData,
+        asset_map: updatedAssetMap,
+        preset: presetOverride ?? (manifestData.preset as Record<string, unknown>),
+        execution_mode: 'local',
+      }
+    },
+    [assetCache, config, project.project_id, updateAssetCache],
+  )
+
+  useEffect(() => {
+    let active = true
+
+    const pollQueuedRenders = async () => {
+      if (!active || agentRenderRef.current.running) {
+        return
+      }
+
+      const status = renderState.status
+      if (status && !['completed', 'failed', 'cancelled'].includes(status)) {
+        return
+      }
+
+      agentRenderRef.current.running = true
+      let candidate: RenderJobSummary | undefined
+
+      try {
+        const response = await api.listRenderJobs(
+          config,
+          project.project_id,
+          'queued',
+          10,
+          0,
+        )
+        const jobs = (response.jobs || []) as RenderJobSummary[]
+
+        candidate = jobs.find((job) => {
+          const metadata = job.metadata ?? {}
+          const createdBy =
+            typeof metadata['created_by'] === 'string' ? metadata['created_by'] : ''
+          const executionMode = job.execution_mode ?? 'local'
+          return (
+            job.job_type === 'preview' &&
+            executionMode === 'local' &&
+            createdBy.startsWith('agent:')
+          )
+        })
+
+        if (!candidate || agentRenderRef.current.lastJobId === candidate.job_id) {
+          return
+        }
+
+        agentRenderRef.current.lastJobId = candidate.job_id
+        setRenderLogs([])
+        setRenderState({
+          jobId: candidate.job_id,
+          status: candidate.status,
+          progress: candidate.progress ?? 0,
+        })
+
+        const manifestResponse = await api.getRenderManifest(
+          config,
+          project.project_id,
+          candidate.job_id,
+        )
+        const manifestData = await fetch(manifestResponse.manifest_url).then((res) =>
+          res.json(),
         )
 
-        const uploadResult = (await window.desktopApi.uploadRenderOutput({
-          filePath: outputPath,
-          uploadUrl: uploadInfo.upload_url,
-          contentType: 'video/mp4',
-        })) as UploadResult
-
-        await api.shareOutput(config, project.project_id, uploadInfo.gcs_path, null)
-
-        await api.reportRenderProgress(config, project.project_id, jobId, {
-          job_id: jobId,
-          status: 'completed',
-          progress: 100,
-          output_url: uploadInfo.gcs_path,
-          output_size_bytes: uploadResult.sizeBytes,
+        const updatedManifest = await prepareLocalManifest(manifestData)
+        const outputName = `${project.project_name.replace(/\s+/g, '_')}_preview.mp4`
+        const renderResult = await window.desktopApi.startRender({
+          jobId: candidate.job_id,
+          projectId: project.project_id,
+          manifest: updatedManifest,
+          outputName,
         })
 
         setRenderState((prev) => ({
           ...prev,
-          status: 'completed',
+          outputPath: renderResult.outputPath,
         }))
       } catch (error) {
-        setRenderState((prev) => ({
-          ...prev,
-          status: 'failed',
-        }))
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: crypto.randomUUID(),
-            role: 'assistant',
-            content: `Render upload failed: ${(error as Error).message}`,
-          },
-        ])
+        if (candidate?.job_id) {
+          agentRenderRef.current.lastJobId = null
+        }
+      } finally {
+        agentRenderRef.current.running = false
       }
-    },
-    [config, project.project_id],
-  )
+    }
 
-  const updateAssetCache = (assetId: string, path: string) => {
-    setAssetCache((prev) => {
-      const next = { ...prev, [assetId]: path }
-      saveAssetCache(next)
-      return next
-    })
-  }
+    void pollQueuedRenders()
+    const interval = window.setInterval(() => {
+      void pollQueuedRenders()
+    }, 5000)
+
+    return () => {
+      active = false
+      window.clearInterval(interval)
+    }
+  }, [config, project.project_id, project.project_name, prepareLocalManifest, renderState.status])
 
   const handleUploadClick = () => {
     fileInputRef.current?.click()
@@ -509,40 +697,10 @@ const Editor = ({ project, config, onBack, onOpenSettings }: EditorProps) => {
         res.json(),
       )
 
-      const updatedAssetMap: Record<string, string> = {}
-      for (const assetId of Object.keys(
-        manifestData.asset_map as Record<string, string>,
-      )) {
-        if (assetCache[assetId]) {
-          const cachedPath = assetCache[assetId]
-          const exists = await window.desktopApi.fileExists({ path: cachedPath })
-          if (exists) {
-            updatedAssetMap[assetId] = cachedPath
-            continue
-          }
-        }
-
-        const download = await api.getAssetDownloadUrl(
-          config,
-          project.project_id,
-          assetId,
-        )
-        const assetInfo = assets.find((asset) => asset.asset_id === assetId)
-        const cached = await window.desktopApi.downloadAsset({
-          assetId,
-          url: download.url,
-          filename: assetInfo?.asset_name,
-        })
-        updatedAssetMap[assetId] = cached.path
-        updateAssetCache(assetId, cached.path)
-      }
-
-      const updatedManifest = {
-        ...manifestData,
-        asset_map: updatedAssetMap,
-        preset: buildStandardPreset(useGpu),
-        execution_mode: 'local',
-      }
+      const updatedManifest = await prepareLocalManifest(
+        manifestData,
+        buildStandardPreset(useGpu),
+      )
 
       const renderResult = await window.desktopApi.startRender({
         jobId,
@@ -715,8 +873,18 @@ const Editor = ({ project, config, onBack, onOpenSettings }: EditorProps) => {
                     className="rounded-xl border border-white/10 bg-base-800/40 p-3"
                   >
                     <div className="h-16 rounded-lg bg-gradient-to-br from-accent-500/70 via-glow-violet/70 to-glow-magenta/70" />
-                    <div className="mt-2 text-xs font-semibold text-ink-100">
-                      {asset.asset_name}
+                    <div className="mt-2 flex items-start justify-between gap-2">
+                      <div className="text-xs font-semibold text-ink-100">
+                        {asset.asset_name}
+                      </div>
+                      <button
+                        type="button"
+                        aria-label={`Delete ${asset.asset_name}`}
+                        onClick={() => setAssetToDelete(asset)}
+                        className="rounded-full border border-transparent p-1 text-ink-400 transition hover:border-red-400/40 hover:text-red-300"
+                      >
+                        🗑️
+                      </button>
                     </div>
                     <div className="mt-1 text-[11px] text-ink-400">
                       {asset.indexing_status ?? 'ready'}
@@ -852,6 +1020,38 @@ const Editor = ({ project, config, onBack, onOpenSettings }: EditorProps) => {
           ) : null}
         </aside>
       </div>
+
+      <Modal
+        open={Boolean(assetToDelete)}
+        title="Delete Asset"
+        onClose={() => setAssetToDelete(null)}
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-ink-300">
+            Delete {assetToDelete ? `"${assetToDelete.asset_name}"` : 'this asset'}?
+            This action cannot be undone.
+          </p>
+          <div className="flex justify-end gap-3">
+            <button
+              onClick={() => setAssetToDelete(null)}
+              className="rounded-full border border-white/10 px-4 py-2 text-xs text-ink-300"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={() => {
+                if (assetToDelete) {
+                  void handleDeleteAsset(assetToDelete)
+                }
+                setAssetToDelete(null)
+              }}
+              className="rounded-full bg-red-500 px-4 py-2 text-xs font-semibold text-white"
+            >
+              Delete
+            </button>
+          </div>
+        </div>
+      </Modal>
 
       <input
         ref={fileInputRef}

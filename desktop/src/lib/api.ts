@@ -64,6 +64,10 @@ export const api = {
       config,
       `/projects/${projectId}`,
     ),
+  deleteProject: (config: AppConfig, projectId: string) =>
+    apiFetch<{ ok: boolean }>(config, `/projects/${projectId}`, {
+      method: 'DELETE',
+    }),
   listAssets: (config: AppConfig, projectId: string) =>
     apiFetch<{ ok: boolean; assets: Asset[] }>(
       config,
@@ -85,6 +89,12 @@ export const api = {
     apiFetch<{ ok: boolean; url: string; expires_in: number }>(
       config,
       `/projects/${projectId}/assets/${assetId}/download`,
+    ),
+  deleteAsset: (config: AppConfig, projectId: string, assetId: string) =>
+    apiFetch<{ ok: boolean }>(
+      config,
+      `/projects/${projectId}/assets/${assetId}`,
+      { method: 'DELETE' },
     ),
   getTimeline: (config: AppConfig, projectId: string) =>
     apiFetch<{ ok: boolean; timeline: Record<string, unknown>; version: number }>(
@@ -147,6 +157,26 @@ export const api = {
         body: JSON.stringify(payload),
       },
     ),
+  listRenderJobs: (
+    config: AppConfig,
+    projectId: string,
+    status?: string,
+    limit: number = 10,
+    offset: number = 0,
+  ) => {
+    const params = new URLSearchParams()
+    if (status) {
+      params.set('status', status)
+    }
+    params.set('limit', String(limit))
+    params.set('offset', String(offset))
+    const query = params.toString()
+    const suffix = query ? `?${query}` : ''
+    return apiFetch<{ ok: boolean; jobs: Record<string, unknown>[]; total: number }>(
+      config,
+      `/projects/${projectId}/renders${suffix}`,
+    )
+  },
   getRenderManifest: (config: AppConfig, projectId: string, jobId: string) =>
     apiFetch<{ ok: boolean; manifest_url: string; expires_in: number }>(
       config,

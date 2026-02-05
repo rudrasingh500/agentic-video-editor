@@ -82,3 +82,30 @@ class EditAgentResult(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     applied: bool = False
     new_version: int | None = None
+
+
+class VerificationStatus(BaseModel):
+    """Verification status for edit operations."""
+    render_viewed: bool = Field(description="Whether view_render_output was called")
+    render_job_id: str | None = Field(default=None, description="Job ID of the verified render")
+    observations: str | None = Field(
+        default=None,
+        description="What was observed in the render (visual/audio)"
+    )
+    issues_found: list[str] = Field(
+        default_factory=list,
+        description="Any issues observed during verification"
+    )
+
+
+class AgentFinalResponse(BaseModel):
+    """Structured output schema for the agent's final response."""
+    message: str = Field(description="Summary of changes and outcomes")
+    applied: bool = Field(description="Whether changes were applied to the timeline")
+    new_version: int | None = Field(default=None, description="New timeline version after edits")
+    warnings: list[str] = Field(default_factory=list, description="Any warnings encountered")
+    next_actions: list[str] = Field(default_factory=list, description="Optional suggested follow-up actions")
+    verification: VerificationStatus | None = Field(
+        default=None,
+        description="Verification status - required if edits were applied"
+    )

@@ -25,6 +25,7 @@ from models.api_models import (
 from operators.project_operator import (
     create_project,
     create_video_output,
+    delete_project,
     get_video_output,
     list_all_projects,
     list_projects,
@@ -108,8 +109,7 @@ async def project_delete(
     db: Session = Depends(get_db),
 ):
     try:
-        db.delete(project)
-        db.commit()
+        delete_project(project.project_id, db)
     except Exception:
         db.rollback()
         logger.exception("Failed to delete project %s", project.project_id)

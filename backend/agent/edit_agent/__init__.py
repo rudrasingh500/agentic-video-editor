@@ -9,9 +9,10 @@ from .session_ops import (
     list_sessions,
     update_session_status,
 )
-from .types import EditRequest, EditSessionStatus, PendingPatch
+from .types import AgentFinalResponse, EditRequest, EditSessionStatus, PendingPatch
 
 __all__ = [
+    "AgentFinalResponse",
     "EditRequest",
     "EditSessionStatus",
     "PendingPatch",
