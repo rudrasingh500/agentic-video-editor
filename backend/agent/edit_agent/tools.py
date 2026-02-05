@@ -495,7 +495,14 @@ EDIT_AGENT_TOOLS: list[dict[str, Any]] = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "version": {"type": "integer"},
+                    "version": {
+                        "type": "integer",
+                        "description": (
+                            "A specific historical version number to retrieve. "
+                            "If omitted, returns the CURRENT (latest) timeline version. "
+                            "Only pass this to inspect a specific past version."
+                        ),
+                    },
                 },
                 "required": [],
             },

@@ -479,10 +479,11 @@ def orchestrate_edit(
     client = _get_client()
     intent = _classify_intent(client, request.message)
     max_iterations = MAX_ITERATIONS
-    if intent.get("intent") == "simple_edit":
-        max_iterations = 5 if MAX_ITERATIONS <= 0 else min(MAX_ITERATIONS, 5)
-    elif intent.get("intent") == "info_only":
-        max_iterations = 3 if MAX_ITERATIONS <= 0 else min(MAX_ITERATIONS, 3)
+    if MAX_ITERATIONS > 0:
+        if intent.get("intent") == "simple_edit":
+            max_iterations = min(MAX_ITERATIONS, 5)
+        elif intent.get("intent") == "info_only":
+            max_iterations = min(MAX_ITERATIONS, 3)
     trace: list[dict] = []
     warnings: list[str] = []
     pending_patch_entries: list[dict] = []
