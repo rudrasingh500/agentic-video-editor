@@ -1,11 +1,11 @@
-@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=Space+Grotesk:wght@500;600;700&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap");
 @import "tailwindcss";
 
 @layer base {
   :root {
     color-scheme: dark;
-    background-color: #0b0f1c;
-    font-family: "IBM Plex Sans", sans-serif;
+    background-color: #09090b;
+    font-family: "Inter", system-ui, sans-serif;
     font-synthesis: none;
     text-rendering: optimizeLegibility;
     -webkit-font-smoothing: antialiased;
@@ -19,11 +19,107 @@
   body {
     margin: 0;
     min-height: 100vh;
-    background-color: #0b0f1c;
-    color: #f5f7ff;
+    background-color: #09090b;
+    color: #fafafa;
   }
 
   #root {
     min-height: 100vh;
+  }
+
+  /* Custom scrollbar */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 4px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.2);
+  }
+
+  ::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+}
+
+@layer components {
+  /* Monospace text for logs/code */
+  .font-mono {
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+  }
+
+  /* Panel transitions */
+  .panel-transition {
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  /* Sidebar slide animation */
+  .sidebar-slide {
+    transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+                opacity 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  /* Bottom panel expand/collapse */
+  .bottom-panel {
+    transition: height 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  /* Subtle hover effect for interactive elements */
+  .hover-lift {
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+  }
+
+  .hover-lift:hover {
+    transform: translateY(-1px);
+  }
+
+  /* Focus ring utility */
+  .focus-ring {
+    outline: none;
+  }
+
+  .focus-ring:focus-visible {
+    box-shadow: 0 0 0 2px #09090b, 0 0 0 4px rgba(99, 102, 241, 0.5);
+  }
+
+  /* Glass effect for panels */
+  .glass {
+    background: rgba(24, 24, 27, 0.8);
+    backdrop-filter: blur(12px);
+  }
+
+  /* Gradient text utility */
+  .gradient-text {
+    background: linear-gradient(135deg, #818cf8 0%, #6366f1 50%, #4f46e5 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+}
+
+@layer utilities {
+  /* Hide scrollbar but keep functionality */
+  .scrollbar-hide {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
+  }
+
+  /* Thin scrollbar variant */
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 4px;
+    height: 4px;
   }
 }

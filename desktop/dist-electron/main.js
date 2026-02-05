@@ -1,264 +1,200 @@
-import { app, BrowserWindow, ipcMain, dialog } from "electron";
-import { fileURLToPath } from "node:url";
-import path from "node:path";
-import fs from "node:fs";
-import { createServer } from "node:http";
-import { execFile, spawn } from "node:child_process";
-import { promisify } from "node:util";
-const __dirname$1 = path.dirname(fileURLToPath(import.meta.url));
-const execFileAsync = promisify(execFile);
-process.env.APP_ROOT = path.join(__dirname$1, "..");
-const VITE_DEV_SERVER_URL = process.env["VITE_DEV_SERVER_URL"];
-const MAIN_DIST = path.join(process.env.APP_ROOT, "dist-electron");
-const RENDERER_DIST = path.join(process.env.APP_ROOT, "dist");
-process.env.VITE_PUBLIC = VITE_DEV_SERVER_URL ? path.join(process.env.APP_ROOT, "public") : RENDERER_DIST;
-let win;
-const renderProcesses = /* @__PURE__ */ new Map();
-const ensureDir = (target) => {
-  fs.mkdirSync(target, { recursive: true });
-};
-const resolveRenderJobDir = () => {
-  const candidates = [
+import { app as d, BrowserWindow as D, ipcMain as u, dialog as A } from "electron";
+import { fileURLToPath as B } from "node:url";
+import e from "node:path";
+import p from "node:fs";
+import { createServer as L } from "node:http";
+import { execFile as x, spawn as V } from "node:child_process";
+import { promisify as k } from "node:util";
+const I = e.dirname(B(import.meta.url)), j = k(x);
+process.env.APP_ROOT = e.join(I, "..");
+const R = process.env.VITE_DEV_SERVER_URL, q = e.join(process.env.APP_ROOT, "dist-electron"), T = e.join(process.env.APP_ROOT, "dist");
+process.env.VITE_PUBLIC = R ? e.join(process.env.APP_ROOT, "public") : T;
+let o;
+const E = /* @__PURE__ */ new Map(), v = (s) => {
+  p.mkdirSync(s, { recursive: !0 });
+}, $ = () => {
+  const s = [
     process.env.RENDER_JOB_DIR,
-    path.resolve(process.env.APP_ROOT, "..", "render-job"),
-    path.resolve(process.env.APP_ROOT, "render-job"),
-    path.resolve(process.cwd(), "render-job")
+    e.resolve(process.env.APP_ROOT, "..", "render-job"),
+    e.resolve(process.env.APP_ROOT, "render-job"),
+    e.resolve(process.cwd(), "render-job")
   ].filter(Boolean);
-  for (const candidate of candidates) {
-    if (fs.existsSync(candidate)) {
-      return candidate;
-    }
-  }
-  return candidates[0] ?? path.resolve(process.cwd(), "render-job");
-};
-const getAssetCacheRoot = () => path.join(app.getPath("userData"), "cache", "assets");
-const getRenderRoot = () => path.join(app.getPath("userData"), "renders");
-const getOutputRoot = (projectId) => path.join(app.getPath("videos"), "Granite Edit", projectId);
-const createProgressServer = async (onPayload) => {
-  const server = createServer((req, res) => {
-    if (req.method !== "POST" || req.url !== "/render-status") {
-      res.statusCode = 404;
-      res.end();
+  for (const n of s)
+    if (p.existsSync(n))
+      return n;
+  return s[0] ?? e.resolve(process.cwd(), "render-job");
+}, _ = () => e.join(d.getPath("userData"), "cache", "assets"), M = () => e.join(d.getPath("userData"), "renders"), G = (s) => e.join(d.getPath("videos"), "Granite Edit", s), J = async (s) => {
+  const n = L((c, i) => {
+    if (c.method !== "POST" || c.url !== "/render-status") {
+      i.statusCode = 404, i.end();
       return;
     }
-    let body = "";
-    req.on("data", (chunk) => {
-      body += chunk;
-    });
-    req.on("end", () => {
+    let r = "";
+    c.on("data", (a) => {
+      r += a;
+    }), c.on("end", () => {
       try {
-        const payload = JSON.parse(body);
-        onPayload(payload);
-        res.statusCode = 200;
-        res.end("ok");
-      } catch (error) {
-        res.statusCode = 400;
-        res.end("invalid payload");
+        const a = JSON.parse(r);
+        s(a), i.statusCode = 200, i.end("ok");
+      } catch {
+        i.statusCode = 400, i.end("invalid payload");
       }
     });
   });
-  await new Promise((resolve) => {
-    server.listen(0, "127.0.0.1", () => resolve());
+  await new Promise((c) => {
+    n.listen(0, "127.0.0.1", () => c());
   });
-  const address = server.address();
-  const port = typeof address === "object" && address ? address.port : 0;
-  return { server, port };
-};
-const detectGpu = async () => {
-  const ffmpegBin = process.env.FFMPEG_BIN || "ffmpeg";
+  const t = n.address(), l = typeof t == "object" && t ? t.port : 0;
+  return { server: n, port: l };
+}, W = async () => {
+  const s = process.env.FFMPEG_BIN || "ffmpeg";
   try {
-    const { stdout } = await execFileAsync(ffmpegBin, ["-hide_banner", "-encoders"]);
-    if (stdout.includes("h264_nvenc") || stdout.includes("hevc_nvenc")) {
-      return { available: true, detail: "NVENC detected via FFmpeg" };
-    }
-  } catch (error) {
+    const { stdout: n } = await j(s, ["-hide_banner", "-encoders"]);
+    if (n.includes("h264_nvenc") || n.includes("hevc_nvenc"))
+      return { available: !0, detail: "NVENC detected via FFmpeg" };
+  } catch {
   }
   try {
-    const { stdout } = await execFileAsync("nvidia-smi", ["-L"]);
-    if (stdout.toLowerCase().includes("gpu")) {
-      return { available: true, detail: "GPU detected via nvidia-smi" };
-    }
-  } catch (error) {
+    const { stdout: n } = await j("nvidia-smi", ["-L"]);
+    if (n.toLowerCase().includes("gpu"))
+      return { available: !0, detail: "GPU detected via nvidia-smi" };
+  } catch {
   }
-  return { available: false, detail: "No NVIDIA GPU detected" };
+  return { available: !1, detail: "No NVIDIA GPU detected" };
 };
-function createWindow() {
-  win = new BrowserWindow({
-    icon: path.join(process.env.VITE_PUBLIC, "electron-vite.svg"),
+function S() {
+  o = new D({
+    icon: e.join(process.env.VITE_PUBLIC, "electron-vite.svg"),
     width: 1420,
     height: 920,
     minWidth: 1100,
     minHeight: 720,
     backgroundColor: "#0b0f1c",
     webPreferences: {
-      preload: path.join(__dirname$1, "preload.mjs"),
-      contextIsolation: true,
-      nodeIntegration: false
+      preload: e.join(I, "preload.mjs"),
+      contextIsolation: !0,
+      nodeIntegration: !1
     }
-  });
-  win.webContents.on("did-finish-load", () => {
-    win == null ? void 0 : win.webContents.send("main-process-message", (/* @__PURE__ */ new Date()).toLocaleString());
-  });
-  if (VITE_DEV_SERVER_URL) {
-    win.loadURL(VITE_DEV_SERVER_URL);
-  } else {
-    win.loadFile(path.join(RENDERER_DIST, "index.html"));
-  }
+  }), o.webContents.on("did-finish-load", () => {
+    o == null || o.webContents.send("main-process-message", (/* @__PURE__ */ new Date()).toLocaleString());
+  }), R ? o.loadURL(R) : o.loadFile(e.join(T, "index.html"));
 }
-app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") {
-    app.quit();
-    win = null;
-  }
+d.on("window-all-closed", () => {
+  process.platform !== "darwin" && (d.quit(), o = null);
 });
-app.on("activate", () => {
-  if (BrowserWindow.getAllWindows().length === 0) {
-    createWindow();
-  }
+d.on("activate", () => {
+  D.getAllWindows().length === 0 && S();
 });
-app.whenReady().then(createWindow);
-ipcMain.handle("dialog:open-files", async () => {
-  if (!win) {
+d.whenReady().then(S);
+u.handle("dialog:open-files", async () => {
+  if (!o)
     return [];
-  }
-  const result = await dialog.showOpenDialog(win, {
+  const s = await A.showOpenDialog(o, {
     properties: ["openFile", "multiSelections"],
     filters: [
       { name: "Media", extensions: ["mp4", "mov", "mkv", "mp3", "wav", "png", "jpg", "jpeg"] }
     ]
   });
-  if (result.canceled) {
-    return [];
-  }
-  return result.filePaths;
+  return s.canceled ? [] : s.filePaths;
 });
-ipcMain.handle("paths:get", async () => ({
-  userData: app.getPath("userData"),
-  videos: app.getPath("videos"),
-  documents: app.getPath("documents"),
-  temp: app.getPath("temp")
+u.handle("paths:get", async () => ({
+  userData: d.getPath("userData"),
+  videos: d.getPath("videos"),
+  documents: d.getPath("documents"),
+  temp: d.getPath("temp")
 }));
-ipcMain.handle("system:gpu", async () => detectGpu());
-ipcMain.handle("fs:exists", async (_event, args) => {
-  const { path: target } = args;
-  return fs.existsSync(target);
+u.handle("system:gpu", async () => W());
+u.handle("fs:exists", async (s, n) => {
+  const { path: t } = n;
+  return p.existsSync(t);
 });
-ipcMain.handle(
+u.handle(
   "assets:cache",
-  async (_event, args) => {
-    const { assetId, sourcePath } = args;
-    const cacheRoot = getAssetCacheRoot();
-    const fileName = path.basename(sourcePath);
-    const destDir = path.join(cacheRoot, assetId);
-    const destPath = path.join(destDir, fileName);
-    ensureDir(destDir);
-    fs.copyFileSync(sourcePath, destPath);
-    return { path: destPath };
+  async (s, n) => {
+    const { assetId: t, sourcePath: l } = n, c = _(), i = e.basename(l), r = e.join(c, t), a = e.join(r, i);
+    return v(r), p.copyFileSync(l, a), { path: a };
   }
 );
-ipcMain.handle(
+u.handle(
   "assets:download",
-  async (_event, args) => {
-    const { assetId, url, filename } = args;
-    const cacheRoot = getAssetCacheRoot();
-    const destDir = path.join(cacheRoot, assetId);
-    const name = filename ?? path.basename(new URL(url).pathname);
-    const destPath = path.join(destDir, name);
-    ensureDir(destDir);
-    const response = await fetch(url);
-    if (!response.ok) {
-      throw new Error(`Failed to download asset: ${response.status}`);
-    }
-    const buffer = Buffer.from(await response.arrayBuffer());
-    fs.writeFileSync(destPath, buffer);
-    return { path: destPath };
+  async (s, n) => {
+    const { assetId: t, url: l, filename: c } = n, i = _(), r = e.join(i, t), a = c ?? e.basename(new URL(l).pathname), m = e.join(r, a);
+    v(r);
+    const f = await fetch(l);
+    if (!f.ok)
+      throw new Error(`Failed to download asset: ${f.status}`);
+    const P = Buffer.from(await f.arrayBuffer());
+    return p.writeFileSync(m, P), { path: m };
   }
 );
-ipcMain.handle("render:start", async (_event, args) => {
-  const { jobId, projectId, manifest, outputName } = args;
-  const outputRoot = getOutputRoot(projectId);
-  ensureDir(outputRoot);
-  const outputPath = path.join(outputRoot, outputName ?? `${jobId}.mp4`);
-  const renderRoot = path.join(getRenderRoot(), jobId);
-  ensureDir(renderRoot);
-  const manifestPath = path.join(renderRoot, "manifest.json");
-  const manifestToWrite = {
-    ...manifest,
-    output_path: outputPath,
+u.handle("render:start", async (s, n) => {
+  const { jobId: t, projectId: l, manifest: c, outputName: i } = n, r = G(l);
+  v(r);
+  const a = e.join(r, i ?? `${t}.mp4`), m = e.join(M(), t);
+  v(m);
+  const f = e.join(m, "manifest.json"), P = {
+    ...c,
+    output_path: a,
     output_bucket: "local",
     input_bucket: "local",
     execution_mode: "local"
   };
-  fs.writeFileSync(manifestPath, JSON.stringify(manifestToWrite, null, 2), "utf-8");
-  const { server, port } = await createProgressServer((payload) => {
-    win == null ? void 0 : win.webContents.send("render:progress", {
-      jobId,
-      outputPath,
-      payload
+  p.writeFileSync(f, JSON.stringify(P, null, 2), "utf-8");
+  const { server: O, port: C } = await J((h) => {
+    o == null || o.webContents.send("render:progress", {
+      jobId: t,
+      outputPath: a,
+      payload: h
     });
-  });
-  const renderJobDir = resolveRenderJobDir();
-  const entrypoint = path.join(renderJobDir, "entrypoint.py");
-  const pythonBin = process.env.PYTHON_BIN || "python";
-  const tempDir = path.join(app.getPath("temp"), "granite-render");
-  ensureDir(tempDir);
-  const env = {
+  }), w = $(), N = e.join(w, "entrypoint.py"), U = process.env.PYTHON_BIN || "python", b = e.join(d.getPath("temp"), "granite-render");
+  v(b);
+  const F = {
     ...process.env,
-    CALLBACK_URL: `http://127.0.0.1:${port}/render-status`,
-    RENDER_INPUT_DIR: getAssetCacheRoot(),
-    RENDER_OUTPUT_DIR: outputRoot,
-    RENDER_TEMP_DIR: tempDir
-  };
-  const child = spawn(pythonBin, [entrypoint, "--manifest", manifestPath, "--job-id", jobId], {
-    cwd: renderJobDir,
-    env,
+    CALLBACK_URL: `http://127.0.0.1:${C}/render-status`,
+    RENDER_INPUT_DIR: _(),
+    RENDER_OUTPUT_DIR: r,
+    RENDER_TEMP_DIR: b
+  }, g = V(U, [N, "--manifest", f, "--job-id", t], {
+    cwd: w,
+    env: F,
     stdio: ["ignore", "pipe", "pipe"]
   });
-  renderProcesses.set(jobId, child);
-  child.stdout.on("data", (data) => {
-    const message = data.toString();
-    win == null ? void 0 : win.webContents.send("render:log", { jobId, message });
-  });
-  child.stderr.on("data", (data) => {
-    const message = data.toString();
-    win == null ? void 0 : win.webContents.send("render:log", { jobId, message });
-  });
-  child.on("close", (code) => {
-    renderProcesses.delete(jobId);
-    server.close();
-    win == null ? void 0 : win.webContents.send("render:complete", {
-      jobId,
-      outputPath,
-      code
+  return E.set(t, g), g.stdout.on("data", (h) => {
+    const y = h.toString();
+    o == null || o.webContents.send("render:log", { jobId: t, message: y });
+  }), g.stderr.on("data", (h) => {
+    const y = h.toString();
+    o == null || o.webContents.send("render:log", { jobId: t, message: y });
+  }), g.on("close", (h) => {
+    E.delete(t), O.close(), o == null || o.webContents.send("render:complete", {
+      jobId: t,
+      outputPath: a,
+      code: h
     });
-  });
-  return { outputPath };
+  }), { outputPath: a };
 });
-ipcMain.handle(
+u.handle(
   "render:upload-output",
-  async (_event, args) => {
-    const { filePath, uploadUrl, contentType } = args;
-    if (!fs.existsSync(filePath)) {
-      throw new Error(`Render output not found: ${filePath}`);
-    }
-    const buffer = fs.readFileSync(filePath);
-    const response = await fetch(uploadUrl, {
+  async (s, n) => {
+    const { filePath: t, uploadUrl: l, contentType: c } = n;
+    if (!p.existsSync(t))
+      throw new Error(`Render output not found: ${t}`);
+    const i = p.readFileSync(t), r = await fetch(l, {
       method: "PUT",
       headers: {
-        "Content-Type": contentType || "application/octet-stream"
+        "Content-Type": c || "application/octet-stream"
       },
-      body: buffer
+      body: i
     });
-    if (!response.ok) {
-      const message = await response.text();
-      throw new Error(`Failed to upload output: ${response.status} ${message}`);
+    if (!r.ok) {
+      const m = await r.text();
+      throw new Error(`Failed to upload output: ${r.status} ${m}`);
     }
-    const stats = fs.statSync(filePath);
-    return { sizeBytes: stats.size };
+    return { sizeBytes: p.statSync(t).size };
   }
 );
 export {
-  MAIN_DIST,
-  RENDERER_DIST,
-  VITE_DEV_SERVER_URL
+  q as MAIN_DIST,
+  T as RENDERER_DIST,
+  R as VITE_DEV_SERVER_URL
 };

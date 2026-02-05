@@ -38,12 +38,18 @@ interface Window {
       url: string
       filename?: string
     }) => Promise<{ path: string }>
+    fileExists: (args: { path: string }) => Promise<boolean>
     startRender: (args: {
       jobId: string
       projectId: string
       manifest: Record<string, unknown>
       outputName?: string
     }) => Promise<{ outputPath: string }>
+    uploadRenderOutput: (args: {
+      filePath: string
+      uploadUrl: string
+      contentType?: string
+    }) => Promise<{ sizeBytes: number }>
     onRenderProgress: (callback: (event: {
       jobId: string
       outputPath: string

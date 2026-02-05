@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Globe, Key, Shield } from 'lucide-react'
 import type { AppConfig } from '../lib/config'
 import Modal from './Modal'
 
@@ -36,46 +37,64 @@ const SettingsModal = ({ open, config, onClose, onSave }: SettingsModalProps) =>
 
   return (
     <Modal open={open} title="Settings" onClose={onClose}>
-      <div className="space-y-4">
-        <label className="block text-sm text-ink-200">
-          Backend URL
+      <div className="space-y-5">
+        {/* Backend URL */}
+        <div>
+          <label className="flex items-center gap-2 text-xs font-medium text-neutral-400 mb-2">
+            <Globe className="h-3.5 w-3.5" />
+            Backend URL
+          </label>
           <input
             value={baseUrl}
             onChange={(event) => setBaseUrl(event.target.value)}
-            className="mt-2 w-full rounded-xl border border-white/10 bg-base-800 px-3 py-2 text-ink-100 shadow-inner"
+            className="w-full rounded-lg border border-neutral-700 bg-neutral-800 px-4 py-2.5 text-sm text-neutral-200 placeholder-neutral-500 focus:border-accent-500 focus:outline-none focus:ring-1 focus:ring-accent-500/50 transition-colors"
             placeholder="http://localhost:8000"
           />
-        </label>
-        <label className="block text-sm text-ink-200">
-          Dev API Token
+        </div>
+
+        {/* Dev API Token */}
+        <div>
+          <label className="flex items-center gap-2 text-xs font-medium text-neutral-400 mb-2">
+            <Key className="h-3.5 w-3.5" />
+            API Token
+          </label>
           <input
             value={devToken}
             onChange={(event) => setDevToken(event.target.value)}
-            className="mt-2 w-full rounded-xl border border-white/10 bg-base-800 px-3 py-2 text-ink-100 shadow-inner"
-            placeholder="your-dev-token"
+            type="password"
+            className="w-full rounded-lg border border-neutral-700 bg-neutral-800 px-4 py-2.5 font-mono text-sm text-neutral-200 placeholder-neutral-500 focus:border-accent-500 focus:outline-none focus:ring-1 focus:ring-accent-500/50 transition-colors"
+            placeholder="your-api-token"
           />
-        </label>
-        <label className="block text-sm text-ink-200">
-          Render Webhook Secret
+        </div>
+
+        {/* Render Webhook Secret */}
+        <div>
+          <label className="flex items-center gap-2 text-xs font-medium text-neutral-400 mb-2">
+            <Shield className="h-3.5 w-3.5" />
+            Render Webhook Secret
+          </label>
           <input
             value={renderWebhookSecret}
             onChange={(event) => setRenderWebhookSecret(event.target.value)}
-            className="mt-2 w-full rounded-xl border border-white/10 bg-base-800 px-3 py-2 text-ink-100 shadow-inner"
-            placeholder="render-webhook-secret"
+            type="password"
+            className="w-full rounded-lg border border-neutral-700 bg-neutral-800 px-4 py-2.5 font-mono text-sm text-neutral-200 placeholder-neutral-500 focus:border-accent-500 focus:outline-none focus:ring-1 focus:ring-accent-500/50 transition-colors"
+            placeholder="webhook-secret"
           />
-        </label>
-        <div className="flex justify-end gap-3 pt-2">
+        </div>
+
+        {/* Actions */}
+        <div className="flex justify-end gap-3 pt-3 border-t border-neutral-800">
           <button
             onClick={onClose}
-            className="rounded-full border border-white/15 px-4 py-2 text-sm text-ink-200 hover:border-white/40"
+            className="rounded-lg border border-neutral-700 px-4 py-2 text-sm text-neutral-300 hover:bg-neutral-800 transition-colors"
           >
             Cancel
           </button>
           <button
             onClick={handleSave}
-            className="rounded-full bg-accent-500 px-4 py-2 text-sm font-semibold text-white shadow-glow hover:bg-accent-600"
+            className="rounded-lg bg-accent-500 px-4 py-2 text-sm font-medium text-white hover:bg-accent-600 transition-colors"
           >
-            Save
+            Save Changes
           </button>
         </div>
       </div>

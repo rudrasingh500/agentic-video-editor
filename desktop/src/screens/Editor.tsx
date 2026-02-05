@@ -6,11 +6,31 @@ import {
   useState,
   type ChangeEvent,
 } from 'react'
+import {
+  Home,
+  Film,
+  Settings,
+  Play,
+  Upload,
+  Mic,
+  Captions,
+  Trash2,
+  ChevronRight,
+  Download,
+  SkipBack,
+  SkipForward,
+  Volume2,
+  Maximize2,
+  Grid3X3,
+  List,
+} from 'lucide-react'
 import type { AppConfig } from '../lib/config'
 import { api } from '../lib/api'
 import { loadAssetCache, saveAssetCache, type AssetCacheIndex } from '../lib/assetCache'
 import { loadSessionId, saveSessionId } from '../lib/chatSessions'
 import Modal from '../components/Modal'
+import OutputPanel from '../components/OutputPanel'
+import ChatSidebar from '../components/ChatSidebar'
 import type {
   Asset,
   EditPatchSummary,
@@ -109,6 +129,12 @@ const Editor = ({ project, config, onBack, onOpenSettings }: EditorProps) => {
   const [sessionsLoading, setSessionsLoading] = useState(false)
   const [sessionsError, setSessionsError] = useState<string | null>(null)
   const [assetToDelete, setAssetToDelete] = useState<Asset | null>(null)
+
+  // UI state for collapsible panels
+  const [sidebarOpen, setSidebarOpen] = useState(true)
+  const [outputPanelOpen, setOutputPanelOpen] = useState(false)
+  const [activeTab, setActiveTab] = useState<'assets' | 'media' | 'audio' | 'graphics'>('assets')
+  const [assetViewMode, setAssetViewMode] = useState<'grid' | 'list'>('grid')
 
   const mapSessionMessages = (session: EditSessionDetail): ChatMessage[] =>
     (session.messages || []).map((message, index) => ({
@@ -371,6 +397,10 @@ const Editor = ({ project, config, onBack, onOpenSettings }: EditorProps) => {
         progress: payload.progress ?? prev.progress,
         outputPath: event.outputPath,
       }))
+      // Auto-open output panel when rendering starts
+      if (payload.status === 'rendering' || payload.status === 'processing') {
+        setOutputPanelOpen(true)
+      }
       if (payload.status) {
         api.reportRenderProgress(
           config,
@@ -511,6 +541,7 @@ const Editor = ({ project, config, onBack, onOpenSettings }: EditorProps) => {
           status: candidate.status,
           progress: candidate.progress ?? 0,
         })
+        setOutputPanelOpen(true)
 
         const manifestResponse = await api.getRenderManifest(
           config,
@@ -676,6 +707,7 @@ const Editor = ({ project, config, onBack, onOpenSettings }: EditorProps) => {
 
   const handleRender = async () => {
     const useGpu = gpuInfo?.available ?? false
+    setOutputPanelOpen(true)
     try {
       const jobResponse = await api.createRenderJob(config, project.project_id, {
         job_type: 'export',
@@ -733,308 +765,323 @@ const Editor = ({ project, config, onBack, onOpenSettings }: EditorProps) => {
     return toFileUrl(previewPath)
   }, [previewPath])
 
+  const tabs = [
+    { id: 'assets', label: 'All Assets' },
+    { id: 'media', label: 'Video' },
+    { id: 'audio', label: 'Audio' },
+    { id: 'graphics', label: 'Graphics' },
+  ] as const
+
   return (
-    <div className="min-h-screen bg-base-900 bg-radial-slate text-ink-100">
-      <div className="flex min-h-screen">
-        <aside className="flex w-20 flex-col items-center gap-4 border-r border-white/5 bg-base-800/70 py-8">
-          <button className="rounded-2xl bg-white/5 p-2" onClick={onBack}>
-            <span className="text-lg">🏠</span>
+    <div className="flex h-screen flex-col bg-neutral-950">
+      {/* Header */}
+      <header className="flex h-12 shrink-0 items-center justify-between border-b border-neutral-800 px-4">
+        <div className="flex items-center gap-3">
+          <button
+            onClick={onBack}
+            className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200 transition-colors"
+          >
+            <Home className="h-4 w-4" />
           </button>
-          <button className="rounded-2xl bg-white/10 p-2">
-            <span className="text-lg">🎬</span>
-          </button>
-          <button className="rounded-2xl bg-white/5 p-2">
-            <span className="text-lg">🧰</span>
+          <ChevronRight className="h-4 w-4 text-neutral-700" />
+          <div className="flex items-center gap-2">
+            <Film className="h-4 w-4 text-accent-400" />
+            <span className="text-sm font-medium text-neutral-200">
+              {project.project_name}
+            </span>
+          </div>
+          <span className="rounded bg-neutral-800 px-2 py-0.5 text-2xs font-mono text-neutral-500">
+            v{timelineVersion ?? '-'}
+          </span>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <span className="text-2xs text-neutral-500 mr-2">
+            {gpuInfo?.available ? 'GPU Accelerated' : 'CPU Mode'}
+          </span>
+          <button
+            onClick={onOpenSettings}
+            className="rounded-lg p-2 text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200 transition-colors"
+          >
+            <Settings className="h-4 w-4" />
           </button>
           <button
-            className="rounded-2xl bg-white/5 p-2"
-            onClick={onOpenSettings}
+            onClick={handleRender}
+            className="flex items-center gap-2 rounded-lg bg-accent-500 px-4 py-1.5 text-sm font-medium text-white hover:bg-accent-600 transition-colors"
           >
-            <span className="text-lg">⚙️</span>
+            <Download className="h-4 w-4" />
+            Export
           </button>
-        </aside>
+        </div>
+      </header>
 
-        <main className="flex flex-1 flex-col gap-4 px-6 py-6">
-          <header className="flex items-center justify-between">
-            <div>
-              <div className="text-xs uppercase tracking-[0.2em] text-ink-400">
-                Preview
-              </div>
-              <div className="text-lg font-semibold text-ink-100">
-                {project.project_name}
-              </div>
-              <div className="text-xs text-ink-400">
-                Timeline v{timelineVersion ?? '—'}
-              </div>
-            </div>
-            <div className="flex items-center gap-3">
-              <div className="rounded-full border border-white/10 px-3 py-1 text-xs text-ink-300">
-                Fit
-              </div>
-              <button
-                onClick={handleRender}
-                className="rounded-full bg-accent-500 px-4 py-2 text-xs font-semibold text-white shadow-glow hover:bg-accent-600"
-              >
-                Render
-              </button>
-            </div>
-          </header>
-
-          <section className="flex flex-1 flex-col gap-4">
-            <div className="rounded-2xl border border-white/10 bg-panel-glass p-4 shadow-soft">
-              <div className="flex h-[360px] items-center justify-center rounded-xl border border-white/5 bg-base-800/40">
-                {previewUrl ? (
-                  <video
-                    key={previewKey}
-                    src={previewUrl}
-                    controls
-                    className="h-full w-full rounded-xl object-contain"
-                  />
-                ) : (
-                  <span className="text-sm text-ink-400">Video Preview</span>
-                )}
-              </div>
-              <div className="mt-4 flex items-center gap-3">
-                <button className="rounded-full bg-white/10 px-3 py-1 text-xs text-ink-200">
-                  ▶
-                </button>
-                <div className="h-2 flex-1 rounded-full bg-base-700">
-                  <div className="h-2 w-1/2 rounded-full bg-gradient-to-r from-accent-500 to-glow-cyan" />
-                </div>
-                <span className="text-xs text-ink-400">00:02:43 / 00:15:57</span>
-              </div>
-              {renderState.status ? (
-                <div className="mt-3 flex items-center justify-between text-xs text-ink-300">
-                  <span>
-                    Render status: {renderState.status}
-                  </span>
-                  <span>{renderState.progress ?? 0}%</span>
-                </div>
-              ) : null}
-            </div>
-
-            <div className="rounded-2xl border border-white/10 bg-panel-glass p-4 shadow-soft">
-              <div className="flex items-center justify-between text-xs text-ink-300">
-                <span>Render logs</span>
-                {renderLogs.length > 0 ? (
-                  <button
-                    onClick={() => setRenderLogs([])}
-                    className="rounded-full border border-white/10 px-2 py-1 text-[11px] text-ink-300 hover:border-white/30"
-                  >
-                    Clear
-                  </button>
-                ) : null}
-              </div>
-              <div className="mt-3 max-h-40 overflow-auto rounded-lg border border-white/5 bg-base-900/60 px-3 py-2 text-[11px] text-ink-200 font-mono whitespace-pre-wrap break-all">
-                {renderLogs.length > 0 ? (
-                  renderLogs.map((line, index) => (
-                    <div key={`${index}-${line.slice(0, 12)}`}>{line}</div>
-                  ))
-                ) : (
-                  <div className="text-ink-500">No render logs yet.</div>
-                )}
-              </div>
-            </div>
-
-            <div className="rounded-2xl border border-white/10 bg-panel-glass p-4 shadow-soft">
-              <div className="flex items-center gap-4 text-xs text-ink-300">
-                <button className="text-ink-100">Assets</button>
-                <button className="hover:text-ink-100">Media</button>
-                <button className="hover:text-ink-100">Audio</button>
-                <button className="hover:text-ink-100">Graphics</button>
-                <button className="hover:text-ink-100">Captions</button>
-              </div>
-              <div className="mt-3 flex items-center gap-3">
-                <button
-                  onClick={handleUploadClick}
-                  className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-ink-200 hover:border-white/30"
-                >
-                  Import
-                </button>
-                <button className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-ink-200 hover:border-white/30">
-                  Record VO
-                </button>
-                <button className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-ink-200 hover:border-white/30">
-                  Generate Captions
-                </button>
-                {assetsLoading ? (
-                  <span className="text-xs text-ink-400">Loading assets…</span>
-                ) : null}
-              </div>
-              {assetsError ? (
-                <div className="mt-3 rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-200">
-                  {assetsError}
-                </div>
-              ) : null}
-              <div className="mt-4 grid grid-cols-2 gap-3 lg:grid-cols-3">
-                {assets.map((asset) => (
-                  <div
-                    key={asset.asset_id}
-                    className="rounded-xl border border-white/10 bg-base-800/40 p-3"
-                  >
-                    <div className="h-16 rounded-lg bg-gradient-to-br from-accent-500/70 via-glow-violet/70 to-glow-magenta/70" />
-                    <div className="mt-2 flex items-start justify-between gap-2">
-                      <div className="text-xs font-semibold text-ink-100">
-                        {asset.asset_name}
+      {/* Main content area */}
+      <div className="flex flex-1 overflow-hidden">
+        {/* Main workspace (preview + assets) */}
+        <div className="flex flex-1 flex-col overflow-hidden">
+          {/* Upper section: Preview */}
+          <div className="flex flex-1 min-h-0">
+            {/* Video Preview - takes up most of the space */}
+            <div className="flex-1 flex flex-col bg-neutral-900 border-r border-neutral-800">
+              {/* Preview area */}
+              <div className="flex-1 flex items-center justify-center p-4 bg-neutral-950/50">
+                <div className="relative w-full h-full max-w-full max-h-full flex items-center justify-center">
+                  {previewUrl ? (
+                    <video
+                      key={previewKey}
+                      src={previewUrl}
+                      controls
+                      className="max-w-full max-h-full object-contain rounded-lg shadow-2xl"
+                    />
+                  ) : (
+                    <div className="flex flex-col items-center gap-4 text-neutral-600">
+                      <div className="w-full max-w-2xl aspect-video rounded-xl border-2 border-dashed border-neutral-800 flex flex-col items-center justify-center bg-neutral-900/50">
+                        <Film className="h-16 w-16 mb-4 text-neutral-700" />
+                        <span className="text-sm text-neutral-500">No preview available</span>
+                        <span className="text-xs text-neutral-600 mt-1">
+                          Export or render a preview to see it here
+                        </span>
                       </div>
-                      <button
-                        type="button"
-                        aria-label={`Delete ${asset.asset_name}`}
-                        onClick={() => setAssetToDelete(asset)}
-                        className="rounded-full border border-transparent p-1 text-ink-400 transition hover:border-red-400/40 hover:text-red-300"
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Playback controls */}
+              <div className="shrink-0 border-t border-neutral-800 bg-neutral-900 px-4 py-3">
+                <div className="flex items-center gap-4">
+                  <div className="flex items-center gap-1">
+                    <button className="rounded p-1.5 text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200 transition-colors">
+                      <SkipBack className="h-4 w-4" />
+                    </button>
+                    <button className="rounded-lg bg-neutral-800 p-2 text-neutral-200 hover:bg-neutral-700 transition-colors">
+                      <Play className="h-4 w-4" />
+                    </button>
+                    <button className="rounded p-1.5 text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200 transition-colors">
+                      <SkipForward className="h-4 w-4" />
+                    </button>
+                  </div>
+
+                  <span className="text-xs tabular-nums text-neutral-500 w-16">00:00:00</span>
+
+                  <div className="flex-1 mx-2">
+                    <div className="h-1 w-full rounded-full bg-neutral-800 overflow-hidden cursor-pointer hover:h-1.5 transition-all">
+                      <div className="h-full w-0 rounded-full bg-accent-500" />
+                    </div>
+                  </div>
+
+                  <span className="text-xs tabular-nums text-neutral-500 w-16 text-right">--:--:--</span>
+
+                  <div className="flex items-center gap-2 ml-2">
+                    <button className="rounded p-1.5 text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200 transition-colors">
+                      <Volume2 className="h-4 w-4" />
+                    </button>
+                    <button className="rounded p-1.5 text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200 transition-colors">
+                      <Maximize2 className="h-4 w-4" />
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Assets Panel - Right side */}
+            <div className="w-80 flex flex-col bg-neutral-900 border-r border-neutral-800">
+              {/* Assets header */}
+              <div className="shrink-0 border-b border-neutral-800 p-3">
+                <div className="flex items-center justify-between mb-3">
+                  <h2 className="text-sm font-medium text-neutral-200">Media</h2>
+                  <div className="flex items-center gap-1">
+                    <button
+                      onClick={() => setAssetViewMode('grid')}
+                      className={`rounded p-1.5 transition-colors ${
+                        assetViewMode === 'grid'
+                          ? 'bg-neutral-800 text-neutral-200'
+                          : 'text-neutral-500 hover:text-neutral-300'
+                      }`}
+                    >
+                      <Grid3X3 className="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      onClick={() => setAssetViewMode('list')}
+                      className={`rounded p-1.5 transition-colors ${
+                        assetViewMode === 'list'
+                          ? 'bg-neutral-800 text-neutral-200'
+                          : 'text-neutral-500 hover:text-neutral-300'
+                      }`}
+                    >
+                      <List className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                </div>
+
+                {/* Action buttons */}
+                <div className="flex gap-2">
+                  <button
+                    onClick={handleUploadClick}
+                    className="flex-1 flex items-center justify-center gap-2 rounded-lg border border-neutral-700 bg-neutral-800 px-3 py-2 text-xs font-medium text-neutral-300 hover:border-neutral-600 hover:bg-neutral-700 transition-colors"
+                  >
+                    <Upload className="h-3.5 w-3.5" />
+                    Import
+                  </button>
+                  <button className="rounded-lg border border-neutral-700 bg-neutral-800 p-2 text-neutral-400 hover:border-neutral-600 hover:bg-neutral-700 hover:text-neutral-300 transition-colors">
+                    <Mic className="h-3.5 w-3.5" />
+                  </button>
+                  <button className="rounded-lg border border-neutral-700 bg-neutral-800 p-2 text-neutral-400 hover:border-neutral-600 hover:bg-neutral-700 hover:text-neutral-300 transition-colors">
+                    <Captions className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              </div>
+
+              {/* Tabs */}
+              <div className="shrink-0 flex border-b border-neutral-800">
+                {tabs.map((tab) => (
+                  <button
+                    key={tab.id}
+                    onClick={() => setActiveTab(tab.id)}
+                    className={`flex-1 px-2 py-2 text-xs font-medium transition-colors relative ${
+                      activeTab === tab.id
+                        ? 'text-neutral-200'
+                        : 'text-neutral-500 hover:text-neutral-400'
+                    }`}
+                  >
+                    {tab.label}
+                    {activeTab === tab.id && (
+                      <div className="absolute bottom-0 left-2 right-2 h-0.5 bg-accent-500 rounded-full" />
+                    )}
+                  </button>
+                ))}
+              </div>
+
+              {/* Assets list */}
+              <div className="flex-1 overflow-auto p-3 scrollbar-thin">
+                {assetsError && (
+                  <div className="mb-3 rounded-lg border border-error-500/30 bg-error-500/10 px-3 py-2 text-xs text-error-500">
+                    {assetsError}
+                  </div>
+                )}
+
+                {assetsLoading && assets.length === 0 ? (
+                  <div className="flex items-center justify-center py-8 text-neutral-600">
+                    <span className="text-xs">Loading assets...</span>
+                  </div>
+                ) : assets.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center py-8 text-center">
+                    <div className="rounded-full bg-neutral-800 p-3 mb-3">
+                      <Upload className="h-5 w-5 text-neutral-500" />
+                    </div>
+                    <p className="text-xs text-neutral-400 mb-1">No assets yet</p>
+                    <p className="text-2xs text-neutral-600">
+                      Import media to get started
+                    </p>
+                  </div>
+                ) : assetViewMode === 'grid' ? (
+                  <div className="grid grid-cols-2 gap-2">
+                    {assets.map((asset) => (
+                      <div
+                        key={asset.asset_id}
+                        className="group rounded-lg border border-neutral-800 bg-neutral-850 overflow-hidden hover:border-neutral-700 transition-colors"
                       >
-                        🗑️
-                      </button>
-                    </div>
-                    <div className="mt-1 text-[11px] text-ink-400">
-                      {asset.indexing_status ?? 'ready'}
-                    </div>
+                        <div className="aspect-video bg-neutral-800 flex items-center justify-center relative">
+                          <Film className="h-5 w-5 text-neutral-600" />
+                          <button
+                            type="button"
+                            aria-label={`Delete ${asset.asset_name}`}
+                            onClick={() => setAssetToDelete(asset)}
+                            className="absolute top-1 right-1 rounded p-1 bg-neutral-900/80 text-neutral-500 opacity-0 group-hover:opacity-100 hover:bg-red-500/20 hover:text-error-400 transition-all"
+                          >
+                            <Trash2 className="h-3 w-3" />
+                          </button>
+                        </div>
+                        <div className="p-2">
+                          <div className="truncate text-2xs font-medium text-neutral-300">
+                            {asset.asset_name}
+                          </div>
+                          <div className="text-2xs text-neutral-600 mt-0.5">
+                            {asset.indexing_status ?? 'ready'}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
                   </div>
-                ))}
-                {assets.length === 0 && !assetsLoading ? (
-                  <div className="rounded-xl border border-dashed border-white/20 p-6 text-xs text-ink-400">
-                    Drag files here or use Import to add media.
+                ) : (
+                  <div className="space-y-1">
+                    {assets.map((asset) => (
+                      <div
+                        key={asset.asset_id}
+                        className="group flex items-center gap-3 rounded-lg border border-neutral-800 bg-neutral-850 p-2 hover:border-neutral-700 transition-colors"
+                      >
+                        <div className="w-12 h-8 rounded bg-neutral-800 flex items-center justify-center shrink-0">
+                          <Film className="h-4 w-4 text-neutral-600" />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="truncate text-xs font-medium text-neutral-300">
+                            {asset.asset_name}
+                          </div>
+                          <div className="text-2xs text-neutral-600">
+                            {asset.indexing_status ?? 'ready'}
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          aria-label={`Delete ${asset.asset_name}`}
+                          onClick={() => setAssetToDelete(asset)}
+                          className="rounded p-1.5 text-neutral-600 opacity-0 group-hover:opacity-100 hover:bg-neutral-700 hover:text-error-400 transition-all"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    ))}
                   </div>
-                ) : null}
+                )}
               </div>
-              <div className="mt-4 text-xs text-ink-400">Summary Timeline</div>
-              <div className="mt-2 h-2 w-full rounded-full bg-base-700">
-                <div className="h-2 w-1/3 rounded-full bg-gradient-to-r from-glow-magenta to-glow-violet" />
-              </div>
-            </div>
-          </section>
-        </main>
-
-        <aside className="flex w-[340px] flex-col gap-4 border-l border-white/5 bg-base-800/70 px-4 py-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <div className="text-xs uppercase tracking-[0.2em] text-ink-400">
-                Assistant
-              </div>
-              <div className="text-xs text-ink-400">
-                GPU: {gpuInfo?.available ? 'NVENC ready' : 'CPU only'}
-              </div>
-            </div>
-            <button
-              onClick={handleNewSession}
-              className="rounded-full border border-white/10 px-3 py-1 text-[11px] text-ink-200 hover:border-white/30"
-            >
-              New session
-            </button>
-          </div>
-
-          <div className="rounded-xl border border-white/10 bg-base-900/80 p-3 text-xs text-ink-200">
-            <div className="mb-2 flex items-center justify-between text-[11px] text-ink-400">
-              <span>Session</span>
-              {sessionsLoading ? <span>Loading...</span> : null}
-            </div>
-            <select
-              value={sessionId ?? ''}
-              onChange={(event) => handleSessionChange(event.target.value)}
-              className="w-full rounded-lg border border-white/10 bg-base-800 px-2 py-2 text-xs text-ink-100"
-            >
-              <option value="">New session</option>
-              {sessions.map((session) => {
-                const label = session.title?.trim() || `Session ${session.session_id.slice(0, 8)}`
-                const status = session.status ? ` - ${session.status}` : ''
-                return (
-                  <option key={session.session_id} value={session.session_id}>
-                    {label}{status}
-                  </option>
-                )
-              })}
-            </select>
-            {sessionsError ? (
-              <div className="mt-2 rounded-md border border-red-500/40 bg-red-500/10 px-2 py-1 text-[11px] text-red-200">
-                {sessionsError}
-              </div>
-            ) : null}
-          </div>
-
-          <div className="flex-1 space-y-3 overflow-auto rounded-xl border border-white/5 bg-base-900/60 p-3 text-xs text-ink-200">
-            {messages.map((message) => (
-              <div
-                key={message.id}
-                className={`rounded-lg px-3 py-2 ${
-                  message.role === 'user'
-                    ? 'bg-accent-500/20 text-ink-100'
-                    : 'bg-white/5 text-ink-200'
-                }`}
-              >
-                {message.content}
-              </div>
-            ))}
-            {messages.length === 0 ? (
-              <div className="text-ink-400">
-                Ask the assistant to tighten pacing, add captions, or cut silences.
-              </div>
-            ) : null}
-          </div>
-
-          <div className="rounded-xl border border-white/10 bg-base-900/80 p-3">
-            <textarea
-              value={chatInput}
-              onChange={(event) => setChatInput(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter' && !event.shiftKey) {
-                  event.preventDefault()
-                  handleSendMessage()
-                }
-              }}
-              rows={3}
-              className="w-full resize-none rounded-lg border border-white/10 bg-base-800 px-3 py-2 text-xs text-ink-100"
-              placeholder="Change: remove silence and make it punchier"
-            />
-            <div className="mt-3 flex items-center justify-between">
-              <button
-                onClick={handleSendMessage}
-                className="rounded-full bg-accent-500 px-3 py-1 text-xs font-semibold text-white shadow-glow hover:bg-accent-600"
-              >
-                Send
-              </button>
             </div>
           </div>
 
-          {pendingPatches.length > 0 ? (
-            <div className="rounded-xl border border-white/10 bg-base-900/80 p-3 text-xs text-ink-300">
-              <div className="mb-2 font-semibold text-ink-100">Change Set</div>
-              <ul className="space-y-1">
-                {pendingPatches.map((patch) => (
-                  <li key={patch.patch_id}>
-                    {patch.description || patch.agent_type} ({patch.operation_count})
-                  </li>
-                ))}
-              </ul>
-              <div className="mt-3 flex gap-2">
-                <button className="rounded-full border border-white/10 px-3 py-1 text-xs text-ink-200">
-                  Preview Changes
-                </button>
-                <button
-                  onClick={handleApplyPatches}
-                  className="rounded-full bg-accent-500 px-3 py-1 text-xs font-semibold text-white"
-                >
-                  Apply
-                </button>
-              </div>
-            </div>
-          ) : null}
-        </aside>
+          {/* Output Panel (bottom, collapsible) */}
+          <OutputPanel
+            isOpen={outputPanelOpen}
+            onToggle={() => setOutputPanelOpen(!outputPanelOpen)}
+            logs={renderLogs}
+            renderStatus={renderState}
+            onClear={() => setRenderLogs([])}
+          />
+        </div>
+
+        {/* Chat Sidebar (right, collapsible) */}
+        <ChatSidebar
+          isOpen={sidebarOpen}
+          onToggle={() => setSidebarOpen(!sidebarOpen)}
+          messages={messages}
+          chatInput={chatInput}
+          onChatInputChange={setChatInput}
+          onSendMessage={handleSendMessage}
+          sessions={sessions}
+          sessionId={sessionId}
+          sessionsLoading={sessionsLoading}
+          sessionsError={sessionsError}
+          onSessionChange={handleSessionChange}
+          onNewSession={handleNewSession}
+          pendingPatches={pendingPatches}
+          onApplyPatches={handleApplyPatches}
+          gpuAvailable={gpuInfo?.available}
+        />
       </div>
 
+      {/* Delete asset confirmation modal */}
       <Modal
         open={Boolean(assetToDelete)}
         title="Delete Asset"
         onClose={() => setAssetToDelete(null)}
       >
         <div className="space-y-4">
-          <p className="text-sm text-ink-300">
+          <p className="text-sm text-neutral-400">
             Delete {assetToDelete ? `"${assetToDelete.asset_name}"` : 'this asset'}?
             This action cannot be undone.
           </p>
           <div className="flex justify-end gap-3">
             <button
               onClick={() => setAssetToDelete(null)}
-              className="rounded-full border border-white/10 px-4 py-2 text-xs text-ink-300"
+              className="rounded-lg border border-neutral-700 px-4 py-2 text-sm text-neutral-300 hover:bg-neutral-800 transition-colors"
             >
               Cancel
             </button>
@@ -1045,7 +1092,7 @@ const Editor = ({ project, config, onBack, onOpenSettings }: EditorProps) => {
                 }
                 setAssetToDelete(null)
               }}
-              className="rounded-full bg-red-500 px-4 py-2 text-xs font-semibold text-white"
+              className="rounded-lg bg-error-500 px-4 py-2 text-sm font-medium text-white hover:bg-error-600 transition-colors"
             >
               Delete
             </button>

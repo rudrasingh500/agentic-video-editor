@@ -1,4 +1,15 @@
 import { useMemo, useState } from 'react'
+import {
+  Plus,
+  FolderOpen,
+  RefreshCw,
+  Settings,
+  Film,
+  Trash2,
+  ChevronRight,
+  Clock,
+  Loader2,
+} from 'lucide-react'
 import type { Project } from '../lib/types'
 import Modal from '../components/Modal'
 
@@ -45,66 +56,97 @@ const ProjectSelect = ({
   const recentProjects = useMemo(() => projects.slice(0, 8), [projects])
 
   return (
-    <div className="min-h-screen bg-base-900 bg-radial-slate text-ink-100">
-      <div className="flex min-h-screen">
-        <aside className="flex w-20 flex-col items-center gap-4 border-r border-white/5 bg-base-800/70 py-8">
-          <button className="rounded-2xl bg-white/5 p-2">
-            <span className="text-lg">🏠</span>
-          </button>
-          <button className="rounded-2xl bg-white/5 p-2">
-            <span className="text-lg">📁</span>
-          </button>
-          <button
-            className="rounded-2xl bg-white/10 p-2"
-            onClick={onOpenSettings}
-          >
-            <span className="text-lg">⚙️</span>
-          </button>
-        </aside>
+    <div className="min-h-screen bg-neutral-950 bg-gradient-mesh">
+      {/* Header */}
+      <header className="flex h-14 items-center justify-between border-b border-neutral-800/50 px-6">
+        <div className="flex items-center gap-3">
+          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-accent-500">
+            <Film className="h-4 w-4 text-white" />
+          </div>
+          <span className="text-sm font-semibold text-neutral-200">Granite Edit</span>
+        </div>
+        <button
+          onClick={onOpenSettings}
+          className="rounded-lg p-2 text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200 transition-colors"
+        >
+          <Settings className="h-4 w-4" />
+        </button>
+      </header>
 
-        <main className="flex flex-1 items-center justify-center px-10 py-12">
-          <section className="w-full max-w-4xl rounded-2xl border border-white/10 bg-panel-glass p-10 shadow-panel">
-            <div className="text-center">
-              <h1 className="font-display text-3xl font-semibold text-ink-100">
-                Granite Edit
-              </h1>
-              <p className="mt-2 text-sm text-ink-300">
-                Choose a project to continue.
-              </p>
-            </div>
+      {/* Main content */}
+      <main className="flex min-h-[calc(100vh-3.5rem)] items-center justify-center p-8">
+        <div className="w-full max-w-3xl">
+          {/* Hero section */}
+          <div className="mb-10 text-center">
+            <h1 className="text-3xl font-semibold text-neutral-100 mb-3">
+              Welcome back
+            </h1>
+            <p className="text-neutral-500">
+              Select a project to continue editing or start a new one.
+            </p>
+          </div>
 
-            <div className="mt-6 flex flex-wrap justify-center gap-3">
-              <button
-                onClick={() => setShowCreate(true)}
-                className="rounded-full bg-accent-500 px-6 py-2 text-sm font-semibold text-white shadow-glow hover:bg-accent-600"
-              >
-                + New Project
-              </button>
-              <button
-                onClick={() => setShowOpen(true)}
-                className="rounded-full border border-white/10 bg-white/5 px-5 py-2 text-sm text-ink-200 hover:border-white/30"
-              >
-                Open Project...
-              </button>
-              <button
-                onClick={onRefresh}
-                className="rounded-full border border-white/10 bg-white/5 px-5 py-2 text-sm text-ink-200 hover:border-white/30"
-              >
-                Refresh
-              </button>
-            </div>
+          {/* Action buttons */}
+          <div className="flex flex-wrap justify-center gap-3 mb-10">
+            <button
+              onClick={() => setShowCreate(true)}
+              className="flex items-center gap-2 rounded-lg bg-accent-500 px-5 py-2.5 text-sm font-medium text-white hover:bg-accent-600 transition-colors"
+            >
+              <Plus className="h-4 w-4" />
+              New Project
+            </button>
+            <button
+              onClick={() => setShowOpen(true)}
+              className="flex items-center gap-2 rounded-lg border border-neutral-700 bg-neutral-800/50 px-5 py-2.5 text-sm font-medium text-neutral-300 hover:border-neutral-600 hover:bg-neutral-800 transition-colors"
+            >
+              <FolderOpen className="h-4 w-4" />
+              Open by ID
+            </button>
+            <button
+              onClick={onRefresh}
+              disabled={loading}
+              className="flex items-center gap-2 rounded-lg border border-neutral-700 bg-neutral-800/50 px-5 py-2.5 text-sm font-medium text-neutral-300 hover:border-neutral-600 hover:bg-neutral-800 transition-colors disabled:opacity-50"
+            >
+              <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
+              Refresh
+            </button>
+          </div>
 
-            <div className="mt-10">
-              <div className="mb-3 flex items-center justify-between text-xs uppercase tracking-[0.3em] text-ink-400">
-                <span>Recent Projects</span>
-                {loading ? <span>Loading…</span> : null}
+          {/* Recent projects */}
+          <div className="rounded-xl border border-neutral-800 bg-neutral-900/50 p-6">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2 text-neutral-400">
+                <Clock className="h-4 w-4" />
+                <span className="text-xs font-medium uppercase tracking-wider">
+                  Recent Projects
+                </span>
               </div>
-              {error ? (
-                <div className="rounded-xl border border-red-400/30 bg-red-500/10 p-3 text-sm text-red-200">
-                  {error}
+              {loading && (
+                <div className="flex items-center gap-2 text-xs text-neutral-500">
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  Loading...
                 </div>
-              ) : null}
-              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+              )}
+            </div>
+
+            {error && (
+              <div className="mb-4 rounded-lg border border-error-500/30 bg-error-500/10 px-4 py-3 text-sm text-error-500">
+                {error}
+              </div>
+            )}
+
+            {recentProjects.length === 0 && !loading ? (
+              <div className="flex flex-col items-center justify-center py-12 text-center">
+                <div className="rounded-full bg-neutral-800 p-4 mb-4">
+                  <Film className="h-6 w-6 text-neutral-500" />
+                </div>
+                <p className="text-sm text-neutral-400 mb-1">No projects yet</p>
+                <p className="text-xs text-neutral-600">
+                  Create a new project to get started
+                </p>
+              </div>
+            ) : (
+              <div className="grid gap-2">
                 {recentProjects.map((project) => (
                   <div
                     key={project.project_id}
@@ -117,20 +159,29 @@ const ProjectSelect = ({
                         onSelect(project)
                       }
                     }}
-                    className="group flex cursor-pointer items-center gap-4 rounded-xl border border-white/10 bg-base-800/60 p-4 text-left transition hover:border-accent-500/60 hover:bg-base-700/80"
+                    className="group flex cursor-pointer items-center gap-4 rounded-lg border border-neutral-800 bg-neutral-900 p-4 transition-all hover:border-neutral-700 hover:bg-neutral-800/80"
                   >
-                    <div className="h-14 w-20 rounded-lg bg-gradient-to-br from-accent-500/80 via-glow-violet/70 to-glow-magenta/70 opacity-90 shadow-soft transition group-hover:opacity-100" />
-                    <div className="flex-1">
-                      <div className="text-sm font-semibold text-ink-100">
+                    <div className="flex h-12 w-16 items-center justify-center rounded-lg bg-neutral-800 group-hover:bg-neutral-700 transition-colors">
+                      <Film className="h-5 w-5 text-neutral-500 group-hover:text-neutral-400" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-medium text-neutral-200 truncate">
                         {project.project_name}
                       </div>
-                      <div className="mt-1 text-xs text-ink-400">
-                        {formatDate(project.updated_at)}
+                      <div className="flex items-center gap-2 mt-1 text-xs text-neutral-500">
+                        <span>{formatDate(project.updated_at)}</span>
+                        {project.project_id && (
+                          <>
+                            <span className="text-neutral-700">|</span>
+                            <span className="font-mono text-2xs">
+                              {project.project_id.slice(0, 8)}
+                            </span>
+                          </>
+                        )}
                       </div>
                     </div>
                     <div className="flex items-center gap-2">
-                      <span className="text-xs text-ink-400">Open</span>
-                      {onDelete ? (
+                      {onDelete && (
                         <button
                           type="button"
                           aria-label={`Delete ${project.project_name}`}
@@ -138,45 +189,65 @@ const ProjectSelect = ({
                             event.stopPropagation()
                             setProjectToDelete(project)
                           }}
-                          className="rounded-full border border-transparent p-1 text-ink-400 transition hover:border-red-400/40 hover:text-red-300"
+                          className="rounded-lg p-2 text-neutral-600 opacity-0 group-hover:opacity-100 hover:bg-neutral-700 hover:text-error-400 transition-all"
                         >
-                          🗑️
+                          <Trash2 className="h-4 w-4" />
                         </button>
-                      ) : null}
+                      )}
+                      <ChevronRight className="h-4 w-4 text-neutral-600 group-hover:text-neutral-400 transition-colors" />
                     </div>
                   </div>
                 ))}
-                {recentProjects.length === 0 && !loading ? (
-                  <div className="rounded-xl border border-white/10 bg-base-800/40 p-6 text-sm text-ink-300">
-                    No projects yet. Create one to get started.
-                  </div>
-                ) : null}
               </div>
-            </div>
+            )}
+          </div>
 
-            <div className="mt-10 flex items-center justify-center gap-6 text-xs text-ink-400">
-              <button className="hover:text-ink-200" onClick={onOpenSettings}>
-                Settings
-              </button>
-              <button className="hover:text-ink-200">Privacy</button>
-              <button className="hover:text-ink-200">Help</button>
-            </div>
-          </section>
-        </main>
-      </div>
+          {/* Footer links */}
+          <div className="mt-8 flex items-center justify-center gap-6 text-xs text-neutral-500">
+            <button
+              className="hover:text-neutral-300 transition-colors"
+              onClick={onOpenSettings}
+            >
+              Settings
+            </button>
+            <span className="text-neutral-700">|</span>
+            <button className="hover:text-neutral-300 transition-colors">
+              Documentation
+            </button>
+            <span className="text-neutral-700">|</span>
+            <button className="hover:text-neutral-300 transition-colors">
+              Help
+            </button>
+          </div>
+        </div>
+      </main>
 
+      {/* Create Project Modal */}
       <Modal open={showCreate} title="Create Project" onClose={() => setShowCreate(false)}>
         <div className="space-y-4">
-          <input
-            value={projectName}
-            onChange={(event) => setProjectName(event.target.value)}
-            className="w-full rounded-xl border border-white/10 bg-base-800 px-3 py-2 text-ink-100"
-            placeholder="Podcast Ep 12"
-          />
-          <div className="flex justify-end gap-3">
+          <div>
+            <label className="block text-xs font-medium text-neutral-400 mb-2">
+              Project Name
+            </label>
+            <input
+              value={projectName}
+              onChange={(event) => setProjectName(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && projectName.trim()) {
+                  onCreate(projectName.trim())
+                  setProjectName('')
+                  setShowCreate(false)
+                }
+              }}
+              className="w-full rounded-lg border border-neutral-700 bg-neutral-800 px-4 py-2.5 text-sm text-neutral-200 placeholder-neutral-500 focus:border-accent-500 focus:outline-none focus:ring-1 focus:ring-accent-500/50 transition-colors"
+              placeholder="My Awesome Video"
+              autoFocus
+            />
+          </div>
+          <div className="flex justify-end gap-3 pt-2">
             <button
               onClick={() => setShowCreate(false)}
-              className="rounded-full border border-white/10 px-4 py-2 text-xs text-ink-300"
+              className="rounded-lg border border-neutral-700 px-4 py-2 text-sm text-neutral-300 hover:bg-neutral-800 transition-colors"
             >
               Cancel
             </button>
@@ -189,7 +260,8 @@ const ProjectSelect = ({
                 setProjectName('')
                 setShowCreate(false)
               }}
-              className="rounded-full bg-accent-500 px-4 py-2 text-xs font-semibold text-white"
+              disabled={!projectName.trim()}
+              className="rounded-lg bg-accent-500 px-4 py-2 text-sm font-medium text-white hover:bg-accent-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
               Create
             </button>
@@ -197,18 +269,31 @@ const ProjectSelect = ({
         </div>
       </Modal>
 
-      <Modal open={showOpen} title="Open Project by ID" onClose={() => setShowOpen(false)}>
+      {/* Open by ID Modal */}
+      <Modal open={showOpen} title="Open Project" onClose={() => setShowOpen(false)}>
         <div className="space-y-4">
-          <input
-            value={projectId}
-            onChange={(event) => setProjectId(event.target.value)}
-            className="w-full rounded-xl border border-white/10 bg-base-800 px-3 py-2 text-ink-100"
-            placeholder="project-uuid"
-          />
-          <div className="flex justify-end gap-3">
+          <div>
+            <label className="block text-xs font-medium text-neutral-400 mb-2">
+              Project ID
+            </label>
+            <input
+              value={projectId}
+              onChange={(event) => setProjectId(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && projectId.trim()) {
+                  onOpenById(projectId.trim())
+                  setProjectId('')
+                  setShowOpen(false)
+                }
+              }}
+              className="w-full rounded-lg border border-neutral-700 bg-neutral-800 px-4 py-2.5 font-mono text-sm text-neutral-200 placeholder-neutral-500 focus:border-accent-500 focus:outline-none focus:ring-1 focus:ring-accent-500/50 transition-colors"
+              placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+            />
+          </div>
+          <div className="flex justify-end gap-3 pt-2">
             <button
               onClick={() => setShowOpen(false)}
-              className="rounded-full border border-white/10 px-4 py-2 text-xs text-ink-300"
+              className="rounded-lg border border-neutral-700 px-4 py-2 text-sm text-neutral-300 hover:bg-neutral-800 transition-colors"
             >
               Cancel
             </button>
@@ -221,7 +306,8 @@ const ProjectSelect = ({
                 setProjectId('')
                 setShowOpen(false)
               }}
-              className="rounded-full bg-accent-500 px-4 py-2 text-xs font-semibold text-white"
+              disabled={!projectId.trim()}
+              className="rounded-lg bg-accent-500 px-4 py-2 text-sm font-medium text-white hover:bg-accent-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
               Open
             </button>
@@ -229,20 +315,24 @@ const ProjectSelect = ({
         </div>
       </Modal>
 
+      {/* Delete Confirmation Modal */}
       <Modal
         open={Boolean(projectToDelete)}
         title="Delete Project"
         onClose={() => setProjectToDelete(null)}
       >
         <div className="space-y-4">
-          <p className="text-sm text-ink-300">
-            Delete {projectToDelete ? `"${projectToDelete.project_name}"` : 'this project'}?
-            This action cannot be undone.
+          <p className="text-sm text-neutral-400">
+            Are you sure you want to delete{' '}
+            <span className="font-medium text-neutral-200">
+              "{projectToDelete?.project_name}"
+            </span>
+            ? This action cannot be undone.
           </p>
-          <div className="flex justify-end gap-3">
+          <div className="flex justify-end gap-3 pt-2">
             <button
               onClick={() => setProjectToDelete(null)}
-              className="rounded-full border border-white/10 px-4 py-2 text-xs text-ink-300"
+              className="rounded-lg border border-neutral-700 px-4 py-2 text-sm text-neutral-300 hover:bg-neutral-800 transition-colors"
             >
               Cancel
             </button>
@@ -253,7 +343,7 @@ const ProjectSelect = ({
                 }
                 setProjectToDelete(null)
               }}
-              className="rounded-full bg-red-500 px-4 py-2 text-xs font-semibold text-white"
+              className="rounded-lg bg-error-500 px-4 py-2 text-sm font-medium text-white hover:bg-error-600 transition-colors"
             >
               Delete
             </button>
