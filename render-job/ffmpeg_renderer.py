@@ -13,6 +13,8 @@ from typing import Any, Callable
 from google.cloud import storage
 from google.oauth2 import service_account
 
+from graphics_generator import OverlayGenerator, OverlayAsset
+
 
 
 logger = logging.getLogger("ffmpeg-renderer")
@@ -36,6 +38,15 @@ class RenderManifest:
     start_frame: int | None = None
     end_frame: int | None = None
     callback_url: str | None = None
+
+
+@dataclass
+class InputSpec:
+    path: str
+    options: list[str] = field(default_factory=list)
+
+    def to_args(self) -> list[str]:
+        return [*self.options, "-i", self.path]
 
 
 @dataclass
@@ -70,19 +81,28 @@ class TimelineToFFmpeg:
         asset_map: dict[str, str],
         preset: dict[str, Any],
         input_streams: dict[int, set[str]],
+        temp_dir: Path | None = None,
+        job_id: str | None = None,
     ):
         self.timeline = timeline
         self.asset_map = asset_map
         self.preset = preset
         self.input_streams = input_streams
 
-        self._inputs: list[str] = []
+        self.temp_dir = temp_dir or Path(os.environ.get("RENDER_TEMP_DIR", "/tmp/render"))
+        self.job_id = job_id or "render"
+        self._generator_dir = self.temp_dir / "generators" / self.job_id
+        self._generator_dir.mkdir(parents=True, exist_ok=True)
+        self._overlay_generator: OverlayGenerator | None = None
+        self._generator_counter = 0
+
+        self._inputs: list[InputSpec] = []
         self._input_index_map: dict[str, int] = {}
         self._video_filters: list[str] = []
         self._audio_filters: list[str] = []
         self._filter_counter = 0
 
-    def build(self) -> tuple[list[str], str, list[str]]:
+    def build(self) -> tuple[list[InputSpec], str, list[str]]:
         self._collect_inputs()
         video_out = self._build_video_graph()
         audio_out = self._build_audio_graph()
@@ -107,7 +127,7 @@ class TimelineToFFmpeg:
                 continue
             if asset_id not in self._input_index_map:
                 self._input_index_map[asset_id] = len(self._inputs)
-                self._inputs.append(path)
+                self._inputs.append(InputSpec(path=path))
 
     def _extract_asset_ids(self) -> list[str]:
         ids: list[str] = []
@@ -477,6 +497,30 @@ class TimelineToFFmpeg:
                     current, f"noise=alls={amount}:allf=t+u"
                 )
                 continue
+            if effect_type == "glow":
+                current = self._apply_glow(current, metadata)
+                continue
+            if effect_type in {"chromatic_aberration", "chromatic"}:
+                current = self._apply_chromatic_aberration(current, metadata)
+                continue
+            if effect_type == "sharpen":
+                current = self._apply_sharpen(current, metadata)
+                continue
+            if effect_type in {"black_and_white", "bw", "monochrome"}:
+                current = self._apply_simple_video_filter(current, "hue=s=0")
+                continue
+            if effect_type == "sepia":
+                current = self._apply_sepia(current)
+                continue
+            if effect_type == "pixelate":
+                current = self._apply_pixelate(current, metadata)
+                continue
+            if effect_type == "edge_glow":
+                current = self._apply_edge_glow(current, metadata)
+                continue
+            if effect_type == "tint":
+                current = self._apply_tint(current, metadata)
+                continue
             if effect_type == "stabilize":
                 strength = float(metadata.get("strength", 0.5))
                 radius = max(2, int(20 * strength))
@@ -705,6 +749,129 @@ class TimelineToFFmpeg:
         )
         return self._apply_simple_video_filter(input_label, expr)
 
+    def _apply_glow(self, input_label: str, metadata: dict[str, Any]) -> str:
+        strength = float(metadata.get("strength", 0.6))
+        strength = max(0.0, min(1.0, strength))
+        blur = float(metadata.get("blur", 20))
+        blur = max(0.1, blur)
+
+        base_label = f"vglow_base_{self._filter_counter}"
+        glow_label = f"vglow_src_{self._filter_counter}"
+        blur_label = f"vglow_blur_{self._filter_counter}"
+        out_label = f"vglow_out_{self._filter_counter}"
+        self._filter_counter += 1
+
+        self._video_filters.append(
+            f"[{input_label}]split=2[{base_label}][{glow_label}]"
+        )
+        self._video_filters.append(
+            f"[{glow_label}]gblur=sigma={blur}[{blur_label}]"
+        )
+        self._video_filters.append(
+            f"[{base_label}][{blur_label}]blend=all_mode=screen:all_opacity={strength}"
+            f"[{out_label}]"
+        )
+        return out_label
+
+    def _apply_chromatic_aberration(
+        self, input_label: str, metadata: dict[str, Any]
+    ) -> str:
+        amount = float(metadata.get("amount", 2.0))
+        rh = metadata.get("red_x", amount)
+        rv = metadata.get("red_y", amount)
+        gh = metadata.get("green_x", -amount)
+        gv = metadata.get("green_y", 0.0)
+        bh = metadata.get("blue_x", 0.0)
+        bv = metadata.get("blue_y", -amount)
+        expr = (
+            f"rgbashift=rh={rh}:rv={rv}:gh={gh}:gv={gv}:"
+            f"bh={bh}:bv={bv}"
+        )
+        return self._apply_simple_video_filter(input_label, expr)
+
+    def _apply_sharpen(self, input_label: str, metadata: dict[str, Any]) -> str:
+        amount = float(metadata.get("amount", 1.0))
+        radius = int(metadata.get("radius", 5))
+        radius = max(3, min(radius, 15))
+        expr = (
+            f"unsharp=luma_msize_x={radius}:luma_msize_y={radius}:"
+            f"luma_amount={amount}"
+        )
+        return self._apply_simple_video_filter(input_label, expr)
+
+    def _apply_sepia(self, input_label: str) -> str:
+        expr = (
+            "colorchannelmixer=0.393:0.769:0.189:0:"
+            "0.349:0.686:0.168:0:"
+            "0.272:0.534:0.131:0"
+        )
+        return self._apply_simple_video_filter(input_label, expr)
+
+    def _apply_pixelate(self, input_label: str, metadata: dict[str, Any]) -> str:
+        block = int(metadata.get("block_size", 12))
+        block = max(1, block)
+        expr = (
+            f"scale=iw/{block}:ih/{block}:flags=neighbor,"
+            f"scale=iw:ih:flags=neighbor"
+        )
+        return self._apply_simple_video_filter(input_label, expr)
+
+    def _apply_edge_glow(self, input_label: str, metadata: dict[str, Any]) -> str:
+        strength = float(metadata.get("strength", 0.7))
+        strength = max(0.0, min(1.0, strength))
+        low = float(metadata.get("low", 0.1))
+        high = float(metadata.get("high", 0.4))
+        blur = float(metadata.get("blur", 2.0))
+
+        base_label = f"vedge_base_{self._filter_counter}"
+        edge_label = f"vedge_src_{self._filter_counter}"
+        glow_label = f"vedge_glow_{self._filter_counter}"
+        out_label = f"vedge_out_{self._filter_counter}"
+        self._filter_counter += 1
+
+        self._video_filters.append(
+            f"[{input_label}]split=2[{base_label}][{edge_label}]"
+        )
+        edge_expr = f"edgedetect=low={low}:high={high}"
+        if blur > 0:
+            edge_expr += f",gblur=sigma={blur}"
+        self._video_filters.append(f"[{edge_label}]{edge_expr}[{glow_label}]")
+        self._video_filters.append(
+            f"[{base_label}][{glow_label}]blend=all_mode=screen:all_opacity={strength}"
+            f"[{out_label}]"
+        )
+        return out_label
+
+    def _apply_tint(self, input_label: str, metadata: dict[str, Any]) -> str:
+        if "color" in metadata:
+            r, g, b = self._parse_hex_color(str(metadata.get("color")))
+            amount = float(metadata.get("amount", 0.3))
+            rs = (r - 0.5) * 2 * amount
+            gs = (g - 0.5) * 2 * amount
+            bs = (b - 0.5) * 2 * amount
+            expr = f"colorbalance=rs={rs:.3f}:gs={gs:.3f}:bs={bs:.3f}"
+            return self._apply_simple_video_filter(input_label, expr)
+
+        red = metadata.get("red", 0)
+        green = metadata.get("green", 0)
+        blue = metadata.get("blue", 0)
+        expr = f"colorbalance=rs={red}:gs={green}:bs={blue}"
+        return self._apply_simple_video_filter(input_label, expr)
+
+    def _parse_hex_color(self, value: str) -> tuple[float, float, float]:
+        raw = value.strip()
+        if raw.startswith("#"):
+            raw = raw[1:]
+        if len(raw) >= 6:
+            try:
+                r = int(raw[0:2], 16) / 255.0
+                g = int(raw[2:4], 16) / 255.0
+                b = int(raw[4:6], 16) / 255.0
+                return r, g, b
+            except ValueError:
+                return 0.0, 0.0, 0.0
+        return 0.0, 0.0, 0.0
+
     def _apply_ducking(self, input_label: str, metadata: dict[str, Any]) -> str:
         segments = metadata.get("segments", [])
         target_db = metadata.get("target_db", -16)
@@ -745,6 +912,50 @@ class TimelineToFFmpeg:
         expr = f"afade=t={fade_type}:st={start}:d={duration}"
         return self._apply_simple_audio_filter(input_label, expr)
 
+    def _get_overlay_generator(self) -> OverlayGenerator:
+        if self._overlay_generator is None:
+            self._overlay_generator = OverlayGenerator(
+                width=self._video_width(),
+                height=self._video_height(),
+                fps=self._framerate(),
+                output_dir=self._generator_dir,
+            )
+        return self._overlay_generator
+
+    def _register_overlay_input(self, asset: OverlayAsset) -> int:
+        options: list[str] = []
+        if asset.is_sequence:
+            options.extend([
+                "-framerate",
+                f"{asset.fps}",
+                "-start_number",
+                str(asset.start_number),
+            ])
+        else:
+            options.extend(["-loop", "1", "-framerate", f"{asset.fps}"])
+        self._inputs.append(InputSpec(path=asset.path, options=options))
+        return len(self._inputs) - 1
+
+    def _generate_graphics_overlay(
+        self, kind: str, params: dict[str, Any], segment: TrackSegment, label: str
+    ) -> str:
+        self._generator_counter += 1
+        safe_label = f"{label}_{self._generator_counter}"
+        generator = self._get_overlay_generator()
+        asset = generator.generate(kind, params, segment.duration, safe_label)
+        input_index = self._register_overlay_input(asset)
+        input_label = f"{input_index}:v"
+        filters = [
+            f"trim=duration={segment.duration}",
+            "setpts=PTS-STARTPTS",
+            "format=rgba",
+            "setsar=1",
+        ]
+        self._video_filters.append(
+            f"[{input_label}]{','.join(filters)}[{label}]"
+        )
+        return label
+
     def _generate_gap_video(self, segment: TrackSegment, label: str) -> str:
         width = self._video_width()
         height = self._video_height()
@@ -772,12 +983,27 @@ class TimelineToFFmpeg:
 
     def _generate_generator_video(self, segment: TrackSegment, label: str) -> str:
         kind = segment.generator_params.get("kind", "SolidColor")
-        params = segment.generator_params.get("params", {})
+        params = dict(segment.generator_params.get("params", {}) or {})
         width = self._video_width()
         height = self._video_height()
         framerate = self._framerate()
 
-        if kind.lower() == "caption":
+        kind_lower = str(kind).lower().replace("-", "_")
+        if kind_lower == "callout":
+            kind_lower = "call_out"
+        if kind_lower == "lowerthird":
+            kind_lower = "lower_third"
+        if kind_lower == "progressbar":
+            kind_lower = "progress_bar"
+        asset_id = params.get("asset_id") or params.get("image_asset_id")
+        if asset_id and not params.get("image_path"):
+            asset_path = self.asset_map.get(str(asset_id))
+            if asset_path:
+                params["image_path"] = asset_path
+
+        if kind_lower == "caption":
+            if not self._should_use_drawtext(params):
+                return self._generate_graphics_overlay("caption", params, segment, label)
             text = self._escape_drawtext(str(params.get("text", "")))
             font = params.get("font")
             size = params.get("size")
@@ -822,13 +1048,23 @@ class TimelineToFFmpeg:
                 f"color=c=black@0.0:s={width}x{height}:d={segment.duration}:r={framerate},"
                 f"format=rgba,{drawtext},setsar=1[{label}]"
             )
-        elif kind == "SolidColor":
+        elif kind_lower in {
+            "title",
+            "lower_third",
+            "watermark",
+            "call_out",
+            "progress_bar",
+            "animated_text",
+            "shape",
+        }:
+            return self._generate_graphics_overlay(kind_lower, params, segment, label)
+        elif kind_lower == "solidcolor":
             color = params.get("color", "black")
             self._video_filters.append(
                 f"color=c={color}:s={width}x{height}:d={segment.duration}:r={framerate},"
                 f"setsar=1[{label}]"
             )
-        elif kind == "Bars":
+        elif kind_lower == "bars":
             self._video_filters.append(
                 f"smptebars=s={width}x{height}:d={segment.duration}:r={framerate},"
                 f"setsar=1[{label}]"
@@ -1037,8 +1273,78 @@ class TimelineToFFmpeg:
             "FadeOut": "fade",
             "Wipe": "wipeleft",
             "Slide": "slideleft",
+            "Custom": "dissolve",
         }
-        return mapping.get(trans_type, "dissolve")
+        if trans_type in mapping:
+            return mapping[trans_type]
+
+        xfade_transitions = {
+            "custom",
+            "fade",
+            "wipeleft",
+            "wiperight",
+            "wipeup",
+            "wipedown",
+            "slideleft",
+            "slideright",
+            "slideup",
+            "slidedown",
+            "circlecrop",
+            "rectcrop",
+            "distance",
+            "fadeblack",
+            "fadewhite",
+            "radial",
+            "smoothleft",
+            "smoothright",
+            "smoothup",
+            "smoothdown",
+            "circleopen",
+            "circleclose",
+            "vertopen",
+            "vertclose",
+            "horzopen",
+            "horzclose",
+            "dissolve",
+            "pixelize",
+            "diagtl",
+            "diagtr",
+            "diagbl",
+            "diagbr",
+            "hlslice",
+            "hrslice",
+            "vuslice",
+            "vdslice",
+            "hblur",
+            "fadegrays",
+            "wipetl",
+            "wipetr",
+            "wipebl",
+            "wipebr",
+            "squeezeh",
+            "squeezev",
+            "zoomin",
+            "fadefast",
+            "fadeslow",
+            "hlwind",
+            "hrwind",
+            "vuwind",
+            "vdwind",
+            "coverleft",
+            "coverright",
+            "coverup",
+            "coverdown",
+            "revealleft",
+            "revealright",
+            "revealup",
+            "revealdown",
+        }
+        lower = str(trans_type).lower()
+        if lower == "custom":
+            return "dissolve"
+        if lower in xfade_transitions:
+            return lower
+        return "dissolve"
 
     def _combine_filters(self) -> str:
         return ";".join(self._video_filters + self._audio_filters)
@@ -1105,6 +1411,27 @@ class TimelineToFFmpeg:
         except (TypeError, ValueError):
             return 24.0
 
+    def _should_use_drawtext(self, params: dict[str, Any]) -> bool:
+        engine = str(params.get("engine", "")).lower()
+        if engine in {"ffmpeg", "drawtext"}:
+            return True
+        for key in ("x", "y"):
+            if self._is_ffmpeg_expr(params.get(key)):
+                return True
+        return False
+
+    def _is_ffmpeg_expr(self, value: Any) -> bool:
+        if not isinstance(value, str):
+            return False
+        stripped = value.strip().lower()
+        if stripped in {"", "left", "right", "top", "bottom", "center", "middle"}:
+            return False
+        try:
+            float(stripped)
+            return False
+        except ValueError:
+            return True
+
     def _escape_drawtext(self, value: str) -> str:
         return (
             value.replace("\\", "\\\\")
@@ -1147,8 +1474,9 @@ class FFmpegRenderer:
         logger.info(f"Starting render for job {self.manifest.job_id}")
 
         local_asset_map = self._resolve_asset_paths()
-        input_streams = self._probe_streams(local_asset_map)
-        self._resolve_effect_assets()
+        external_asset_ids = self._extract_external_asset_ids()
+        input_streams = self._probe_streams(local_asset_map, external_asset_ids)
+        self._resolve_effect_assets(local_asset_map)
 
         if progress_callback:
             progress_callback(5, "Resolved asset paths")
@@ -1201,7 +1529,27 @@ class FFmpegRenderer:
 
         return local_paths
 
-    def _resolve_effect_assets(self) -> None:
+    def _extract_external_asset_ids(self) -> list[str]:
+        ids: list[str] = []
+        seen: set[str] = set()
+        tracks = self.manifest.timeline_snapshot.get("tracks", {}).get("children", [])
+        for track in tracks:
+            if track.get("OTIO_SCHEMA") != "Track.1":
+                continue
+            for item in track.get("children", []):
+                if item.get("OTIO_SCHEMA") != "Clip.1":
+                    continue
+                media_ref = item.get("media_reference", {})
+                if media_ref.get("OTIO_SCHEMA") == "ExternalReference.1":
+                    asset_id = media_ref.get("asset_id")
+                    if asset_id:
+                        asset_key = str(asset_id)
+                        if asset_key not in seen:
+                            ids.append(asset_key)
+                            seen.add(asset_key)
+        return ids
+
+    def _resolve_effect_assets(self, local_asset_map: dict[str, str]) -> None:
         tracks = self.manifest.timeline_snapshot.get("tracks", {}).get("children", [])
         for track in tracks:
             for item in track.get("children", []):
@@ -1219,8 +1567,16 @@ class FFmpegRenderer:
                     font = params.get("font")
                     if font:
                         params["font"] = self._download_effect_asset(font)
-                        media_ref["parameters"] = params
-                        item["media_reference"] = media_ref
+                    for key in ("image_path", "logo_path", "mask_path"):
+                        if params.get(key):
+                            params[key] = self._download_effect_asset(params[key])
+                    asset_id = params.get("asset_id") or params.get("image_asset_id")
+                    if asset_id:
+                        asset_path = local_asset_map.get(str(asset_id))
+                        if asset_path and not params.get("image_path"):
+                            params["image_path"] = asset_path
+                    media_ref["parameters"] = params
+                    item["media_reference"] = media_ref
 
     def _download_effect_asset(self, path: str) -> str:
         if path.startswith("gs://"):
@@ -1233,10 +1589,17 @@ class FFmpegRenderer:
         return path
 
 
-    def _probe_streams(self, asset_map: dict[str, str]) -> dict[int, set[str]]:
+    def _probe_streams(
+        self, asset_map: dict[str, str], asset_ids: list[str] | None = None
+    ) -> dict[int, set[str]]:
         streams: dict[int, set[str]] = {}
 
-        for idx, (_, asset_path) in enumerate(asset_map.items()):
+        if asset_ids is None:
+            items = list(asset_map.items())
+        else:
+            items = [(asset_id, asset_map[asset_id]) for asset_id in asset_ids if asset_id in asset_map]
+
+        for idx, (_, asset_path) in enumerate(items):
             cmd = [
                 self._ffprobe_bin,
                 "-v",
@@ -1366,8 +1729,8 @@ class FFmpegRenderer:
             timeline, asset_map, input_streams
         )
 
-        for input_file in inputs:
-            cmd.extend(["-i", input_file])
+        for input_entry in inputs:
+            cmd.extend(input_entry.to_args())
 
         if filter_complex:
             cmd.extend(["-filter_complex", filter_complex])
@@ -1387,8 +1750,15 @@ class FFmpegRenderer:
         timeline: dict[str, Any],
         asset_map: dict[str, str],
         input_streams: dict[int, set[str]],
-    ) -> tuple[list[str], str, list[str]]:
-        builder = TimelineToFFmpeg(timeline, asset_map, self.manifest.preset, input_streams)
+    ) -> tuple[list[InputSpec], str, list[str]]:
+        builder = TimelineToFFmpeg(
+            timeline,
+            asset_map,
+            self.manifest.preset,
+            input_streams,
+            temp_dir=self.temp_dir,
+            job_id=self.manifest.job_id,
+        )
         inputs, filter_complex, maps = builder.build()
 
         if not filter_complex and inputs:

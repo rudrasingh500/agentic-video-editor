@@ -23,6 +23,12 @@ try:
 except ImportError:  # pragma: no cover - optional dependency
     get_ffmpeg_exe = None
 
+try:
+    from PIL import Image, ImageDraw
+except ImportError:  # pragma: no cover - optional dependency
+    Image = None
+    ImageDraw = None
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Render test assets with effects")
@@ -132,9 +138,30 @@ def slugify_filename(name: str) -> str:
     return "".join(ch for ch in value if ch.isalnum() or ch in "-_.") or "asset"
 
 
+def build_watermark(output_dir: Path) -> str | None:
+    if Image is None or ImageDraw is None:
+        return None
+    output_dir.mkdir(parents=True, exist_ok=True)
+    watermark_path = output_dir / "watermark_test.png"
+    if watermark_path.exists():
+        return str(watermark_path)
+    image = Image.new("RGBA", (320, 120), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((0, 0, 319, 119), fill=(16, 16, 16, 200))
+    draw.text((20, 40), "WATERMARK", fill=(255, 255, 255, 230))
+    image.save(watermark_path, "PNG")
+    return str(watermark_path)
+
+
 def build_timeline_dict(
-    asset_id: str, asset_name: str, duration_seconds: float, rate: float
+    asset_id: str,
+    asset_name: str,
+    duration_seconds: float,
+    rate: float,
+    watermark_path: str | None = None,
 ) -> dict:
+    canvas_w = 1920
+    canvas_h = 1080
     duration_frames = int(round(duration_seconds * rate))
     source_range = {
         "OTIO_SCHEMA": "TimeRange.1",
@@ -181,6 +208,26 @@ def build_timeline_dict(
         },
         {
             "OTIO_SCHEMA": "Effect.1",
+            "effect_name": "Glow",
+            "metadata": {"type": "glow", "strength": 0.6, "blur": 18},
+        },
+        {
+            "OTIO_SCHEMA": "Effect.1",
+            "effect_name": "ChromaticAberration",
+            "metadata": {"type": "chromatic_aberration", "amount": 1.6},
+        },
+        {
+            "OTIO_SCHEMA": "Effect.1",
+            "effect_name": "Sharpen",
+            "metadata": {"type": "sharpen", "amount": 0.8, "radius": 5},
+        },
+        {
+            "OTIO_SCHEMA": "Effect.1",
+            "effect_name": "Tint",
+            "metadata": {"type": "tint", "color": "#ff8844", "amount": 0.2},
+        },
+        {
+            "OTIO_SCHEMA": "Effect.1",
             "effect_name": "Zoom",
             "metadata": {
                 "type": "zoom",
@@ -206,26 +253,241 @@ def build_timeline_dict(
         "metadata": {},
     }
 
-    caption_clip = {
-        "OTIO_SCHEMA": "Clip.1",
-        "name": "Caption Overlay",
-        "source_range": source_range,
-        "media_reference": {
-            "OTIO_SCHEMA": "GeneratorReference.1",
-            "generator_kind": "caption",
-            "parameters": {
-                "text": "Caption test overlay",
-                "size": 48,
-                "color": "white",
-                "bg_color": "black@0.4",
-                "x": "(w-text_w)/2",
-                "y": "h-140",
+    def generator_clip(name: str, kind: str, params: dict) -> dict:
+        return {
+            "OTIO_SCHEMA": "Clip.1",
+            "name": name,
+            "source_range": source_range,
+            "media_reference": {
+                "OTIO_SCHEMA": "GeneratorReference.1",
+                "generator_kind": kind,
+                "parameters": params,
+            },
+            "effects": [],
+            "markers": [],
+            "metadata": {},
+        }
+
+    caption_clip = generator_clip(
+        "Caption Overlay",
+        "caption",
+        {
+            "text": "Caption test overlay",
+            "size": 44,
+            "color": "#F9FAFB",
+            "bg_color": "#0f172a@0.6",
+            "bg_padding": 16,
+            "bg_radius": 18,
+            "outline_color": "#000000@0.5",
+            "outline_width": 2,
+            "shadow_color": "#000000@0.7",
+            "shadow_offset_x": 2,
+            "shadow_offset_y": 2,
+            "shadow_blur": 6,
+            "align": "center",
+            "text_gradient": {"start": "#FFFFFF", "end": "#FDE68A", "angle": 90},
+            "x": "center",
+            "y": "bottom",
+            "engine": "graphics",
+            "animation": {"type": "fade_in", "duration_ms": 400},
+        },
+    )
+
+    title_clip = generator_clip(
+        "Title Overlay",
+        "title",
+        {
+            "text": "Overlay Test Suite",
+            "size": 80,
+            "color": "#FFFFFF",
+            "text_gradient": {"start": "#FFFFFF", "end": "#A5F3FC", "angle": 0},
+            "shadow_color": "#000000@0.6",
+            "shadow_offset_x": 4,
+            "shadow_offset_y": 4,
+            "shadow_blur": 8,
+            "align": "center",
+            "x": "center",
+            "y": 140,
+            "animation": {"type": "slide_in", "direction": "down", "distance": 60},
+        },
+    )
+
+    lower_third_clip = generator_clip(
+        "Lower Third",
+        "lower_third",
+        {
+            "name": "Alex Rivera",
+            "title": "Narrator",
+            "bg_color": "#111827@0.8",
+            "accent_color": "#38BDF8",
+            "name_color": "#F8FAFC",
+            "title_color": "#E2E8F0",
+            "x": 80,
+            "y": canvas_h - 220,
+            "animation": {"type": "slide_in", "direction": "left", "distance": 80},
+        },
+    )
+
+    shape_clip = generator_clip(
+        "Shape Overlay",
+        "shape",
+        {
+            "shape": "rounded_rect",
+            "width": 420,
+            "height": 140,
+            "x": 120,
+            "y": 120,
+            "radius": 20,
+            "gradient": {"start": "#0EA5E9@0.55", "end": "#7DD3FC@0.2", "angle": 0},
+            "stroke_color": "#38BDF8",
+            "stroke_width": 2,
+        },
+    )
+
+    progress_clip = generator_clip(
+        "Progress Bar",
+        "progress_bar",
+        {
+            "width": 800,
+            "height": 18,
+            "x": (canvas_w - 800) / 2,
+            "y": canvas_h - 80,
+            "bg_color": "#FFFFFF@0.25",
+            "fg_color": "#38BDF8@0.9",
+            "radius": 9,
+            "progress_start": 0.0,
+            "progress_end": 1.0,
+            "animation": {
+                "start_ms": 0,
+                "duration_ms": int(duration_seconds * 1000),
+                "easing": "linear",
             },
         },
-        "effects": [],
-        "markers": [],
-        "metadata": {},
-    }
+    )
+
+    callout_clip = generator_clip(
+        "Call Out",
+        "call_out",
+        {
+            "text": "Call-out target",
+            "size": 28,
+            "box_x": 1240,
+            "box_y": 180,
+            "box_width": 520,
+            "box_height": 140,
+            "box_color": "#0F172A@0.8",
+            "radius": 16,
+            "color": "#F8FAFC",
+            "padding": 16,
+            "line_color": "#FBBF24",
+            "line_width": 4,
+            "target_x": 980,
+            "target_y": 360,
+            "arrow_size": 12,
+            "animation": {"type": "fade_in", "duration_ms": 500},
+        },
+    )
+
+    animated_text_clip = generator_clip(
+        "Animated Text",
+        "animated_text",
+        {
+            "text": "Typewriter Headline",
+            "size": 56,
+            "color": "#F8FAFC",
+            "shadow_color": "#000000@0.6",
+            "shadow_offset_x": 2,
+            "shadow_offset_y": 2,
+            "shadow_blur": 6,
+            "x": "center",
+            "y": 300,
+            "animation_type": "typewriter",
+            "animation": {"duration_ms": 1400, "easing": "ease_in_out"},
+        },
+    )
+
+    watermark_clip = None
+    if watermark_path:
+        watermark_clip = generator_clip(
+            "Watermark",
+            "watermark",
+            {
+                "image_path": watermark_path,
+                "opacity": 0.6,
+                "scale": 0.25,
+                "position": "top_right",
+                "margin": 24,
+            },
+        )
+
+    tracks = [
+        {
+            "OTIO_SCHEMA": "Track.1",
+            "name": "Video",
+            "kind": "Video",
+            "children": [main_clip],
+            "metadata": {},
+        },
+        {
+            "OTIO_SCHEMA": "Track.1",
+            "name": "Captions",
+            "kind": "Video",
+            "children": [caption_clip],
+            "metadata": {},
+        },
+        {
+            "OTIO_SCHEMA": "Track.1",
+            "name": "Title",
+            "kind": "Video",
+            "children": [title_clip],
+            "metadata": {},
+        },
+        {
+            "OTIO_SCHEMA": "Track.1",
+            "name": "Lower Third",
+            "kind": "Video",
+            "children": [lower_third_clip],
+            "metadata": {},
+        },
+        {
+            "OTIO_SCHEMA": "Track.1",
+            "name": "Shapes",
+            "kind": "Video",
+            "children": [shape_clip],
+            "metadata": {},
+        },
+        {
+            "OTIO_SCHEMA": "Track.1",
+            "name": "Progress",
+            "kind": "Video",
+            "children": [progress_clip],
+            "metadata": {},
+        },
+        {
+            "OTIO_SCHEMA": "Track.1",
+            "name": "Call Out",
+            "kind": "Video",
+            "children": [callout_clip],
+            "metadata": {},
+        },
+        {
+            "OTIO_SCHEMA": "Track.1",
+            "name": "Animated Text",
+            "kind": "Video",
+            "children": [animated_text_clip],
+            "metadata": {},
+        },
+    ]
+    if watermark_clip:
+        tracks.append(
+            {
+                "OTIO_SCHEMA": "Track.1",
+                "name": "Watermark",
+                "kind": "Video",
+                "children": [watermark_clip],
+                "metadata": {},
+            }
+        )
 
     return {
         "OTIO_SCHEMA": "Timeline.1",
@@ -234,22 +496,7 @@ def build_timeline_dict(
         "tracks": {
             "OTIO_SCHEMA": "Stack.1",
             "name": "tracks",
-            "children": [
-                {
-                    "OTIO_SCHEMA": "Track.1",
-                    "name": "Video",
-                    "kind": "Video",
-                    "children": [main_clip],
-                    "metadata": {},
-                },
-                {
-                    "OTIO_SCHEMA": "Track.1",
-                    "name": "Captions",
-                    "kind": "Video",
-                    "children": [caption_clip],
-                    "metadata": {},
-                },
-            ],
+            "children": tracks,
             "metadata": {},
         },
         "metadata": {"default_rate": rate},
@@ -304,7 +551,10 @@ def main() -> None:
     output_name = f"render_test_{slugify_filename(asset_path.stem)}.mp4"
     output_path = output_dir / output_name
 
-    timeline = build_timeline_dict(asset_id, asset_path.name, duration, args.rate)
+    watermark_path = build_watermark(output_dir)
+    timeline = build_timeline_dict(
+        asset_id, asset_path.name, duration, args.rate, watermark_path=watermark_path
+    )
     manifest = {
         "job_id": str(uuid4()),
         "project_id": "local-test",

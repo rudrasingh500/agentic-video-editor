@@ -2086,6 +2086,7 @@ def _get_timeline_snapshot(
                 elif isinstance(reference, GeneratorReference):
                     entry["reference_type"] = "generator"
                     entry["generator_kind"] = reference.generator_kind
+                    entry["generator_params"] = reference.parameters
                 elif isinstance(reference, MissingReference):
                     entry["reference_type"] = "missing"
 

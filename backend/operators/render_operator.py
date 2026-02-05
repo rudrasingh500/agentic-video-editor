@@ -519,7 +519,7 @@ def _build_asset_map(
     project_id: UUID,
     timeline: Timeline,
 ) -> dict[str, str]:
-    from models.timeline_models import ExternalReference
+    from models.timeline_models import ExternalReference, GeneratorReference
 
     asset_map: dict[str, str] = {}
     missing: list[str] = []
@@ -539,6 +539,27 @@ def _build_asset_map(
                     .first()
                 )
 
+                if asset:
+                    asset_map[asset_id] = asset.asset_url
+                else:
+                    missing.append(asset_id)
+        elif isinstance(clip.media_reference, GeneratorReference):
+            params = clip.media_reference.parameters or {}
+            for key in ("asset_id", "image_asset_id", "logo_asset_id"):
+                param_id = params.get(key)
+                if not param_id:
+                    continue
+                asset_id = str(param_id)
+                if asset_id in asset_map:
+                    continue
+                asset = (
+                    db.query(Assets)
+                    .filter(
+                        Assets.asset_id == asset_id,
+                        Assets.project_id == project_id,
+                    )
+                    .first()
+                )
                 if asset:
                     asset_map[asset_id] = asset.asset_url
                 else:

@@ -604,8 +604,8 @@ class TimelineToFFmpeg:
             )
         else:
             self._video_filters.append(
-                f"color=c=black:s={width}x{height}:d={segment.duration}:r={framerate},"
-                f"setsar=1[{label}]"
+                f"color=c=black@0.0:s={width}x{height}:d={segment.duration}:r={framerate},"
+                f"format=rgba,setsar=1[{label}]"
             )
         return label
 
@@ -737,6 +737,30 @@ class TimelineToFFmpeg:
                 current = self._apply_simple_video_filter(
                     current, f"noise=alls={amount}:allf=t+u"
                 )
+                continue
+            if effect_type == "glow":
+                current = self._apply_glow(current, metadata)
+                continue
+            if effect_type in {"chromatic_aberration", "chromatic"}:
+                current = self._apply_chromatic_aberration(current, metadata)
+                continue
+            if effect_type == "sharpen":
+                current = self._apply_sharpen(current, metadata)
+                continue
+            if effect_type in {"black_and_white", "bw", "monochrome"}:
+                current = self._apply_simple_video_filter(current, "hue=s=0")
+                continue
+            if effect_type == "sepia":
+                current = self._apply_sepia(current)
+                continue
+            if effect_type == "pixelate":
+                current = self._apply_pixelate(current, metadata)
+                continue
+            if effect_type == "edge_glow":
+                current = self._apply_edge_glow(current, metadata)
+                continue
+            if effect_type == "tint":
+                current = self._apply_tint(current, metadata)
                 continue
             if effect_type == "stabilize":
                 strength = float(metadata.get("strength", 0.5))
@@ -967,6 +991,129 @@ class TimelineToFFmpeg:
             f"d={frames}:s={canvas_w}x{canvas_h}:fps={framerate}"
         )
         return self._apply_simple_video_filter(input_label, expr)
+
+    def _apply_glow(self, input_label: str, metadata: dict[str, Any]) -> str:
+        strength = float(metadata.get("strength", 0.6))
+        strength = max(0.0, min(1.0, strength))
+        blur = float(metadata.get("blur", 20))
+        blur = max(0.1, blur)
+
+        base_label = f"vglow_base_{self._filter_counter}"
+        glow_label = f"vglow_src_{self._filter_counter}"
+        blur_label = f"vglow_blur_{self._filter_counter}"
+        out_label = f"vglow_out_{self._filter_counter}"
+        self._filter_counter += 1
+
+        self._video_filters.append(
+            f"[{input_label}]split=2[{base_label}][{glow_label}]"
+        )
+        self._video_filters.append(
+            f"[{glow_label}]gblur=sigma={blur}[{blur_label}]"
+        )
+        self._video_filters.append(
+            f"[{base_label}][{blur_label}]blend=all_mode=screen:all_opacity={strength}"
+            f"[{out_label}]"
+        )
+        return out_label
+
+    def _apply_chromatic_aberration(
+        self, input_label: str, metadata: dict[str, Any]
+    ) -> str:
+        amount = float(metadata.get("amount", 2.0))
+        rh = metadata.get("red_x", amount)
+        rv = metadata.get("red_y", amount)
+        gh = metadata.get("green_x", -amount)
+        gv = metadata.get("green_y", 0.0)
+        bh = metadata.get("blue_x", 0.0)
+        bv = metadata.get("blue_y", -amount)
+        expr = (
+            f"rgbashift=rh={rh}:rv={rv}:gh={gh}:gv={gv}:"
+            f"bh={bh}:bv={bv}"
+        )
+        return self._apply_simple_video_filter(input_label, expr)
+
+    def _apply_sharpen(self, input_label: str, metadata: dict[str, Any]) -> str:
+        amount = float(metadata.get("amount", 1.0))
+        radius = int(metadata.get("radius", 5))
+        radius = max(3, min(radius, 15))
+        expr = (
+            f"unsharp=luma_msize_x={radius}:luma_msize_y={radius}:"
+            f"luma_amount={amount}"
+        )
+        return self._apply_simple_video_filter(input_label, expr)
+
+    def _apply_sepia(self, input_label: str) -> str:
+        expr = (
+            "colorchannelmixer=0.393:0.769:0.189:0:"
+            "0.349:0.686:0.168:0:"
+            "0.272:0.534:0.131:0"
+        )
+        return self._apply_simple_video_filter(input_label, expr)
+
+    def _apply_pixelate(self, input_label: str, metadata: dict[str, Any]) -> str:
+        block = int(metadata.get("block_size", 12))
+        block = max(1, block)
+        expr = (
+            f"scale=iw/{block}:ih/{block}:flags=neighbor,"
+            f"scale=iw:ih:flags=neighbor"
+        )
+        return self._apply_simple_video_filter(input_label, expr)
+
+    def _apply_edge_glow(self, input_label: str, metadata: dict[str, Any]) -> str:
+        strength = float(metadata.get("strength", 0.7))
+        strength = max(0.0, min(1.0, strength))
+        low = float(metadata.get("low", 0.1))
+        high = float(metadata.get("high", 0.4))
+        blur = float(metadata.get("blur", 2.0))
+
+        base_label = f"vedge_base_{self._filter_counter}"
+        edge_label = f"vedge_src_{self._filter_counter}"
+        glow_label = f"vedge_glow_{self._filter_counter}"
+        out_label = f"vedge_out_{self._filter_counter}"
+        self._filter_counter += 1
+
+        self._video_filters.append(
+            f"[{input_label}]split=2[{base_label}][{edge_label}]"
+        )
+        edge_expr = f"edgedetect=low={low}:high={high}"
+        if blur > 0:
+            edge_expr += f",gblur=sigma={blur}"
+        self._video_filters.append(f"[{edge_label}]{edge_expr}[{glow_label}]")
+        self._video_filters.append(
+            f"[{base_label}][{glow_label}]blend=all_mode=screen:all_opacity={strength}"
+            f"[{out_label}]"
+        )
+        return out_label
+
+    def _apply_tint(self, input_label: str, metadata: dict[str, Any]) -> str:
+        if "color" in metadata:
+            r, g, b = self._parse_hex_color(str(metadata.get("color")))
+            amount = float(metadata.get("amount", 0.3))
+            rs = (r - 0.5) * 2 * amount
+            gs = (g - 0.5) * 2 * amount
+            bs = (b - 0.5) * 2 * amount
+            expr = f"colorbalance=rs={rs:.3f}:gs={gs:.3f}:bs={bs:.3f}"
+            return self._apply_simple_video_filter(input_label, expr)
+
+        red = metadata.get("red", 0)
+        green = metadata.get("green", 0)
+        blue = metadata.get("blue", 0)
+        expr = f"colorbalance=rs={red}:gs={green}:bs={blue}"
+        return self._apply_simple_video_filter(input_label, expr)
+
+    def _parse_hex_color(self, value: str) -> tuple[float, float, float]:
+        raw = value.strip()
+        if raw.startswith("#"):
+            raw = raw[1:]
+        if len(raw) >= 6:
+            try:
+                r = int(raw[0:2], 16) / 255.0
+                g = int(raw[2:4], 16) / 255.0
+                b = int(raw[4:6], 16) / 255.0
+                return r, g, b
+            except ValueError:
+                return 0.0, 0.0, 0.0
+        return 0.0, 0.0, 0.0
 
     def _apply_ducking(self, input_label: str, metadata: dict[str, Any]) -> str:
         segments = metadata.get("segments", [])
@@ -1205,15 +1352,84 @@ class TimelineToFFmpeg:
         return self._concat_audio_segments(audio_outputs)
 
     def _map_transition_type(self, trans_type: TransitionType) -> str:
+        value = trans_type.value
         mapping = {
-            TransitionType.SMPTE_DISSOLVE: "dissolve",
-            TransitionType.FADE_IN: "fade",
-            TransitionType.FADE_OUT: "fade",
-            TransitionType.WIPE: "wipeleft",
-            TransitionType.SLIDE: "slideleft",
-            TransitionType.CUSTOM: "dissolve",
+            TransitionType.SMPTE_DISSOLVE.value: "dissolve",
+            TransitionType.FADE_IN.value: "fade",
+            TransitionType.FADE_OUT.value: "fade",
+            TransitionType.WIPE.value: "wipeleft",
+            TransitionType.SLIDE.value: "slideleft",
+            TransitionType.CUSTOM.value: "dissolve",
         }
-        return mapping.get(trans_type, "dissolve")
+        if value in mapping:
+            return mapping[value]
+        xfade_transitions = {
+            "custom",
+            "fade",
+            "wipeleft",
+            "wiperight",
+            "wipeup",
+            "wipedown",
+            "slideleft",
+            "slideright",
+            "slideup",
+            "slidedown",
+            "circlecrop",
+            "rectcrop",
+            "distance",
+            "fadeblack",
+            "fadewhite",
+            "radial",
+            "smoothleft",
+            "smoothright",
+            "smoothup",
+            "smoothdown",
+            "circleopen",
+            "circleclose",
+            "vertopen",
+            "vertclose",
+            "horzopen",
+            "horzclose",
+            "dissolve",
+            "pixelize",
+            "diagtl",
+            "diagtr",
+            "diagbl",
+            "diagbr",
+            "hlslice",
+            "hrslice",
+            "vuslice",
+            "vdslice",
+            "hblur",
+            "fadegrays",
+            "wipetl",
+            "wipetr",
+            "wipebl",
+            "wipebr",
+            "squeezeh",
+            "squeezev",
+            "zoomin",
+            "fadefast",
+            "fadeslow",
+            "hlwind",
+            "hrwind",
+            "vuwind",
+            "vdwind",
+            "coverleft",
+            "coverright",
+            "coverup",
+            "coverdown",
+            "revealleft",
+            "revealright",
+            "revealup",
+            "revealdown",
+        }
+        lower = value.lower()
+        if lower == "custom":
+            return "dissolve"
+        if lower in xfade_transitions:
+            return lower
+        return "dissolve"
 
     def _combine_filters(self) -> str:
         all_filters = self._video_filters + self._audio_filters
