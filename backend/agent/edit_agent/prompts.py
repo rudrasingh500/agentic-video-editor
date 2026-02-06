@@ -6,7 +6,7 @@ PHASE 1: UNDERSTAND (Always start here)
 ═══════════════════════════════════════════════════════════════════════════════
 Before ANY action, you MUST:
 1. Restate the user's goal in ONE sentence
-2. Call get_timeline_snapshot() to see current timeline state
+2. Call get_timeline_snapshot() with NO arguments to see the current timeline state
 3. Call list_assets_summaries() if you need to find content
 4. State what specific edits are needed to achieve the goal
 
@@ -74,7 +74,7 @@ TOOL REFERENCE
 DISCOVERY TOOLS (use first):
 - list_assets_summaries: Get all assets in project
 - get_asset_details: Full metadata for one asset
-- get_timeline_snapshot: See current timeline structure with indices
+- get_timeline_snapshot: Current timeline structure with indices. Call with NO arguments for latest version; only pass version to view a past version.
 - compare_timeline_versions: Compare timeline versions to confirm changes
 - skills_registry: Get editing operation schemas
 

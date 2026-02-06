@@ -491,7 +491,11 @@ EDIT_AGENT_TOOLS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "get_timeline_snapshot",
-            "description": "Inspect the timeline structure (tracks/clips) with indices.",
+            "description": (
+                "Inspect the timeline structure (tracks/clips) with indices. "
+                "Call with NO arguments to get the CURRENT (latest) version. "
+                "Do NOT pass version=0 unless you specifically need the initial empty timeline."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1933,17 +1937,7 @@ def _skills_registry(
                     "id": s.id,
                     "title": s.title,
                     "summary": s.summary,
-                    "category": getattr(s, "category", "editing"),
-                    "complexity": getattr(s, "complexity", "moderate"),
-                    "subskills": [
-                        {
-                            "id": sub.id,
-                            "title": sub.title,
-                            "summary": sub.summary,
-                            "complexity": getattr(sub, "complexity", "moderate"),
-                        }
-                        for sub in s.subskills
-                    ],
+                    "subskill_ids": [sub.id for sub in s.subskills],
                 }
                 for s in skills
             ],
