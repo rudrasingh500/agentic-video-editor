@@ -808,6 +808,88 @@ class SnippetMergeSuggestion(Base):
     )
 
 
+class AssetGeneration(Base):
+    __tablename__ = "asset_generations"
+
+    generation_id = Column(
+        UUID, unique=True, index=True, nullable=False, primary_key=True, default=uuid4
+    )
+    project_id = Column(
+        UUID,
+        ForeignKey("projects.project_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    timeline_id = Column(
+        UUID,
+        ForeignKey("timelines.timeline_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    request_origin = Column(String, nullable=False, default="user")
+    requestor = Column(String, nullable=False, default="system")
+    provider = Column(String, nullable=False, default="openrouter")
+    model = Column(String, nullable=False)
+    mode = Column(String, nullable=False)  # image, insert_frames, replace_frames
+    status = Column(String, nullable=False, default="pending")
+    prompt = Column(String, nullable=False)
+    parameters = Column(JSONB, nullable=False, default=dict)
+    reference_asset_id = Column(
+        UUID,
+        ForeignKey("assets.asset_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    reference_snippet_id = Column(
+        UUID,
+        ForeignKey("snippets.snippet_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    reference_identity_id = Column(
+        UUID,
+        ForeignKey("snippet_identities.identity_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    reference_character_model_id = Column(
+        UUID,
+        ForeignKey("character_models.character_model_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    target_asset_id = Column(
+        UUID,
+        ForeignKey("assets.asset_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    frame_range = Column(JSONB, nullable=True)
+    frame_indices = Column(JSONB, nullable=True)
+    generated_asset_id = Column(
+        UUID,
+        ForeignKey("assets.asset_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    applied_asset_id = Column(
+        UUID,
+        ForeignKey("assets.asset_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    request_context = Column(JSONB, nullable=False, default=dict)
+    decision_reason = Column(String, nullable=True)
+    error_message = Column(String, nullable=True)
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
+    updated_at = Column(
+        DateTime,
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+    decided_at = Column(DateTime, nullable=True)
+    applied_at = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        Index("ix_asset_generations_project", project_id),
+        Index("ix_asset_generations_status", status),
+        Index("ix_asset_generations_target_asset", target_asset_id),
+        Index("ix_asset_generations_created_at", created_at),
+    )
+
+
 class GenerationReferenceAnchor(Base):
     __tablename__ = "generation_reference_anchors"
 

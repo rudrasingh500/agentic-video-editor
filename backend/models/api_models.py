@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -76,6 +76,81 @@ class AssetDeleteResponse(BaseModel):
 class AssetReindexResponse(BaseModel):
     ok: bool
     asset: AssetResponse
+
+
+class GenerationFrameRange(BaseModel):
+    start_frame: int
+    end_frame: int
+
+
+class GenerationCreateRequest(BaseModel):
+    prompt: str
+    mode: str = "image"
+    target_asset_id: str | None = None
+    frame_range: GenerationFrameRange | None = None
+    frame_indices: list[int] | None = None
+    frame_repeat_count: int | None = None
+    reference_asset_id: str | None = None
+    reference_snippet_id: str | None = None
+    reference_identity_id: str | None = None
+    reference_character_model_id: str | None = None
+    model: str | None = None
+    parameters: dict[str, Any] = Field(default_factory=dict)
+    timeline_id: str | None = None
+    request_context: dict[str, Any] = Field(default_factory=dict)
+
+
+class GenerationDecisionRequest(BaseModel):
+    decision: Literal["approve", "deny"]
+    reason: str | None = None
+
+
+class GenerationResponse(BaseModel):
+    generation_id: str
+    project_id: str
+    timeline_id: str | None = None
+    request_origin: str
+    requestor: str
+    provider: str
+    model: str
+    mode: str
+    status: str
+    prompt: str
+    parameters: dict[str, Any] = Field(default_factory=dict)
+    reference_asset_id: str | None = None
+    reference_snippet_id: str | None = None
+    reference_identity_id: str | None = None
+    reference_character_model_id: str | None = None
+    target_asset_id: str | None = None
+    frame_range: dict[str, Any] | None = None
+    frame_indices: list[int] | None = None
+    frame_repeat_count: int | None = None
+    generated_asset: AssetResponse | None = None
+    generated_preview_url: str | None = None
+    applied_asset: AssetResponse | None = None
+    applied_preview_url: str | None = None
+    request_context: dict[str, Any] = Field(default_factory=dict)
+    decision_reason: str | None = None
+    error_message: str | None = None
+    created_at: datetime
+    updated_at: datetime
+    decided_at: datetime | None = None
+    applied_at: datetime | None = None
+
+
+class GenerationCreateResponse(BaseModel):
+    ok: bool
+    generation: GenerationResponse
+
+
+class GenerationDecisionResponse(BaseModel):
+    ok: bool
+    generation: GenerationResponse
+
+
+class GenerationDetailResponse(BaseModel):
+    ok: bool
+    generation: GenerationResponse
 
 
 class OutputUploadUrlRequest(BaseModel):

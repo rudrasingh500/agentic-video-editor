@@ -19,6 +19,23 @@ def _resolve_content_type(
 ) -> str:
     if content_type and content_type != "application/octet-stream":
         return content_type
+
+    ext = os.path.splitext(asset_name)[1].lower()
+    fallback_map = {
+        ".webp": "image/webp",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+        ".gif": "image/gif",
+        ".mp4": "video/mp4",
+        ".mov": "video/quicktime",
+        ".webm": "video/webm",
+        ".mp3": "audio/mpeg",
+        ".wav": "audio/wav",
+    }
+    if ext in fallback_map:
+        return fallback_map[ext]
+
     guessed, _ = mimetypes.guess_type(asset_name)
     return guessed or content_type or "application/octet-stream"
 

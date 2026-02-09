@@ -63,6 +63,12 @@ from operators.render_operator import (
     poll_job_status,
     update_job_status,
 )
+from operators.generation_operator import (
+    create_generation,
+    decide_generation,
+    get_asset_preview_url,
+    get_generation_assets,
+)
 from utils.gcs_utils import generate_signed_url, parse_gcs_url
 from utils.embeddings import get_query_embedding
 from utils.video_utils import (
@@ -727,6 +733,93 @@ EDIT_AGENT_TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "generate_nano_banana_asset",
+            "description": (
+                "Generate an image or frame-edit candidate with Nano Banana Pro via OpenRouter. "
+                "Always review the preview first, then call decide_generated_asset to approve or deny."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prompt": {"type": "string"},
+                    "mode": {
+                        "type": "string",
+                        "enum": ["image", "insert_frames", "replace_frames"],
+                        "default": "image",
+                    },
+                    "target_asset_id": {
+                        "type": "string",
+                        "description": "Required for insert_frames/replace_frames",
+                    },
+                    "frame_range": {
+                        "type": "object",
+                        "properties": {
+                            "start_frame": {"type": "integer"},
+                            "end_frame": {"type": "integer"},
+                        },
+                        "required": ["start_frame", "end_frame"],
+                    },
+                    "frame_indices": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                    },
+                    "frame_repeat_count": {
+                        "type": "integer",
+                        "description": (
+                            "How many consecutive frames to use the generated image for. "
+                            "For replace: replaces that many frames starting at each selected frame. "
+                            "For insert: inserts that many copies at each selected frame."
+                        ),
+                        "minimum": 1,
+                    },
+                    "reference_asset_id": {
+                        "type": "string",
+                        "description": "Optional reference image asset UUID",
+                    },
+                    "reference_snippet_id": {
+                        "type": "string",
+                        "description": "Optional snippet UUID for generation reference",
+                    },
+                    "reference_identity_id": {
+                        "type": "string",
+                        "description": "Optional identity UUID (uses canonical snippet)",
+                    },
+                    "reference_character_model_id": {
+                        "type": "string",
+                        "description": "Optional character model UUID (uses canonical snippet)",
+                    },
+                    "model": {"type": "string"},
+                    "parameters": {"type": "object"},
+                },
+                "required": ["prompt"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "decide_generated_asset",
+            "description": (
+                "Approve or deny a previously generated Nano Banana asset. "
+                "For frame operations, approval applies the edit to the target video and stores a derived video asset."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "generation_id": {"type": "string"},
+                    "decision": {
+                        "type": "string",
+                        "enum": ["approve", "deny"],
+                    },
+                    "reason": {"type": "string"},
+                },
+                "required": ["generation_id", "decision"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "render_output",
             "description": "Render a preview output and return job details.",
             "parameters": {
@@ -908,6 +1001,64 @@ def _categorize_exception(exc: Exception) -> tuple[str, ErrorSeverity]:
     return "UNKNOWN_ERROR", ErrorSeverity.SYSTEM
 
 
+def _generate_nano_banana_asset(
+    project_id: str,
+    user_id: str,
+    timeline_id: str,
+    db: Session,
+    prompt: str,
+    mode: str = "image",
+    target_asset_id: str | None = None,
+    frame_range: dict[str, Any] | None = None,
+    frame_indices: list[int] | None = None,
+    frame_repeat_count: int | None = None,
+    reference_asset_id: str | None = None,
+    reference_snippet_id: str | None = None,
+    reference_identity_id: str | None = None,
+    reference_character_model_id: str | None = None,
+    model: str | None = None,
+    parameters: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return _generate_nano_banana_asset_impl(
+        project_id=project_id,
+        user_id=user_id,
+        timeline_id=timeline_id,
+        db=db,
+        prompt=prompt,
+        mode=mode,
+        target_asset_id=target_asset_id,
+        frame_range=frame_range,
+        frame_indices=frame_indices,
+        frame_repeat_count=frame_repeat_count,
+        reference_asset_id=reference_asset_id,
+        reference_snippet_id=reference_snippet_id,
+        reference_identity_id=reference_identity_id,
+        reference_character_model_id=reference_character_model_id,
+        model=model,
+        parameters=parameters,
+    )
+
+
+def _decide_generated_asset(
+    project_id: str,
+    user_id: str,
+    timeline_id: str,
+    db: Session,
+    generation_id: str,
+    decision: str,
+    reason: str | None = None,
+) -> dict[str, Any]:
+    return _decide_generated_asset_impl(
+        project_id=project_id,
+        user_id=user_id,
+        timeline_id=timeline_id,
+        db=db,
+        generation_id=generation_id,
+        decision=decision,
+        reason=reason,
+    )
+
+
 def execute_tool(
     tool_name: str,
     arguments: dict[str, Any],
@@ -946,6 +1097,8 @@ def execute_tool(
         "edit_timeline": _edit_timeline,
         "undo_to_version": _undo_to_version,
         "view_asset": _view_asset,
+        "generate_nano_banana_asset": _generate_nano_banana_asset,
+        "decide_generated_asset": _decide_generated_asset,
         "render_output": _render_output,
         "view_render_output": _view_render_output,
         "run_quality_checks": _run_quality_checks,
@@ -2721,6 +2874,213 @@ def _view_asset(
     result["size_bytes"] = len(content_to_embed)
 
     return result
+
+
+def _generate_nano_banana_asset_impl(
+    project_id: str,
+    user_id: str,
+    timeline_id: str,
+    db: Session,
+    prompt: str,
+    mode: str = "image",
+    target_asset_id: str | None = None,
+    frame_range: dict[str, Any] | None = None,
+    frame_indices: list[int] | None = None,
+    frame_repeat_count: int | None = None,
+    reference_asset_id: str | None = None,
+    reference_snippet_id: str | None = None,
+    reference_identity_id: str | None = None,
+    reference_character_model_id: str | None = None,
+    model: str | None = None,
+    parameters: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    try:
+        generation = create_generation(
+            db=db,
+            project_id=UUID(project_id),
+            prompt=prompt,
+            mode=mode,
+            requestor=f"agent:{user_id}",
+            request_origin="agent",
+            timeline_id=UUID(timeline_id) if timeline_id else None,
+            target_asset_id=UUID(target_asset_id) if target_asset_id else None,
+            frame_range=frame_range,
+            frame_indices=frame_indices,
+            frame_repeat_count=frame_repeat_count,
+            reference_asset_id=UUID(reference_asset_id) if reference_asset_id else None,
+            reference_snippet_id=UUID(reference_snippet_id) if reference_snippet_id else None,
+            reference_identity_id=(
+                UUID(reference_identity_id) if reference_identity_id else None
+            ),
+            reference_character_model_id=(
+                UUID(reference_character_model_id)
+                if reference_character_model_id
+                else None
+            ),
+            model=model,
+            parameters=parameters,
+            request_context={"initiated_by": "agent_tool"},
+        )
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    generated_asset, applied_asset = get_generation_assets(db, generation)
+    payload = _generation_payload(generation, generated_asset, applied_asset)
+    generated_preview_url = payload.get("generated_preview_url")
+
+    result: dict[str, Any] = {
+        "ok": True,
+        "generation": payload,
+        "approval_required": True,
+        "next_action": (
+            "Call decide_generated_asset with decision='approve' to apply, "
+            "or decision='deny' to reject."
+        ),
+    }
+
+    if generated_preview_url and generated_asset:
+        preview_bytes = _download_url_bytes(generated_preview_url, timeout_seconds=120)
+        if preview_bytes is not None:
+            result["_multimodal"] = {
+                "type": "image",
+                "content_type": generated_asset.asset_type or "image/png",
+                "data": base64.b64encode(preview_bytes).decode("utf-8"),
+            }
+
+    return result
+
+
+def _decide_generated_asset_impl(
+    project_id: str,
+    user_id: str,
+    timeline_id: str,
+    db: Session,
+    generation_id: str,
+    decision: str,
+    reason: str | None = None,
+) -> dict[str, Any]:
+    try:
+        generation = decide_generation(
+            db=db,
+            project_id=UUID(project_id),
+            generation_id=UUID(generation_id),
+            decision=decision,
+            decided_by=f"agent:{user_id}",
+            reason=reason,
+        )
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    generated_asset, applied_asset = get_generation_assets(db, generation)
+    payload = _generation_payload(generation, generated_asset, applied_asset)
+    result = {
+        "ok": True,
+        "generation": payload,
+        "decision": decision,
+        "reason": reason,
+    }
+
+    if decision == "approve" and generation.mode in {"insert_frames", "replace_frames"}:
+        if applied_asset:
+            result["message"] = (
+                "Frame edit approved and applied. Use view_asset on applied_asset.asset_id "
+                "to inspect the derived video before using it in timeline edits."
+            )
+        else:
+            result["message"] = "Approval recorded, but frame application failed."
+    elif decision == "deny":
+        result["message"] = "Generation denied. Asset remains stored for traceability."
+    else:
+        result["message"] = "Decision recorded."
+
+    return result
+
+
+def _generation_asset_payload(asset: Assets | None) -> dict[str, Any] | None:
+    if not asset:
+        return None
+    return {
+        "asset_id": str(asset.asset_id),
+        "asset_name": asset.asset_name,
+        "asset_type": asset.asset_type,
+        "asset_url": asset.asset_url,
+        "indexing_status": asset.indexing_status,
+    }
+
+
+def _generation_payload(
+    generation,
+    generated_asset: Assets | None,
+    applied_asset: Assets | None,
+) -> dict[str, Any]:
+    return {
+        "generation_id": str(generation.generation_id),
+        "project_id": str(generation.project_id),
+        "timeline_id": str(generation.timeline_id) if generation.timeline_id else None,
+        "request_origin": generation.request_origin,
+        "requestor": generation.requestor,
+        "provider": generation.provider,
+        "model": generation.model,
+        "mode": generation.mode,
+        "status": generation.status,
+        "prompt": generation.prompt,
+        "parameters": generation.parameters or {},
+        "reference_asset_id": (
+            str(generation.reference_asset_id) if generation.reference_asset_id else None
+        ),
+        "reference_snippet_id": (
+            str(generation.reference_snippet_id) if generation.reference_snippet_id else None
+        ),
+        "reference_identity_id": (
+            str(generation.reference_identity_id) if generation.reference_identity_id else None
+        ),
+        "reference_character_model_id": (
+            str(generation.reference_character_model_id)
+            if generation.reference_character_model_id
+            else None
+        ),
+        "target_asset_id": str(generation.target_asset_id) if generation.target_asset_id else None,
+        "frame_range": generation.frame_range,
+        "frame_indices": generation.frame_indices,
+        "frame_repeat_count": _coerce_int((generation.parameters or {}).get("frame_repeat_count")),
+        "generated_asset": _generation_asset_payload(generated_asset),
+        "generated_preview_url": get_asset_preview_url(generated_asset),
+        "applied_asset": _generation_asset_payload(applied_asset),
+        "applied_preview_url": get_asset_preview_url(applied_asset),
+        "request_context": generation.request_context or {},
+        "decision_reason": generation.decision_reason,
+        "error_message": generation.error_message,
+        "created_at": (
+            generation.created_at.isoformat() if getattr(generation, "created_at", None) else None
+        ),
+        "updated_at": (
+            generation.updated_at.isoformat() if getattr(generation, "updated_at", None) else None
+        ),
+        "decided_at": (
+            generation.decided_at.isoformat() if getattr(generation, "decided_at", None) else None
+        ),
+        "applied_at": (
+            generation.applied_at.isoformat() if getattr(generation, "applied_at", None) else None
+        ),
+    }
+
+
+def _coerce_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            return int(text)
+        except ValueError:
+            return None
+    return None
 
 
 def _coerce_render_preset(preset: dict[str, Any]) -> RenderPreset:

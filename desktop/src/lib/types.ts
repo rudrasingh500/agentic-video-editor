@@ -107,3 +107,65 @@ export type CharacterModel = {
   created_at: string
   updated_at: string
 }
+
+export type GenerationMode = 'image' | 'insert_frames' | 'replace_frames'
+
+export type GenerationFrameRange = {
+  start_frame: number
+  end_frame: number
+}
+
+export type GenerationCreatePayload = {
+  prompt: string
+  mode: GenerationMode
+  target_asset_id?: string | null
+  frame_range?: GenerationFrameRange | null
+  frame_indices?: number[] | null
+  frame_repeat_count?: number | null
+  reference_asset_id?: string | null
+  reference_snippet_id?: string | null
+  reference_identity_id?: string | null
+  reference_character_model_id?: string | null
+  model?: string | null
+  parameters?: Record<string, unknown>
+  timeline_id?: string | null
+  request_context?: Record<string, unknown>
+}
+
+export type GenerationDecisionPayload = {
+  decision: 'approve' | 'deny'
+  reason?: string | null
+}
+
+export type GenerationRecord = {
+  generation_id: string
+  project_id: string
+  timeline_id?: string | null
+  request_origin: string
+  requestor: string
+  provider: string
+  model: string
+  mode: GenerationMode | string
+  status: string
+  prompt: string
+  parameters: Record<string, unknown>
+  reference_asset_id?: string | null
+  reference_snippet_id?: string | null
+  reference_identity_id?: string | null
+  reference_character_model_id?: string | null
+  target_asset_id?: string | null
+  frame_range?: Record<string, unknown> | null
+  frame_indices?: number[] | null
+  frame_repeat_count?: number | null
+  generated_asset?: Asset | null
+  generated_preview_url?: string | null
+  applied_asset?: Asset | null
+  applied_preview_url?: string | null
+  request_context?: Record<string, unknown>
+  decision_reason?: string | null
+  error_message?: string | null
+  created_at: string
+  updated_at: string
+  decided_at?: string | null
+  applied_at?: string | null
+}

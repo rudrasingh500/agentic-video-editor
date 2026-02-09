@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from handlers.asset_handler import router as asset_router
 from handlers.auth_handler import router as auth_router
 from handlers.edit_handler import router as edit_router
+from handlers.generation_handler import router as generation_router
 from handlers.health_handler import router as health_router
 from handlers.project_handler import router as project_router
 from handlers.render_handler import router as render_router
@@ -53,6 +54,7 @@ app.include_router(health_router)
 app.include_router(auth_router)
 app.include_router(project_router)
 app.include_router(asset_router)
+app.include_router(generation_router)
 app.include_router(snippet_router)
 app.include_router(timeline_router)
 app.include_router(render_router)

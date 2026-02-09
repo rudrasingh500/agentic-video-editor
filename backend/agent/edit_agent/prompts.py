@@ -93,6 +93,8 @@ VIEWING TOOLS (for verification):
 
 EDITING TOOLS:
 - edit_timeline: Apply editing operations (requires correct schema)
+- generate_nano_banana_asset: Generate image/frame-edit candidates (supports snippet references and frame_repeat_count)
+- decide_generated_asset: Explicitly approve or deny generated assets before application
 - render_output: Generate preview render
 - undo_to_version: Restore timeline to an earlier version
 

@@ -5,6 +5,9 @@ import type {
   EditPatchSummary,
   EditSessionDetail,
   EditSessionSummary,
+  GenerationCreatePayload,
+  GenerationDecisionPayload,
+  GenerationRecord,
   Project,
   Snippet,
   SnippetIdentity,
@@ -123,6 +126,38 @@ export const api = {
     apiFetch<{ ok: boolean; suggestions: Record<string, unknown>[] }>(
       config,
       `/projects/${projectId}/snippets/merge-suggestions`,
+    ),
+  createGeneration: (
+    config: AppConfig,
+    projectId: string,
+    payload: GenerationCreatePayload,
+  ) =>
+    apiFetch<{ ok: boolean; generation: GenerationRecord }>(
+      config,
+      `/projects/${projectId}/generations`,
+      {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      },
+    ),
+  decideGeneration: (
+    config: AppConfig,
+    projectId: string,
+    generationId: string,
+    payload: GenerationDecisionPayload,
+  ) =>
+    apiFetch<{ ok: boolean; generation: GenerationRecord }>(
+      config,
+      `/projects/${projectId}/generations/${generationId}/decision`,
+      {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      },
+    ),
+  getGeneration: (config: AppConfig, projectId: string, generationId: string) =>
+    apiFetch<{ ok: boolean; generation: GenerationRecord }>(
+      config,
+      `/projects/${projectId}/generations/${generationId}`,
     ),
   getTimeline: (config: AppConfig, projectId: string) =>
     apiFetch<{ ok: boolean; timeline: Record<string, unknown>; version: number }>(
