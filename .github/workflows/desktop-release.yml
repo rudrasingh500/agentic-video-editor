@@ -1,0 +1,75 @@
+name: desktop-release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "desktop-v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: render-job/requirements.txt
+
+      - name: Install ffmpeg
+        shell: pwsh
+        run: choco install ffmpeg -y --no-progress
+
+      - name: Install renderer build dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r render-job/requirements.txt
+          python -m pip install pyinstaller
+
+      - name: Install desktop dependencies
+        shell: bash
+        working-directory: desktop
+        run: npm ci
+
+      - name: Build desktop release
+        shell: bash
+        working-directory: desktop
+        env:
+          VITE_BACKEND_URL: ${{ secrets.VITE_BACKEND_URL }}
+          VITE_DEV_TOKEN: ""
+          VITE_SESSION_TOKEN: ""
+          VITE_WEBHOOK_TOKEN: ""
+          VITE_RENDER_WEBHOOK_SECRET: ""
+        run: |
+          if [ -z "$VITE_BACKEND_URL" ]; then
+            export VITE_BACKEND_URL="http://localhost:8000"
+          fi
+          npm run build
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-windows-release
+          path: desktop/release/**/*
+
+      - name: Create GitHub release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: desktop/release/**/*

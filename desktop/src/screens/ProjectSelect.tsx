@@ -2,7 +2,6 @@ import { useMemo, useState } from 'react'
 import {
   Plus,
   RefreshCw,
-  Settings,
   Film,
   Trash2,
   ChevronRight,
@@ -20,7 +19,6 @@ type ProjectSelectProps = {
   onSelect: (project: Project) => void
   onRefresh: () => void
   onDelete?: (projectId: string) => void
-  onOpenSettings: () => void
 }
 
 const formatDate = (value?: string) => {
@@ -42,7 +40,6 @@ const ProjectSelect = ({
   onSelect,
   onRefresh,
   onDelete,
-  onOpenSettings,
 }: ProjectSelectProps) => {
   const [showCreate, setShowCreate] = useState(false)
   const [projectName, setProjectName] = useState('')
@@ -53,19 +50,13 @@ const ProjectSelect = ({
   return (
     <div className="min-h-screen bg-neutral-950 bg-gradient-mesh">
       {/* Header */}
-      <header className="flex h-14 items-center justify-between border-b border-neutral-800/50 px-6">
+      <header className="flex h-14 items-center border-b border-neutral-800/50 px-6">
         <div className="flex items-center gap-3">
           <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-accent-500">
             <Film className="h-4 w-4 text-white" />
           </div>
           <span className="text-sm font-semibold text-neutral-200">Auteur</span>
         </div>
-        <button
-          onClick={onOpenSettings}
-          className="rounded-lg p-2 text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200 transition-colors"
-        >
-          <Settings className="h-4 w-4" />
-        </button>
       </header>
 
       {/* Main content */}
@@ -192,13 +183,6 @@ const ProjectSelect = ({
 
           {/* Footer links */}
           <div className="mt-8 flex items-center justify-center gap-6 text-xs text-neutral-500">
-            <button
-              className="hover:text-neutral-300 transition-colors"
-              onClick={onOpenSettings}
-            >
-              Settings
-            </button>
-            <span className="text-neutral-700">|</span>
             <button className="hover:text-neutral-300 transition-colors">
               Documentation
             </button>

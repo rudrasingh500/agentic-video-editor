@@ -95,3 +95,11 @@ Cloud Run is the default execution mode. The backend uploads the manifest to GCS
 You can set defaults without changing request payloads:
 
 - `RENDER_EXECUTION_MODE`: `cloud` (default) or `local`
+
+## Deployment and CI/CD
+
+See `DEPLOYMENT.md` for:
+
+- Railway backend deployment (API + worker + Postgres + Redis)
+- Backend CI workflow setup
+- Desktop release workflow with PyInstaller + ffmpeg bundling

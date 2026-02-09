@@ -170,7 +170,7 @@ const ChatSidebar = ({
                     Ask the assistant to edit your video.
                   </p>
                   <p className="text-2xs mt-1 text-neutral-700">
-                    Try "remove silences" or "add captions"
+                    Try "trim pauses" or "create a highlight cut"
                   </p>
                 </div>
               </div>

@@ -62,6 +62,52 @@ type GpuInfo = {
 
 const renderProcesses = new Map<string, ReturnType<typeof spawn>>()
 
+const platformExecutable = (name: string) =>
+  process.platform === 'win32' ? `${name}.exe` : name
+
+const resolveBundledResource = (name: string): string | null => {
+  if (!app.isPackaged) {
+    return null
+  }
+
+  const candidates = [
+    path.join(process.resourcesPath, 'render-bundle', name),
+    path.join(process.resourcesPath, name),
+  ]
+
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      return candidate
+    }
+  }
+
+  return null
+}
+
+const resolveRendererBinary = (): string | null => {
+  const override = process.env.RENDERER_BIN
+  if (override && fs.existsSync(override)) {
+    return override
+  }
+  return resolveBundledResource(platformExecutable('renderer'))
+}
+
+const resolveFfmpegBin = (): string => {
+  const override = process.env.FFMPEG_BIN
+  if (override && fs.existsSync(override)) {
+    return override
+  }
+  return resolveBundledResource(platformExecutable('ffmpeg')) ?? 'ffmpeg'
+}
+
+const resolveFfprobeBin = (): string => {
+  const override = process.env.FFPROBE_BIN
+  if (override && fs.existsSync(override)) {
+    return override
+  }
+  return resolveBundledResource(platformExecutable('ffprobe')) ?? 'ffprobe'
+}
+
 const ensureDir = (target: string) => {
   fs.mkdirSync(target, { recursive: true })
 }
@@ -129,7 +175,7 @@ const createProgressServer = async (
 }
 
 const detectGpu = async (): Promise<GpuInfo> => {
-  const ffmpegBin = process.env.FFMPEG_BIN || 'ffmpeg'
+  const ffmpegBin = resolveFfmpegBin()
 
   const noGpu = (detail: string): GpuInfo => ({
     available: false,
@@ -358,6 +404,7 @@ ipcMain.handle('render:start', async (_event, args: RenderStartArgs) => {
   const renderJobDir = resolveRenderJobDir()
   const entrypoint = path.join(renderJobDir, 'entrypoint.py')
   const pythonBin = process.env.PYTHON_BIN || 'python'
+  const bundledRenderer = resolveRendererBinary()
   const tempDir = path.join(app.getPath('temp'), 'auteur-render')
 
   ensureDir(tempDir)
@@ -368,10 +415,26 @@ ipcMain.handle('render:start', async (_event, args: RenderStartArgs) => {
     RENDER_INPUT_DIR: getAssetCacheRoot(),
     RENDER_OUTPUT_DIR: outputRoot,
     RENDER_TEMP_DIR: tempDir,
+    FFMPEG_BIN: resolveFfmpegBin(),
+    FFPROBE_BIN: resolveFfprobeBin(),
   }
 
-  const child = spawn(pythonBin, [entrypoint, '--manifest', manifestPath, '--job-id', jobId], {
-    cwd: renderJobDir,
+  const rendererArgs = ['--manifest', manifestPath, '--job-id', jobId]
+
+  let command = pythonBin
+  let commandArgs = [entrypoint, ...rendererArgs]
+  let commandCwd = renderJobDir
+
+  if (bundledRenderer) {
+    command = bundledRenderer
+    commandArgs = rendererArgs
+    commandCwd = path.dirname(bundledRenderer)
+  } else if (app.isPackaged) {
+    throw new Error('Bundled renderer executable not found in resources/render-bundle')
+  }
+
+  const child = spawn(command, commandArgs, {
+    cwd: commandCwd,
     env,
     stdio: ['ignore', 'pipe', 'pipe'],
   })

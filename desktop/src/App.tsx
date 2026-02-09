@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import ProjectSelect from './screens/ProjectSelect'
 import Editor from './screens/Editor'
-import SettingsModal from './components/SettingsModal'
 import { api } from './lib/api'
 import { loadConfig, saveConfig, type AppConfig } from './lib/config'
 import type { Project } from './lib/types'
@@ -12,7 +11,6 @@ const App = () => {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [activeProject, setActiveProject] = useState<Project | null>(null)
-  const [settingsOpen, setSettingsOpen] = useState(false)
 
   const ensureSession = useCallback(async (activeConfig: AppConfig): Promise<AppConfig> => {
     if (activeConfig.sessionToken) {
@@ -127,7 +125,6 @@ const App = () => {
           project={activeProject}
           config={config}
           onBack={() => setActiveProject(null)}
-          onOpenSettings={() => setSettingsOpen(true)}
         />
       ) : (
         <ProjectSelect
@@ -138,16 +135,8 @@ const App = () => {
           onSelect={setActiveProject}
           onRefresh={refreshProjects}
           onDelete={handleDeleteProject}
-          onOpenSettings={() => setSettingsOpen(true)}
         />
       )}
-
-      <SettingsModal
-        open={settingsOpen}
-        config={config}
-        onClose={() => setSettingsOpen(false)}
-        onSave={setConfig}
-      />
     </>
   )
 }

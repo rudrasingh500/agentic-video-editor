@@ -9,11 +9,8 @@ import {
 import {
   Home,
   Film,
-  Settings,
   Play,
   Upload,
-  Mic,
-  Captions,
   Trash2,
   ChevronRight,
   Download,
@@ -49,7 +46,6 @@ type EditorProps = {
   project: Project
   config: AppConfig
   onBack: () => void
-  onOpenSettings: () => void
 }
 
 type ChatMessage = {
@@ -106,28 +102,111 @@ type GenerationFormState = {
   referenceAssetId: string
 }
 
-const buildStandardPreset = (useGpu: boolean, gpuBackend?: GpuBackend) => ({
-  name: useGpu ? 'Standard Export (GPU)' : 'Standard Export',
-  quality: 'standard',
-  video: {
-    codec: 'h264',
-    width: null,
-    height: null,
-    framerate: null,
-    bitrate: null,
+type RenderQuality = 'draft' | 'standard' | 'high' | 'maximum'
+
+type RenderCodec = 'h264' | 'h265'
+
+type RenderResolution = 'source' | '720p' | '1080p' | '1440p' | '2160p'
+
+type RenderFrameRate = 'source' | '24' | '30' | '60'
+
+type RenderSettingsState = {
+  outputFilename: string
+  quality: RenderQuality
+  codec: RenderCodec
+  resolution: RenderResolution
+  frameRate: RenderFrameRate
+  useGpu: boolean
+}
+
+const RENDER_QUALITY_DEFAULTS: Record<
+  RenderQuality,
+  { name: string; crf: number; preset: string; audioBitrate: string }
+> = {
+  draft: {
+    name: 'Draft Export',
+    crf: 28,
+    preset: 'veryfast',
+    audioBitrate: '128k',
+  },
+  standard: {
+    name: 'Standard Export',
     crf: 23,
     preset: 'medium',
-    pixel_format: 'yuv420p',
+    audioBitrate: '192k',
   },
-  audio: {
-    codec: 'aac',
-    bitrate: '192k',
-    sample_rate: 48000,
-    channels: 2,
+  high: {
+    name: 'High Quality Export',
+    crf: 18,
+    preset: 'slow',
+    audioBitrate: '320k',
   },
-  use_gpu: useGpu,
-  gpu_backend: useGpu ? gpuBackend ?? 'nvidia' : null,
+  maximum: {
+    name: 'Maximum Quality Export',
+    crf: 15,
+    preset: 'veryslow',
+    audioBitrate: '320k',
+  },
+}
+
+const RENDER_RESOLUTION_DIMENSIONS: Record<
+  RenderResolution,
+  { width: number | null; height: number | null }
+> = {
+  source: { width: null, height: null },
+  '720p': { width: 1280, height: 720 },
+  '1080p': { width: 1920, height: 1080 },
+  '1440p': { width: 2560, height: 1440 },
+  '2160p': { width: 3840, height: 2160 },
+}
+
+const buildDefaultRenderSettings = (projectName: string): RenderSettingsState => ({
+  outputFilename: `${projectName.replace(/\s+/g, '_')}.mp4`,
+  quality: 'standard',
+  codec: 'h264',
+  resolution: 'source',
+  frameRate: 'source',
+  useGpu: true,
 })
+
+const normalizeOutputFilename = (rawFilename: string, projectName: string) => {
+  const fallback = `${projectName.replace(/\s+/g, '_')}.mp4`
+  const candidate = rawFilename.trim() || fallback
+  const sanitized = candidate.replace(/[\\/:*?"<>|]+/g, '_')
+  return sanitized.toLowerCase().endsWith('.mp4') ? sanitized : `${sanitized}.mp4`
+}
+
+const buildRenderPreset = (settings: RenderSettingsState, gpuInfo: GpuInfo | null) => {
+  const defaults = RENDER_QUALITY_DEFAULTS[settings.quality]
+  const dimensions = RENDER_RESOLUTION_DIMENSIONS[settings.resolution]
+  const frameRate = settings.frameRate === 'source' ? null : Number(settings.frameRate)
+  const useGpu = settings.useGpu && Boolean(gpuInfo?.available)
+  const gpuBackend =
+    gpuInfo?.backend && gpuInfo.backend !== 'none' ? gpuInfo.backend : 'nvidia'
+
+  return {
+    name: useGpu ? `${defaults.name} (GPU)` : defaults.name,
+    quality: settings.quality,
+    video: {
+      codec: settings.codec,
+      width: dimensions.width,
+      height: dimensions.height,
+      framerate: frameRate,
+      bitrate: null,
+      crf: defaults.crf,
+      preset: defaults.preset,
+      pixel_format: 'yuv420p',
+    },
+    audio: {
+      codec: 'aac',
+      bitrate: defaults.audioBitrate,
+      sample_rate: 48000,
+      channels: 2,
+    },
+    use_gpu: useGpu,
+    gpu_backend: useGpu ? gpuBackend : null,
+  }
+}
 
 const toFileUrl = (filePath: string) => {
   const normalized = filePath.replace(/\\/g, '/')
@@ -148,7 +227,7 @@ const formatGpuBackendLabel = (backend: GpuBackend) => {
   return 'Auto'
 }
 
-const Editor = ({ project, config, onBack, onOpenSettings }: EditorProps) => {
+const Editor = ({ project, config, onBack }: EditorProps) => {
   const [assets, setAssets] = useState<Asset[]>([])
   const [assetsLoading, setAssetsLoading] = useState(false)
   const [assetsError, setAssetsError] = useState<string | null>(null)
@@ -177,6 +256,10 @@ const Editor = ({ project, config, onBack, onOpenSettings }: EditorProps) => {
   const [snippetsLoading, setSnippetsLoading] = useState(false)
   const [generationBusy, setGenerationBusy] = useState(false)
   const [generationError, setGenerationError] = useState<string | null>(null)
+  const [renderSettingsOpen, setRenderSettingsOpen] = useState(false)
+  const [renderSettings, setRenderSettings] = useState<RenderSettingsState>(() =>
+    buildDefaultRenderSettings(project.project_name),
+  )
   const [generateModalOpen, setGenerateModalOpen] = useState(false)
   const [generationReviewOpen, setGenerationReviewOpen] = useState(false)
   const [pendingGeneration, setPendingGeneration] = useState<GenerationRecord | null>(null)
@@ -437,6 +520,16 @@ const Editor = ({ project, config, onBack, onOpenSettings }: EditorProps) => {
       active = false
     }
   }, [])
+
+  useEffect(() => {
+    setRenderSettings(buildDefaultRenderSettings(project.project_name))
+  }, [project.project_id, project.project_name])
+
+  useEffect(() => {
+    if (gpuInfo?.available === false) {
+      setRenderSettings((prev) => (prev.useGpu ? { ...prev, useGpu: false } : prev))
+    }
+  }, [gpuInfo?.available, project.project_id])
 
   const uploadRenderOutput = useCallback(
     async (jobId: string, outputPath: string) => {
@@ -977,15 +1070,18 @@ const Editor = ({ project, config, onBack, onOpenSettings }: EditorProps) => {
   }
 
   const handleRender = async () => {
-    const useGpu = gpuInfo?.available ?? false
-    const gpuBackend = gpuInfo?.backend ?? 'none'
+    const outputFilename = normalizeOutputFilename(
+      renderSettings.outputFilename,
+      project.project_name,
+    )
+    const preset = buildRenderPreset(renderSettings, gpuInfo)
     setOutputPanelOpen(true)
     try {
       const jobResponse = await api.createRenderJob(config, project.project_id, {
         job_type: 'export',
         execution_mode: 'local',
-        preset: buildStandardPreset(useGpu, gpuBackend),
-        output_filename: `${project.project_name.replace(/\s+/g, '_')}.mp4`,
+        preset,
+        output_filename: outputFilename,
       })
 
       const jobId = jobResponse.job.job_id
@@ -1003,16 +1099,21 @@ const Editor = ({ project, config, onBack, onOpenSettings }: EditorProps) => {
 
       const updatedManifest = await prepareLocalManifest(
         manifestData,
-        buildStandardPreset(useGpu, gpuBackend),
+        preset,
       )
 
       const renderResult = await window.desktopApi.startRender({
         jobId,
         projectId: project.project_id,
         manifest: updatedManifest,
-        outputName: `${project.project_name.replace(/\s+/g, '_')}_export.mp4`,
+        outputName: outputFilename,
       })
 
+      setRenderSettings((prev) =>
+        prev.outputFilename === outputFilename
+          ? prev
+          : { ...prev, outputFilename },
+      )
       setRenderState((prev) => ({ ...prev, outputPath: renderResult.outputPath }))
     } catch (error) {
       setRenderState((prev) => ({
@@ -1084,10 +1185,10 @@ const Editor = ({ project, config, onBack, onOpenSettings }: EditorProps) => {
               : 'CPU Mode'}
           </span>
           <button
-            onClick={onOpenSettings}
-            className="rounded-lg p-2 text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200 transition-colors"
+            onClick={() => setRenderSettingsOpen(true)}
+            className="rounded-lg border border-neutral-700 bg-neutral-800 px-3 py-1.5 text-xs font-medium text-neutral-300 hover:border-neutral-600 hover:bg-neutral-700 transition-colors"
           >
-            <Settings className="h-4 w-4" />
+            Render Settings
           </button>
           <button
             onClick={handleRender}
@@ -1213,12 +1314,6 @@ const Editor = ({ project, config, onBack, onOpenSettings }: EditorProps) => {
                   >
                     <Sparkles className="h-3.5 w-3.5" />
                     Generate
-                  </button>
-                  <button className="rounded-lg border border-neutral-700 bg-neutral-800 p-2 text-neutral-400 hover:border-neutral-600 hover:bg-neutral-700 hover:text-neutral-300 transition-colors">
-                    <Mic className="h-3.5 w-3.5" />
-                  </button>
-                  <button className="rounded-lg border border-neutral-700 bg-neutral-800 p-2 text-neutral-400 hover:border-neutral-600 hover:bg-neutral-700 hover:text-neutral-300 transition-colors">
-                    <Captions className="h-3.5 w-3.5" />
                   </button>
                 </div>
               </div>
@@ -1357,6 +1452,150 @@ const Editor = ({ project, config, onBack, onOpenSettings }: EditorProps) => {
           gpuAvailable={gpuInfo?.available}
         />
       </div>
+
+      <Modal
+        open={renderSettingsOpen}
+        title="Render Settings"
+        onClose={() => setRenderSettingsOpen(false)}
+      >
+        <div className="space-y-4">
+          <label className="block space-y-1">
+            <span className="text-xs text-neutral-400">Output Filename</span>
+            <input
+              type="text"
+              value={renderSettings.outputFilename}
+              onChange={(event) =>
+                setRenderSettings((prev) => ({
+                  ...prev,
+                  outputFilename: event.target.value,
+                }))
+              }
+              className="w-full rounded border border-neutral-700 bg-neutral-800 px-3 py-2 text-sm text-neutral-200 focus:border-accent-500 focus:outline-none"
+              placeholder="my_video.mp4"
+            />
+          </label>
+
+          <div className="grid grid-cols-2 gap-3">
+            <label className="block space-y-1">
+              <span className="text-xs text-neutral-400">Quality</span>
+              <select
+                value={renderSettings.quality}
+                onChange={(event) =>
+                  setRenderSettings((prev) => ({
+                    ...prev,
+                    quality: event.target.value as RenderQuality,
+                  }))
+                }
+                className="w-full rounded border border-neutral-700 bg-neutral-800 px-3 py-2 text-sm text-neutral-200 focus:border-accent-500 focus:outline-none"
+              >
+                <option value="draft">Draft</option>
+                <option value="standard">Standard</option>
+                <option value="high">High</option>
+                <option value="maximum">Maximum</option>
+              </select>
+            </label>
+
+            <label className="block space-y-1">
+              <span className="text-xs text-neutral-400">Video Codec</span>
+              <select
+                value={renderSettings.codec}
+                onChange={(event) =>
+                  setRenderSettings((prev) => ({
+                    ...prev,
+                    codec: event.target.value as RenderCodec,
+                  }))
+                }
+                className="w-full rounded border border-neutral-700 bg-neutral-800 px-3 py-2 text-sm text-neutral-200 focus:border-accent-500 focus:outline-none"
+              >
+                <option value="h264">H.264</option>
+                <option value="h265">H.265</option>
+              </select>
+            </label>
+
+            <label className="block space-y-1">
+              <span className="text-xs text-neutral-400">Resolution</span>
+              <select
+                value={renderSettings.resolution}
+                onChange={(event) =>
+                  setRenderSettings((prev) => ({
+                    ...prev,
+                    resolution: event.target.value as RenderResolution,
+                  }))
+                }
+                className="w-full rounded border border-neutral-700 bg-neutral-800 px-3 py-2 text-sm text-neutral-200 focus:border-accent-500 focus:outline-none"
+              >
+                <option value="source">Source</option>
+                <option value="720p">720p</option>
+                <option value="1080p">1080p</option>
+                <option value="1440p">1440p</option>
+                <option value="2160p">4K (2160p)</option>
+              </select>
+            </label>
+
+            <label className="block space-y-1">
+              <span className="text-xs text-neutral-400">Frame Rate</span>
+              <select
+                value={renderSettings.frameRate}
+                onChange={(event) =>
+                  setRenderSettings((prev) => ({
+                    ...prev,
+                    frameRate: event.target.value as RenderFrameRate,
+                  }))
+                }
+                className="w-full rounded border border-neutral-700 bg-neutral-800 px-3 py-2 text-sm text-neutral-200 focus:border-accent-500 focus:outline-none"
+              >
+                <option value="source">Source</option>
+                <option value="24">24 fps</option>
+                <option value="30">30 fps</option>
+                <option value="60">60 fps</option>
+              </select>
+            </label>
+          </div>
+
+          <label className="flex items-center justify-between rounded border border-neutral-800 bg-neutral-900 px-3 py-2">
+            <div>
+              <p className="text-sm text-neutral-200">Use GPU acceleration</p>
+              <p className="text-2xs text-neutral-500">
+                {gpuInfo?.available
+                  ? `Available (${formatGpuBackendLabel(gpuInfo.backend)})`
+                  : 'Unavailable on this machine'}
+              </p>
+            </div>
+            <input
+              type="checkbox"
+              checked={renderSettings.useGpu}
+              onChange={(event) =>
+                setRenderSettings((prev) => ({
+                  ...prev,
+                  useGpu: event.target.checked,
+                }))
+              }
+              disabled={!gpuInfo?.available}
+              className="h-4 w-4 rounded border-neutral-600 bg-neutral-800 text-accent-500 focus:ring-accent-500/50 disabled:opacity-60"
+            />
+          </label>
+
+          <div className="flex justify-end gap-3">
+            <button
+              onClick={() =>
+                setRenderSettings({
+                  ...buildDefaultRenderSettings(project.project_name),
+                  useGpu: gpuInfo?.available ?? false,
+                })
+              }
+              className="rounded border border-neutral-700 px-4 py-2 text-sm text-neutral-300 hover:bg-neutral-800"
+            >
+              Reset
+            </button>
+            <button
+              onClick={() => setRenderSettingsOpen(false)}
+              className="rounded bg-accent-500 px-4 py-2 text-sm font-medium text-white hover:bg-accent-600"
+            >
+              Done
+            </button>
+          </div>
+        </div>
+      </Modal>
 
       <Modal
         open={generateModalOpen}
