@@ -7,9 +7,12 @@ from database.base import get_db
 from database.models import Assets
 from utils.gcs_utils import download_file
 from utils.embeddings import get_embedding, build_embedding_text
+from operators.snippet_operator import create_snippet
 
 from .analyzers import extract_metadata
 from .entity_linker import link_asset_entities
+from .snippet_extractor import extract_snippets_from_asset
+from .snippet_linker import strict_auto_link_snippet
 
 ASSET_BUCKET = os.getenv("GCS_BUCKET", "video-editor")
 logger = logging.getLogger(__name__)
@@ -101,6 +104,85 @@ def process_asset(asset_id: str, project_id: str) -> None:
             except Exception as e:
                 logger.warning(
                     "Entity linking failed for asset %s: %s (non-fatal)",
+                    asset_id,
+                    str(e),
+                )
+
+            # Extract snippets (face/person) and auto-link identities
+            try:
+                extracted_snippets = extract_snippets_from_asset(content, content_type)
+                snippet_results = {
+                    "created": 0,
+                    "auto_attached": 0,
+                    "suggested": 0,
+                    "new_identity": 0,
+                    "skipped": 0,
+                    "failed": 0,
+                }
+                for item in extracted_snippets:
+                    snippet_type = item.get("snippet_type", "face")
+                    try:
+                        with db.begin_nested():
+                            snippet_source_type = (
+                                "generated_asset"
+                                if str(asset.asset_type).startswith("image/")
+                                else "video_ingest"
+                            )
+                            snippet = create_snippet(
+                                db=db,
+                                project_id=asset.project_id,
+                                asset_id=asset.asset_id,
+                                snippet_type=snippet_type,
+                                source_type=snippet_source_type,
+                                source_ref={
+                                    "asset_id": str(asset.asset_id),
+                                    "asset_name": asset.asset_name,
+                                    "asset_type": asset.asset_type,
+                                },
+                                frame_index=item.get("frame_index"),
+                                timestamp_ms=item.get("timestamp_ms"),
+                                bbox=item.get("bbox"),
+                                descriptor=item.get("descriptor"),
+                                embedding=item.get("embedding"),
+                                tags=item.get("tags") or [],
+                                quality_score=item.get("quality_score"),
+                                crop_bytes=item.get("crop_bytes"),
+                                preview_bytes=item.get("preview_bytes"),
+                                created_by="system:asset_processor",
+                            )
+                            snippet_results["created"] += 1
+
+                            if snippet.snippet_type not in {"face", "item"}:
+                                snippet_results["skipped"] += 1
+                                continue
+
+                            decision = strict_auto_link_snippet(db, snippet)
+                            key = decision.get("decision")
+                            if key in snippet_results:
+                                snippet_results[key] += 1
+                    except Exception as snippet_error:
+                        snippet_results["failed"] += 1
+                        logger.warning(
+                            (
+                                "Snippet create/link failed for asset %s "
+                                "frame=%s type=%s: %s"
+                            ),
+                            asset_id,
+                            item.get("frame_index"),
+                            snippet_type,
+                            str(snippet_error),
+                        )
+
+                db.commit()
+                logger.info(
+                    "Snippet extraction for asset %s: %s",
+                    asset_id,
+                    snippet_results,
+                )
+            except Exception as e:
+                db.rollback()
+                logger.warning(
+                    "Snippet extraction/linking failed for asset %s: %s (non-fatal)",
                     asset_id,
                     str(e),
                 )
