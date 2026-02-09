@@ -46,6 +46,20 @@ type RenderProgressPayload = {
   output_size_bytes?: number | null
 }
 
+type GpuBackend = 'nvidia' | 'amd' | 'apple'
+
+type EncoderSupport = {
+  h264: boolean
+  h265: boolean
+}
+
+type GpuInfo = {
+  available: boolean
+  detail: string
+  backend: GpuBackend | 'none'
+  encoders: EncoderSupport
+}
+
 const renderProcesses = new Map<string, ReturnType<typeof spawn>>()
 
 const ensureDir = (target: string) => {
@@ -114,27 +128,83 @@ const createProgressServer = async (
   return { server, port }
 }
 
-const detectGpu = async () => {
+const detectGpu = async (): Promise<GpuInfo> => {
   const ffmpegBin = process.env.FFMPEG_BIN || 'ffmpeg'
+
+  const noGpu = (detail: string): GpuInfo => ({
+    available: false,
+    detail,
+    backend: 'none',
+    encoders: { h264: false, h265: false },
+  })
+
+  const backendSupport: Record<GpuBackend, EncoderSupport> = {
+    nvidia: { h264: false, h265: false },
+    amd: { h264: false, h265: false },
+    apple: { h264: false, h265: false },
+  }
+
   try {
     const { stdout } = await execFileAsync(ffmpegBin, ['-hide_banner', '-encoders'])
-    if (stdout.includes('h264_nvenc') || stdout.includes('hevc_nvenc')) {
-      return { available: true, detail: 'NVENC detected via FFmpeg' }
+
+    backendSupport.nvidia = {
+      h264: stdout.includes('h264_nvenc'),
+      h265: stdout.includes('hevc_nvenc'),
+    }
+    backendSupport.amd = {
+      h264: stdout.includes('h264_amf'),
+      h265: stdout.includes('hevc_amf'),
+    }
+    backendSupport.apple = {
+      h264: stdout.includes('h264_videotoolbox'),
+      h265: stdout.includes('hevc_videotoolbox'),
+    }
+
+    const preferredBackends: GpuBackend[] =
+      process.platform === 'darwin'
+        ? ['apple', 'nvidia', 'amd']
+        : ['nvidia', 'amd', 'apple']
+
+    for (const backend of preferredBackends) {
+      const encoders = backendSupport[backend]
+      if (!encoders.h264 && !encoders.h265) {
+        continue
+      }
+
+      const backendLabel =
+        backend === 'nvidia'
+          ? 'NVENC'
+          : backend === 'amd'
+            ? 'AMD AMF'
+            : 'VideoToolbox'
+      const codecLabel =
+        encoders.h264 && encoders.h265
+          ? 'H.264/H.265'
+          : encoders.h264
+            ? 'H.264'
+            : 'H.265'
+
+      return {
+        available: true,
+        detail: `${backendLabel} detected via FFmpeg (${codecLabel})`,
+        backend,
+        encoders,
+      }
     }
   } catch (error) {
-    // Ignore and fallback to nvidia-smi check.
+    // Ignore and fallback to additional checks.
   }
 
   try {
     const { stdout } = await execFileAsync('nvidia-smi', ['-L'])
     if (stdout.toLowerCase().includes('gpu')) {
-      return { available: true, detail: 'GPU detected via nvidia-smi' }
+      return noGpu('NVIDIA GPU found, but FFmpeg hardware encoders are unavailable')
     }
   } catch (error) {
     // Ignore.
   }
 
-  return { available: false, detail: 'No NVIDIA GPU detected' }
+  return noGpu('No compatible GPU encoder detected')
 }
 
 function createWindow() {

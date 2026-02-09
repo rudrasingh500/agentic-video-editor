@@ -17,18 +17,29 @@ Use the helper script to render the assets in `backend/test_assets` to `backend/
    video-render-cpu `
    local_render.py --input-dir /inputs --output-dir /outputs
 
-# GPU
- docker build -f .\render-job\Dockerfile.gpu -t video-render-gpu .\render-job
- docker run --rm --gpus all --entrypoint python `
+# GPU (auto backend)
+  docker build -f .\render-job\Dockerfile.gpu -t video-render-gpu .\render-job
+  docker run --rm --gpus all --entrypoint python `
+    -e RENDER_INPUT_DIR=/inputs `
+    -e RENDER_OUTPUT_DIR=/outputs `
+   -v "C:\Users\rudra\Documents\Granite\video_editor\backend\test_assets:/inputs" `
+   -v "C:\Users\rudra\Documents\Granite\video_editor\backend\test_outputs:/outputs" `
+    video-render-gpu `
+    local_render.py --input-dir /inputs --output-dir /outputs --use-gpu
+
+# GPU (force AMD AMF backend when available)
+ docker run --rm --entrypoint python `
    -e RENDER_INPUT_DIR=/inputs `
    -e RENDER_OUTPUT_DIR=/outputs `
    -v "C:\Users\rudra\Documents\Granite\video_editor\backend\test_assets:/inputs" `
    -v "C:\Users\rudra\Documents\Granite\video_editor\backend\test_outputs:/outputs" `
-   video-render-gpu `
-   local_render.py --input-dir /inputs --output-dir /outputs --use-gpu
+   video-render-cpu `
+   local_render.py --input-dir /inputs --output-dir /outputs --use-gpu --gpu-backend amd
 ```
 
 `local_render.py` writes a manifest JSON next to each output so you can inspect the exact job payload.
+When `--use-gpu` is enabled, the renderer now supports NVIDIA NVENC, AMD AMF, and Apple VideoToolbox.
+If a requested GPU backend/codec is unavailable in your FFmpeg build, rendering falls back to CPU encoding.
 
 ## Backend-configured local rendering (GCS-backed)
 

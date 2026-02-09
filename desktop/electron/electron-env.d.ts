@@ -31,7 +31,15 @@ interface Window {
       documents: string
       temp: string
     }>
-    getGpuInfo: () => Promise<{ available: boolean; detail: string }>
+    getGpuInfo: () => Promise<{
+      available: boolean
+      detail: string
+      backend: 'nvidia' | 'amd' | 'apple' | 'none'
+      encoders: {
+        h264: boolean
+        h265: boolean
+      }
+    }>
     cacheAsset: (args: { assetId: string; sourcePath: string }) => Promise<{ path: string }>
     downloadAsset: (args: {
       assetId: string

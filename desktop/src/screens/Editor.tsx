@@ -74,7 +74,19 @@ type RenderJobSummary = {
   metadata?: Record<string, unknown>
 }
 
-const buildStandardPreset = (useGpu: boolean) => ({
+type GpuBackend = 'nvidia' | 'amd' | 'apple' | 'none'
+
+type GpuInfo = {
+  available: boolean
+  detail: string
+  backend: GpuBackend
+  encoders: {
+    h264: boolean
+    h265: boolean
+  }
+}
+
+const buildStandardPreset = (useGpu: boolean, gpuBackend?: GpuBackend) => ({
   name: useGpu ? 'Standard Export (GPU)' : 'Standard Export',
   quality: 'standard',
   video: {
@@ -94,12 +106,26 @@ const buildStandardPreset = (useGpu: boolean) => ({
     channels: 2,
   },
   use_gpu: useGpu,
+  gpu_backend: useGpu ? gpuBackend ?? 'nvidia' : null,
 })
 
 const toFileUrl = (filePath: string) => {
   const normalized = filePath.replace(/\\/g, '/')
   const prefix = normalized.startsWith('/') ? '' : '/'
   return encodeURI(`file://${prefix}${normalized}`)
+}
+
+const formatGpuBackendLabel = (backend: GpuBackend) => {
+  if (backend === 'nvidia') {
+    return 'NVENC'
+  }
+  if (backend === 'amd') {
+    return 'AMD AMF'
+  }
+  if (backend === 'apple') {
+    return 'VideoToolbox'
+  }
+  return 'Auto'
 }
 
 const Editor = ({ project, config, onBack, onOpenSettings }: EditorProps) => {
@@ -111,9 +137,7 @@ const Editor = ({ project, config, onBack, onOpenSettings }: EditorProps) => {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [pendingPatches, setPendingPatches] = useState<EditPatchSummary[]>([])
-  const [gpuInfo, setGpuInfo] = useState<{ available: boolean; detail: string } | null>(
-    null,
-  )
+  const [gpuInfo, setGpuInfo] = useState<GpuInfo | null>(null)
   const [renderState, setRenderState] = useState<RenderState>({})
   const [renderLogs, setRenderLogs] = useState<string[]>([])
   const [previewPath, setPreviewPath] = useState<string | null>(null)
@@ -326,7 +350,12 @@ const Editor = ({ project, config, onBack, onOpenSettings }: EditorProps) => {
         }
       } catch (error) {
         if (active) {
-          setGpuInfo({ available: false, detail: 'GPU detection failed' })
+          setGpuInfo({
+            available: false,
+            detail: 'GPU detection failed',
+            backend: 'none',
+            encoders: { h264: false, h265: false },
+          })
         }
       }
     }
@@ -707,12 +736,13 @@ const Editor = ({ project, config, onBack, onOpenSettings }: EditorProps) => {
 
   const handleRender = async () => {
     const useGpu = gpuInfo?.available ?? false
+    const gpuBackend = gpuInfo?.backend ?? 'none'
     setOutputPanelOpen(true)
     try {
       const jobResponse = await api.createRenderJob(config, project.project_id, {
         job_type: 'export',
         execution_mode: 'local',
-        preset: buildStandardPreset(useGpu),
+        preset: buildStandardPreset(useGpu, gpuBackend),
         output_filename: `${project.project_name.replace(/\s+/g, '_')}.mp4`,
       })
 
@@ -731,7 +761,7 @@ const Editor = ({ project, config, onBack, onOpenSettings }: EditorProps) => {
 
       const updatedManifest = await prepareLocalManifest(
         manifestData,
-        buildStandardPreset(useGpu),
+        buildStandardPreset(useGpu, gpuBackend),
       )
 
       const renderResult = await window.desktopApi.startRender({
@@ -797,7 +827,9 @@ const Editor = ({ project, config, onBack, onOpenSettings }: EditorProps) => {
 
         <div className="flex items-center gap-2">
           <span className="text-2xs text-neutral-500 mr-2">
-            {gpuInfo?.available ? 'GPU Accelerated' : 'CPU Mode'}
+            {gpuInfo?.available
+              ? `GPU (${formatGpuBackendLabel(gpuInfo.backend)})`
+              : 'CPU Mode'}
           </span>
           <button
             onClick={onOpenSettings}

@@ -33,7 +33,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--use-gpu",
         action="store_true",
-        help="Use GPU encoding (NVENC)",
+        help="Use GPU encoding (auto-detect backend)",
+    )
+    parser.add_argument(
+        "--gpu-backend",
+        choices=["auto", "nvidia", "amd", "apple"],
+        default="auto",
+        help="Preferred GPU backend when --use-gpu is enabled",
     )
     return parser.parse_args()
 
@@ -127,6 +133,7 @@ def build_manifest(
     timeline: dict[str, Any],
     output_path: str,
     use_gpu: bool,
+    gpu_backend: str | None,
 ) -> dict[str, Any]:
     return {
         "job_id": str(uuid4()),
@@ -154,6 +161,7 @@ def build_manifest(
                 "channels": 2,
             },
             "use_gpu": use_gpu,
+            "gpu_backend": gpu_backend if use_gpu else None,
         },
         "input_bucket": "local",
         "output_bucket": "local",
@@ -181,13 +189,14 @@ def render_asset(
     output_dir: Path,
     rate: float,
     use_gpu: bool,
+    gpu_backend: str | None,
 ) -> tuple[Path, Path]:
     timeline = build_timeline_dict(asset, rate)
     output_filename = (
         f"{slugify_filename(asset.path.stem)}_{'gpu' if use_gpu else 'cpu'}.mp4"
     )
     output_path = output_dir / output_filename
-    manifest = build_manifest(asset, timeline, str(output_path), use_gpu)
+    manifest = build_manifest(asset, timeline, str(output_path), use_gpu, gpu_backend)
 
     manifest_path = output_dir / f"{slugify_filename(asset.path.stem)}_manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
@@ -217,9 +226,11 @@ def main() -> None:
     if not assets:
         raise SystemExit(f"No .mp4 assets found in {input_dir}")
 
+    gpu_backend = None if args.gpu_backend == "auto" else args.gpu_backend
+
     for asset in assets:
         output_path, manifest_path = render_asset(
-            asset, output_dir, args.rate, args.use_gpu
+            asset, output_dir, args.rate, args.use_gpu, gpu_backend
         )
         print(f"Rendered {asset.path.name} -> {output_path}")
         print(f"Manifest saved: {manifest_path}")

@@ -3,6 +3,7 @@ import json
 import logging
 import math
 import os
+import platform
 import re
 import shutil
 import subprocess
@@ -1465,6 +1466,7 @@ class FFmpegRenderer:
         self._storage_client: storage.Client | None = None
         self._ffmpeg_bin = os.environ.get("FFMPEG_BIN", "ffmpeg")
         self._ffprobe_bin = os.environ.get("FFPROBE_BIN", "ffprobe")
+        self._available_gpu_encoders: dict[str, set[str]] | None = None
 
 
     def render(
@@ -1766,6 +1768,90 @@ class FFmpegRenderer:
 
         return inputs, filter_complex, maps
 
+    def _detect_available_gpu_encoders(self) -> dict[str, set[str]]:
+        if self._available_gpu_encoders is not None:
+            return self._available_gpu_encoders
+
+        backend_encoders: dict[str, set[str]] = {
+            "nvidia": set(),
+            "amd": set(),
+            "apple": set(),
+        }
+        encoder_map = {
+            "h264_nvenc": ("nvidia", "h264"),
+            "hevc_nvenc": ("nvidia", "h265"),
+            "h264_amf": ("amd", "h264"),
+            "hevc_amf": ("amd", "h265"),
+            "h264_videotoolbox": ("apple", "h264"),
+            "hevc_videotoolbox": ("apple", "h265"),
+        }
+
+        try:
+            result = subprocess.run(
+                [self._ffmpeg_bin, "-hide_banner", "-encoders"],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            output = result.stdout or ""
+        except (FileNotFoundError, subprocess.CalledProcessError) as exc:
+            logger.warning("Failed to probe FFmpeg encoders: %s", exc)
+            self._available_gpu_encoders = backend_encoders
+            return backend_encoders
+
+        for encoder_name, (backend, codec) in encoder_map.items():
+            if encoder_name in output:
+                backend_encoders[backend].add(codec)
+
+        self._available_gpu_encoders = backend_encoders
+        return backend_encoders
+
+    def _normalize_gpu_backend(self, value: Any) -> str | None:
+        if not isinstance(value, str):
+            return None
+        normalized = value.strip().lower()
+        if normalized in {"nvidia", "amd", "apple"}:
+            return normalized
+        return None
+
+    def _get_gpu_encoder_name(self, backend: str, codec: str) -> str | None:
+        encoder_names = {
+            ("nvidia", "h264"): "h264_nvenc",
+            ("nvidia", "h265"): "hevc_nvenc",
+            ("amd", "h264"): "h264_amf",
+            ("amd", "h265"): "hevc_amf",
+            ("apple", "h264"): "h264_videotoolbox",
+            ("apple", "h265"): "hevc_videotoolbox",
+        }
+        return encoder_names.get((backend, codec))
+
+    def _select_gpu_backend_and_encoder(
+        self,
+        preset: dict[str, Any],
+        codec: str,
+    ) -> tuple[str | None, str | None]:
+        requested_backend = self._normalize_gpu_backend(preset.get("gpu_backend"))
+        available = self._detect_available_gpu_encoders()
+
+        preferred_backends = ["nvidia", "amd", "apple"]
+        if platform.system() == "Darwin":
+            preferred_backends = ["apple", "nvidia", "amd"]
+
+        if requested_backend:
+            if codec in available.get(requested_backend, set()):
+                return requested_backend, self._get_gpu_encoder_name(requested_backend, codec)
+            logger.warning(
+                "Requested GPU backend '%s' does not support %s. Falling back.",
+                requested_backend,
+                codec,
+            )
+
+        for backend in preferred_backends:
+            if codec in available.get(backend, set()):
+                return backend, self._get_gpu_encoder_name(backend, codec)
+
+        return None, None
+
     def _build_encoding_options(self, preset: dict[str, Any]) -> list[str]:
         options = []
         video = preset.get("video", {})
@@ -1774,14 +1860,22 @@ class FFmpegRenderer:
 
         codec = video.get("codec", "h264")
         video_encoder = ""
+        selected_backend: str | None = None
         if use_gpu:
-            if codec == "h264":
-                video_encoder = "h264_nvenc"
+            selected_backend, video_encoder = self._select_gpu_backend_and_encoder(
+                preset,
+                codec,
+            )
+            if video_encoder:
                 options.extend(["-c:v", video_encoder])
-            elif codec == "h265":
-                video_encoder = "hevc_nvenc"
-                options.extend(["-c:v", video_encoder])
-        else:
+            else:
+                logger.warning(
+                    "GPU encoding requested, but no compatible %s hardware encoder is available. Using CPU encoder.",
+                    codec,
+                )
+                use_gpu = False
+
+        if not use_gpu:
             if codec == "h264":
                 video_encoder = "libx264"
                 options.extend(["-c:v", video_encoder])
@@ -1791,15 +1885,22 @@ class FFmpegRenderer:
 
         if video_encoder:
             logger.info("Using video encoder: %s", video_encoder)
+        if selected_backend:
+            logger.info("Using GPU backend: %s", selected_backend)
 
         crf = video.get("crf", 23)
-        if use_gpu:
+        if use_gpu and video_encoder and video_encoder.endswith("_nvenc"):
             options.extend(["-cq", str(crf)])
-        else:
+        elif not use_gpu:
             options.extend(["-crf", str(crf)])
+        else:
+            logger.info(
+                "Skipping CRF/CQ option for encoder '%s' (backend-managed quality)",
+                video_encoder,
+            )
 
         enc_preset = video.get("preset", "medium")
-        if use_gpu:
+        if use_gpu and video_encoder and video_encoder.endswith("_nvenc"):
             nvenc_map = {
                 "ultrafast": "fast",
                 "superfast": "fast",
@@ -1812,7 +1913,14 @@ class FFmpegRenderer:
                 "veryslow": "slow",
             }
             enc_preset = nvenc_map.get(enc_preset, "medium")
-        options.extend(["-preset", enc_preset])
+            options.extend(["-preset", enc_preset])
+        elif not use_gpu:
+            options.extend(["-preset", enc_preset])
+        else:
+            logger.info(
+                "Skipping -preset for encoder '%s' (unsupported encoder preset mapping)",
+                video_encoder,
+            )
 
         pix_fmt = video.get("pixel_format", "yuv420p")
         options.extend(["-pix_fmt", pix_fmt])
