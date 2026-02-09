@@ -15,6 +15,22 @@ import type {
 
 const normalizeBaseUrl = (baseUrl: string) => baseUrl.replace(/\/+$/, '')
 
+type SessionCreateResponse = {
+  ok: boolean
+  session_id: string
+  user_id: string
+  expires_at: string
+  session_token: string
+  webhook_token: string
+}
+
+type SessionValidateResponse = {
+  valid: boolean
+  user_id?: string | null
+  scopes?: string[]
+  webhook_token?: string | null
+}
+
 const apiFetch = async <T>(
   config: AppConfig,
   path: string,
@@ -23,8 +39,12 @@ const apiFetch = async <T>(
   const url = `${normalizeBaseUrl(config.baseUrl)}${path}`
   const headers = new Headers(options.headers ?? {})
 
-  if (config.devToken) {
+  if (config.devToken && !config.sessionToken) {
     headers.set('Authorization', `Bearer ${config.devToken}`)
+  }
+
+  if (config.sessionToken) {
+    headers.set('X-Session-Token', config.sessionToken)
   }
 
   const isFormData = options.body instanceof FormData
@@ -54,6 +74,16 @@ const apiFetch = async <T>(
 
 export const api = {
   health: (config: AppConfig) => apiFetch<{ status: string }>(config, '/health/'),
+  createSession: (config: AppConfig) =>
+    apiFetch<SessionCreateResponse>(config, '/auth/session', {
+      method: 'POST',
+    }),
+  validateSession: (config: AppConfig) =>
+    apiFetch<SessionValidateResponse>(config, '/auth/session/validate'),
+  deleteSession: (config: AppConfig) =>
+    apiFetch<{ ok: boolean }>(config, '/auth/session', {
+      method: 'DELETE',
+    }),
   listProjects: (config: AppConfig) =>
     apiFetch<{ ok: boolean; projects: Project[] }>(config, '/projects/'),
   createProject: (config: AppConfig, name: string) =>
@@ -250,18 +280,20 @@ export const api = {
     projectId: string,
     jobId: string,
     payload: Record<string, unknown>,
-  ) =>
-    apiFetch<{ ok: boolean }>(
+  ) => {
+    const webhookSecret = config.webhookToken || config.renderWebhookSecret
+    return apiFetch<{ ok: boolean }>(
       config,
       `/projects/${projectId}/renders/${jobId}/webhook`,
       {
         method: 'POST',
         body: JSON.stringify(payload),
-        headers: config.renderWebhookSecret
-          ? { 'X-Render-Webhook-Secret': config.renderWebhookSecret }
+        headers: webhookSecret
+          ? { 'X-Render-Webhook-Secret': webhookSecret }
           : undefined,
       },
-    ),
+    )
+  },
   getOutputUploadUrl: (
     config: AppConfig,
     projectId: string,

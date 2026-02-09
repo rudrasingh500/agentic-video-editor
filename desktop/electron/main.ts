@@ -89,7 +89,7 @@ const getAssetCacheRoot = () =>
 const getRenderRoot = () => path.join(app.getPath('userData'), 'renders')
 
 const getOutputRoot = (projectId: string) =>
-  path.join(app.getPath('videos'), 'Granite Edit', projectId)
+  path.join(app.getPath('videos'), 'Auteur', projectId)
 
 const createProgressServer = async (
   onPayload: (payload: RenderProgressPayload) => void,
@@ -358,7 +358,7 @@ ipcMain.handle('render:start', async (_event, args: RenderStartArgs) => {
   const renderJobDir = resolveRenderJobDir()
   const entrypoint = path.join(renderJobDir, 'entrypoint.py')
   const pythonBin = process.env.PYTHON_BIN || 'python'
-  const tempDir = path.join(app.getPath('temp'), 'granite-render')
+  const tempDir = path.join(app.getPath('temp'), 'auteur-render')
 
   ensureDir(tempDir)
 

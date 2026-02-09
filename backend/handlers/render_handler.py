@@ -9,7 +9,12 @@ from sqlalchemy.orm import Session
 
 from database.base import get_db
 from database.models import Project
-from dependencies.auth import SessionData, get_session
+from dependencies.auth import (
+    SessionData,
+    get_optional_session,
+    get_session,
+    validate_session_token,
+)
 from dependencies.project import require_project
 from models.render_models import (
     CancelRenderRequest,
@@ -56,14 +61,27 @@ WEBHOOK_SECRET = os.getenv("RENDER_WEBHOOK_SECRET")
 
 def verify_render_webhook(
     x_render_webhook_secret: str | None = Header(default=None),
-) -> None:
-    if not WEBHOOK_SECRET:
-        logger.warning("RENDER_WEBHOOK_SECRET not configured; rejecting webhook")
-        raise HTTPException(status_code=503, detail="Render webhook not configured")
-    if not x_render_webhook_secret or not secrets.compare_digest(
+    session: SessionData | None = Depends(get_optional_session),
+    db: Session = Depends(get_db),
+) -> SessionData | None:
+    if session:
+        return session
+
+    issued_session = validate_session_token(x_render_webhook_secret, db)
+    if issued_session:
+        return issued_session
+
+    if WEBHOOK_SECRET and x_render_webhook_secret and secrets.compare_digest(
         x_render_webhook_secret, WEBHOOK_SECRET
     ):
-        raise HTTPException(status_code=401, detail="Invalid webhook secret")
+        return None
+
+    if not WEBHOOK_SECRET:
+        logger.warning(
+            "RENDER_WEBHOOK_SECRET not configured and no session token provided"
+        )
+
+    raise HTTPException(status_code=401, detail="Invalid webhook secret")
 
 
 @router.post("/render", response_model=RenderJobCreateResponse)
@@ -282,7 +300,7 @@ async def render_webhook(
     job_id: UUID,
     progress: RenderProgress,
     db: Session = Depends(get_db),
-    _: None = Depends(verify_render_webhook),
+    webhook_session: SessionData | None = Depends(verify_render_webhook),
 ):
     if progress.job_id != job_id:
         raise HTTPException(status_code=400, detail="Job ID mismatch")
@@ -293,6 +311,24 @@ async def render_webhook(
 
     if job.project_id != project_id:
         raise HTTPException(status_code=404, detail="Render job not found")
+
+    if webhook_session and "dev" not in webhook_session.scopes:
+        if webhook_session.user_id is None:
+            raise HTTPException(status_code=401, detail="Invalid webhook session")
+
+        owner_match = (
+            db.query(Project.project_id)
+            .filter(
+                Project.project_id == project_id,
+                Project.owner_id == webhook_session.user_id,
+            )
+            .first()
+        )
+        if not owner_match:
+            raise HTTPException(
+                status_code=403,
+                detail="Webhook token does not have access to this project",
+            )
 
     job = update_job_status(
         db=db,

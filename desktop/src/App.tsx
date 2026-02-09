@@ -14,27 +14,88 @@ const App = () => {
   const [activeProject, setActiveProject] = useState<Project | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
 
+  const ensureSession = useCallback(async (activeConfig: AppConfig): Promise<AppConfig> => {
+    if (activeConfig.sessionToken) {
+      try {
+        const validation = await api.validateSession(activeConfig)
+        if (validation.valid) {
+          const webhookToken =
+            validation.webhook_token ?? activeConfig.webhookToken ?? activeConfig.sessionToken
+
+          if (webhookToken !== activeConfig.webhookToken) {
+            setConfig((prev) => {
+              if (prev.webhookToken === webhookToken) {
+                return prev
+              }
+              return { ...prev, webhookToken }
+            })
+            return { ...activeConfig, webhookToken }
+          }
+
+          return activeConfig
+        }
+      } catch {
+        // Fallback to creating a new session.
+      }
+    }
+
+    try {
+      const created = await api.createSession(activeConfig)
+      const nextConfig = {
+        ...activeConfig,
+        sessionToken: created.session_token,
+        webhookToken: created.webhook_token,
+      }
+
+      setConfig((prev) => {
+        if (
+          prev.sessionToken === nextConfig.sessionToken &&
+          prev.webhookToken === nextConfig.webhookToken
+        ) {
+          return prev
+        }
+        return {
+          ...prev,
+          sessionToken: nextConfig.sessionToken,
+          webhookToken: nextConfig.webhookToken,
+        }
+      })
+
+      return nextConfig
+    } catch (error) {
+      if (activeConfig.devToken) {
+        return activeConfig
+      }
+      throw error
+    }
+  }, [])
+
   const refreshProjects = useCallback(async () => {
     setLoading(true)
     setError(null)
     try {
-      const response = await api.listProjects(config)
+      const activeConfig = await ensureSession(config)
+      const response = await api.listProjects(activeConfig)
       setProjects(response.projects ?? [])
     } catch (err) {
       setError((err as Error).message)
     } finally {
       setLoading(false)
     }
-  }, [config])
+  }, [config, ensureSession])
 
   useEffect(() => {
     saveConfig(config)
+  }, [config])
+
+  useEffect(() => {
     refreshProjects().catch(() => {})
-  }, [config, refreshProjects])
+  }, [refreshProjects])
 
   const handleCreateProject = async (name: string) => {
     try {
-      const response = await api.createProject(config, name)
+      const activeConfig = await ensureSession(config)
+      const response = await api.createProject(activeConfig, name)
       const project: Project = {
         project_id: response.project_id,
         project_name: response.project_name,
@@ -46,21 +107,10 @@ const App = () => {
     }
   }
 
-  const handleOpenProject = async (projectId: string) => {
-    try {
-      const response = await api.getProject(config, projectId)
-      setActiveProject({
-        project_id: response.project_id,
-        project_name: response.project_name,
-      })
-    } catch (err) {
-      setError((err as Error).message)
-    }
-  }
-
   const handleDeleteProject = async (projectId: string) => {
     try {
-      await api.deleteProject(config, projectId)
+      const activeConfig = await ensureSession(config)
+      await api.deleteProject(activeConfig, projectId)
       if (activeProject?.project_id === projectId) {
         setActiveProject(null)
       }
@@ -86,7 +136,6 @@ const App = () => {
           error={error}
           onCreate={handleCreateProject}
           onSelect={setActiveProject}
-          onOpenById={handleOpenProject}
           onRefresh={refreshProjects}
           onDelete={handleDeleteProject}
           onOpenSettings={() => setSettingsOpen(true)}

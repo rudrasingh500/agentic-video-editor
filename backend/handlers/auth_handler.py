@@ -1,13 +1,17 @@
 import os
 from uuid import UUID
-from fastapi import APIRouter, Depends, Response, Cookie
+from fastapi import APIRouter, Cookie, Depends, Header, Response
 from sqlalchemy.orm import Session
 
 from database.base import get_db
+from dependencies.auth import (
+    parse_session_cookie,
+    resolve_session_token,
+    validate_session_token,
+)
 from models.api_models import SessionCreateResponse, SessionValidateResponse
 from operators.auth_operator import (
     create_session,
-    validate_session,
     invalidate_session,
     SESSION_TTL_SECONDS,
 )
@@ -19,16 +23,6 @@ SESSION_COOKIE_SECURE = os.getenv("SESSION_COOKIE_SECURE", "true").lower() == "t
 
 def build_session_cookie(session_id: UUID, session_secret: str) -> str:
     return f"{session_id}.{session_secret}"
-
-
-def parse_session_cookie(cookie: str) -> tuple[UUID, str] | None:
-    try:
-        parts = cookie.split(".", 1)
-        if len(parts) != 2:
-            return None
-        return UUID(parts[0]), parts[1]
-    except (ValueError, IndexError):
-        return None
 
 
 @router.post("/session", response_model=SessionCreateResponse)
@@ -54,31 +48,27 @@ async def session_create(
         session_id=str(session_id),
         user_id=str(user_id),
         expires_at=expires_at,
+        session_token=cookie_value,
+        webhook_token=cookie_value,
     )
 
 
 @router.get("/session/validate", response_model=SessionValidateResponse)
 async def session_validate(
     sid: str | None = Cookie(default=None),
+    x_session_token: str | None = Header(default=None),
     db: Session = Depends(get_db),
 ):
-    if not sid:
-        return SessionValidateResponse(valid=False)
-
-    parsed = parse_session_cookie(sid)
-    if not parsed:
-        return SessionValidateResponse(valid=False)
-
-    session_id, secret = parsed
-    session_data = validate_session(session_id, secret, db)
-
-    if not session_data:
+    session_token = resolve_session_token(sid, x_session_token)
+    session = validate_session_token(session_token, db)
+    if not session:
         return SessionValidateResponse(valid=False)
 
     return SessionValidateResponse(
         valid=True,
-        user_id=session_data.get("user_id"),
-        scopes=session_data.get("scopes", []),
+        user_id=str(session.user_id) if session.user_id else None,
+        scopes=session.scopes,
+        webhook_token=session_token,
     )
 
 
@@ -86,10 +76,12 @@ async def session_validate(
 async def session_delete(
     response: Response,
     sid: str | None = Cookie(default=None),
+    x_session_token: str | None = Header(default=None),
     db: Session = Depends(get_db),
 ):
-    if sid:
-        parsed = parse_session_cookie(sid)
+    session_token = resolve_session_token(sid, x_session_token)
+    if session_token:
+        parsed = parse_session_cookie(session_token)
         if parsed:
             session_id, _ = parsed
             invalidate_session(session_id, db)

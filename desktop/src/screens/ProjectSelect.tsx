@@ -1,7 +1,6 @@
 import { useMemo, useState } from 'react'
 import {
   Plus,
-  FolderOpen,
   RefreshCw,
   Settings,
   Film,
@@ -19,7 +18,6 @@ type ProjectSelectProps = {
   error: string | null
   onCreate: (name: string) => void
   onSelect: (project: Project) => void
-  onOpenById: (projectId: string) => void
   onRefresh: () => void
   onDelete?: (projectId: string) => void
   onOpenSettings: () => void
@@ -42,15 +40,12 @@ const ProjectSelect = ({
   error,
   onCreate,
   onSelect,
-  onOpenById,
   onRefresh,
   onDelete,
   onOpenSettings,
 }: ProjectSelectProps) => {
   const [showCreate, setShowCreate] = useState(false)
-  const [showOpen, setShowOpen] = useState(false)
   const [projectName, setProjectName] = useState('')
-  const [projectId, setProjectId] = useState('')
   const [projectToDelete, setProjectToDelete] = useState<Project | null>(null)
 
   const recentProjects = useMemo(() => projects.slice(0, 8), [projects])
@@ -63,7 +58,7 @@ const ProjectSelect = ({
           <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-accent-500">
             <Film className="h-4 w-4 text-white" />
           </div>
-          <span className="text-sm font-semibold text-neutral-200">Granite Edit</span>
+          <span className="text-sm font-semibold text-neutral-200">Auteur</span>
         </div>
         <button
           onClick={onOpenSettings}
@@ -94,13 +89,6 @@ const ProjectSelect = ({
             >
               <Plus className="h-4 w-4" />
               New Project
-            </button>
-            <button
-              onClick={() => setShowOpen(true)}
-              className="flex items-center gap-2 rounded-lg border border-neutral-700 bg-neutral-800/50 px-5 py-2.5 text-sm font-medium text-neutral-300 hover:border-neutral-600 hover:bg-neutral-800 transition-colors"
-            >
-              <FolderOpen className="h-4 w-4" />
-              Open by ID
             </button>
             <button
               onClick={onRefresh}
@@ -264,52 +252,6 @@ const ProjectSelect = ({
               className="rounded-lg bg-accent-500 px-4 py-2 text-sm font-medium text-white hover:bg-accent-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
               Create
-            </button>
-          </div>
-        </div>
-      </Modal>
-
-      {/* Open by ID Modal */}
-      <Modal open={showOpen} title="Open Project" onClose={() => setShowOpen(false)}>
-        <div className="space-y-4">
-          <div>
-            <label className="block text-xs font-medium text-neutral-400 mb-2">
-              Project ID
-            </label>
-            <input
-              value={projectId}
-              onChange={(event) => setProjectId(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter' && projectId.trim()) {
-                  onOpenById(projectId.trim())
-                  setProjectId('')
-                  setShowOpen(false)
-                }
-              }}
-              className="w-full rounded-lg border border-neutral-700 bg-neutral-800 px-4 py-2.5 font-mono text-sm text-neutral-200 placeholder-neutral-500 focus:border-accent-500 focus:outline-none focus:ring-1 focus:ring-accent-500/50 transition-colors"
-              placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-            />
-          </div>
-          <div className="flex justify-end gap-3 pt-2">
-            <button
-              onClick={() => setShowOpen(false)}
-              className="rounded-lg border border-neutral-700 px-4 py-2 text-sm text-neutral-300 hover:bg-neutral-800 transition-colors"
-            >
-              Cancel
-            </button>
-            <button
-              onClick={() => {
-                if (!projectId.trim()) {
-                  return
-                }
-                onOpenById(projectId.trim())
-                setProjectId('')
-                setShowOpen(false)
-              }}
-              disabled={!projectId.trim()}
-              className="rounded-lg bg-accent-500 px-4 py-2 text-sm font-medium text-white hover:bg-accent-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-            >
-              Open
             </button>
           </div>
         </div>

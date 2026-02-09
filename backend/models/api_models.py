@@ -9,12 +9,15 @@ class SessionCreateResponse(BaseModel):
     session_id: str
     user_id: str
     expires_at: datetime
+    session_token: str
+    webhook_token: str
 
 
 class SessionValidateResponse(BaseModel):
     valid: bool
     user_id: str | None = None
     scopes: list[str] = Field(default_factory=list)
+    webhook_token: str | None = None
 
 
 class ProjectCreateRequest(BaseModel):

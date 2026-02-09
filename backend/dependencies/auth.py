@@ -2,6 +2,7 @@ import os
 import secrets
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Literal
 from uuid import UUID
 
 from fastapi import Cookie, Depends, Header, HTTPException, status
@@ -34,6 +35,17 @@ def parse_session_cookie(cookie: str) -> tuple[UUID, str] | None:
         return None
 
 
+def resolve_session_token(
+    session_cookie: str | None,
+    session_header: str | None,
+) -> str | None:
+    token = session_header if session_header is not None else session_cookie
+    if token is None:
+        return None
+    token = token.strip()
+    return token or None
+
+
 def _parse_bearer_token(authorization: str | None) -> str | None:
     if not authorization:
         return None
@@ -43,7 +55,7 @@ def _parse_bearer_token(authorization: str | None) -> str | None:
     return parts[1]
 
 
-def _resolve_dev_session(token: str | None) -> SessionData | None | bool:
+def _resolve_dev_session(token: str | None) -> SessionData | None | Literal[False]:
     if not token:
         return None
     dev_token = os.getenv("DEV_API_TOKEN")
@@ -58,8 +70,33 @@ def _resolve_dev_session(token: str | None) -> SessionData | None | bool:
     )
 
 
+def validate_session_token(
+    session_token: str | None,
+    db: Session,
+) -> SessionData | None:
+    token = session_token.strip() if session_token else None
+    if not token:
+        return None
+
+    parsed = parse_session_cookie(token)
+    if not parsed:
+        return None
+
+    session_id, secret = parsed
+    session_data = validate_session(session_id, secret, db)
+    if not session_data:
+        return None
+
+    return SessionData(
+        session_id=session_id,
+        user_id=UUID(session_data["user_id"]) if session_data["user_id"] else None,
+        scopes=session_data.get("scopes", []),
+    )
+
+
 def get_session(
     sid: str | None = Cookie(default=None),
+    x_session_token: str | None = Header(default=None),
     authorization: str | None = Header(default=None),
     db: Session = Depends(get_db),
 ) -> SessionData:
@@ -73,17 +110,18 @@ def get_session(
     if dev_session:
         _ensure_dev_user(db, dev_session.user_id)
         return dev_session
-    if not sid:
+    session_token = resolve_session_token(sid, x_session_token)
+    if not session_token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Not authenticated",
         )
 
-    parsed = parse_session_cookie(sid)
+    parsed = parse_session_cookie(session_token)
     if not parsed:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid session cookie",
+            detail="Invalid session token",
         )
 
     session_id, secret = parsed
@@ -104,6 +142,7 @@ def get_session(
 
 def get_optional_session(
     sid: str | None = Cookie(default=None),
+    x_session_token: str | None = Header(default=None),
     authorization: str | None = Header(default=None),
     db: Session = Depends(get_db),
 ) -> SessionData | None:
@@ -114,24 +153,9 @@ def get_optional_session(
     if dev_session:
         _ensure_dev_user(db, dev_session.user_id)
         return dev_session
-    if not sid:
-        return None
 
-    parsed = parse_session_cookie(sid)
-    if not parsed:
-        return None
-
-    session_id, secret = parsed
-    session_data = validate_session(session_id, secret, db)
-
-    if not session_data:
-        return None
-
-    return SessionData(
-        session_id=session_id,
-        user_id=UUID(session_data["user_id"]) if session_data["user_id"] else None,
-        scopes=session_data.get("scopes", []),
-    )
+    session_token = resolve_session_token(sid, x_session_token)
+    return validate_session_token(session_token, db)
 
 
 def require_scope(required_scope: str):

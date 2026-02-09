@@ -30,6 +30,8 @@ const SettingsModal = ({ open, config, onClose, onSave }: SettingsModalProps) =>
     onSave({
       baseUrl: baseUrl.trim(),
       devToken: devToken.trim(),
+      sessionToken: config.sessionToken,
+      webhookToken: config.webhookToken,
       renderWebhookSecret: renderWebhookSecret.trim(),
     })
     onClose()
