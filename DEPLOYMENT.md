@@ -17,10 +17,11 @@ Create one Railway project with four services:
 
 ### API service config
 
-- Root directory: `backend`
 - Build: Dockerfile (`backend/Dockerfile`)
 - Start command: use Dockerfile default
 - Healthcheck path: `/health/`
+
+This Dockerfile expects Railway's default repo-root build context, so no separate root-directory setting is required.
 
 The API container runs migrations on boot:
 
@@ -28,7 +29,6 @@ The API container runs migrations on boot:
 
 ### Worker service config
 
-- Root directory: `backend`
 - Build: Dockerfile (`backend/Dockerfile`)
 - Start command override:
 
