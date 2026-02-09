@@ -59,17 +59,15 @@ Workflow: `.github/workflows/backend-ci.yml`
 - Trigger: PRs and pushes affecting `backend/**`
 - Runs: `python -m pytest tests` from `backend/`
 
-### Backend CD (Railway deploy hooks)
+### Backend CD (Railway native autodeploy)
 
-Workflow: `.github/workflows/backend-deploy-railway.yml`
+Use Railway's built-in GitHub integration on both `api` and `worker` services:
 
-- Trigger: after `backend-ci` succeeds on `main`
-- Action: POSTs to Railway deploy hooks for API and worker services
+- Connect each service to this repository and set branch to `main`
+- Enable Auto Deploy
+- Enable **Wait for CI** so Railway only deploys after `backend-ci` passes
 
-Required repository secrets:
-
-- `RAILWAY_API_DEPLOY_HOOK_URL`
-- `RAILWAY_WORKER_DEPLOY_HOOK_URL`
+No extra GitHub deploy-hook secrets are required for backend deploys.
 
 ### Desktop release build
 
