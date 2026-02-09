@@ -108,7 +108,7 @@ export type CharacterModel = {
   updated_at: string
 }
 
-export type GenerationMode = 'image' | 'insert_frames' | 'replace_frames'
+export type GenerationMode = 'image' | 'video' | 'insert_frames' | 'replace_frames'
 
 export type GenerationFrameRange = {
   start_frame: number

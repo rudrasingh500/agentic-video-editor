@@ -1,11 +1,11 @@
 import os
 import logging
 import mimetypes
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from database.base import get_db
 from database.models import Assets
-from utils.gcs_utils import download_file
+from utils.gcs_utils import download_file, generate_signed_url
 from utils.embeddings import get_embedding, build_embedding_text
 from operators.snippet_operator import create_snippet
 
@@ -62,7 +62,26 @@ def process_asset(asset_id: str, project_id: str) -> None:
             if guessed:
                 content_type = guessed
                 asset.asset_type = guessed
-        metadata = extract_metadata(content, content_type)
+
+        metadata_source_url = None
+        try:
+            metadata_source_url = generate_signed_url(
+                bucket_name=ASSET_BUCKET,
+                blob_name=asset.asset_url,
+                expiration=timedelta(hours=2),
+            )
+        except Exception as signed_url_error:
+            logger.warning(
+                "Failed to create signed URL for metadata analysis on asset %s: %s",
+                asset_id,
+                str(signed_url_error),
+            )
+
+        metadata = extract_metadata(
+            content,
+            content_type,
+            source_url=metadata_source_url,
+        )
 
         if metadata:
             asset.asset_summary = metadata.get("summary", "")

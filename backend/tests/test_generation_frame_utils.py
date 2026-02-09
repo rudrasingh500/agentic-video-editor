@@ -19,6 +19,16 @@ def test_normalize_frame_inputs_image_mode_ignores_frame_selection() -> None:
     assert frame_indices is None
 
 
+def test_normalize_frame_inputs_video_mode_ignores_frame_selection() -> None:
+    frame_range, frame_indices = _normalize_frame_inputs(
+        mode="video",
+        frame_range={"start_frame": 10, "end_frame": 20},
+        frame_indices=[8, 9],
+    )
+    assert frame_range is None
+    assert frame_indices is None
+
+
 def test_normalize_frame_inputs_requires_selection_for_frame_modes() -> None:
     with pytest.raises(ValueError):
         _normalize_frame_inputs(
@@ -39,6 +49,10 @@ def test_resolve_frame_indices_combines_range_and_indices() -> None:
 
 def test_normalize_frame_repeat_count_defaults_to_one_for_frame_modes() -> None:
     assert _normalize_frame_repeat_count(mode="replace_frames", frame_repeat_count=None) == 1
+
+
+def test_normalize_frame_repeat_count_ignored_for_video_mode() -> None:
+    assert _normalize_frame_repeat_count(mode="video", frame_repeat_count=5) is None
 
 
 def test_normalize_frame_repeat_count_rejects_invalid_values() -> None:

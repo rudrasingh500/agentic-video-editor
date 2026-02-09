@@ -733,9 +733,9 @@ EDIT_AGENT_TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
-            "name": "generate_nano_banana_asset",
+            "name": "generate_asset",
             "description": (
-                "Generate an image or frame-edit candidate with Nano Banana Pro via OpenRouter. "
+                "Generate an image, Veo 3.1 video, or frame-edit candidate. "
                 "Always review the preview first, then call decide_generated_asset to approve or deny."
             ),
             "parameters": {
@@ -744,12 +744,12 @@ EDIT_AGENT_TOOLS: list[dict[str, Any]] = [
                     "prompt": {"type": "string"},
                     "mode": {
                         "type": "string",
-                        "enum": ["image", "insert_frames", "replace_frames"],
+                        "enum": ["image", "video", "insert_frames", "replace_frames"],
                         "default": "image",
                     },
                     "target_asset_id": {
                         "type": "string",
-                        "description": "Required for insert_frames/replace_frames",
+                        "description": "Required only for insert_frames/replace_frames",
                     },
                     "frame_range": {
                         "type": "object",
@@ -800,7 +800,7 @@ EDIT_AGENT_TOOLS: list[dict[str, Any]] = [
         "function": {
             "name": "decide_generated_asset",
             "description": (
-                "Approve or deny a previously generated Nano Banana asset. "
+                "Approve or deny a previously generated asset. "
                 "For frame operations, approval applies the edit to the target video and stores a derived video asset."
             ),
             "parameters": {
@@ -1001,7 +1001,7 @@ def _categorize_exception(exc: Exception) -> tuple[str, ErrorSeverity]:
     return "UNKNOWN_ERROR", ErrorSeverity.SYSTEM
 
 
-def _generate_nano_banana_asset(
+def _generate_asset(
     project_id: str,
     user_id: str,
     timeline_id: str,
@@ -1019,7 +1019,7 @@ def _generate_nano_banana_asset(
     model: str | None = None,
     parameters: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    return _generate_nano_banana_asset_impl(
+    return _generate_asset_impl(
         project_id=project_id,
         user_id=user_id,
         timeline_id=timeline_id,
@@ -1097,7 +1097,7 @@ def execute_tool(
         "edit_timeline": _edit_timeline,
         "undo_to_version": _undo_to_version,
         "view_asset": _view_asset,
-        "generate_nano_banana_asset": _generate_nano_banana_asset,
+        "generate_asset": _generate_asset,
         "decide_generated_asset": _decide_generated_asset,
         "render_output": _render_output,
         "view_render_output": _view_render_output,
@@ -2876,7 +2876,7 @@ def _view_asset(
     return result
 
 
-def _generate_nano_banana_asset_impl(
+def _generate_asset_impl(
     project_id: str,
     user_id: str,
     timeline_id: str,
@@ -2941,9 +2941,16 @@ def _generate_nano_banana_asset_impl(
     if generated_preview_url and generated_asset:
         preview_bytes = _download_url_bytes(generated_preview_url, timeout_seconds=120)
         if preview_bytes is not None:
+            asset_type = generated_asset.asset_type or "image/png"
+            if asset_type.startswith("video/"):
+                mm_type = "video"
+            elif asset_type.startswith("audio/"):
+                mm_type = "audio"
+            else:
+                mm_type = "image"
             result["_multimodal"] = {
-                "type": "image",
-                "content_type": generated_asset.asset_type or "image/png",
+                "type": mm_type,
+                "content_type": asset_type,
                 "data": base64.b64encode(preview_bytes).decode("utf-8"),
             }
 

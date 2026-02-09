@@ -828,7 +828,7 @@ class AssetGeneration(Base):
     requestor = Column(String, nullable=False, default="system")
     provider = Column(String, nullable=False, default="openrouter")
     model = Column(String, nullable=False)
-    mode = Column(String, nullable=False)  # image, insert_frames, replace_frames
+    mode = Column(String, nullable=False)  # image, video, insert_frames, replace_frames
     status = Column(String, nullable=False, default="pending")
     prompt = Column(String, nullable=False)
     parameters = Column(JSONB, nullable=False, default=dict)

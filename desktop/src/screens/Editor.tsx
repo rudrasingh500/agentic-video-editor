@@ -99,6 +99,9 @@ type GenerationFormState = {
   frameRangeEnd: string
   frameIndices: string
   frameRepeatCount: string
+  videoAspectRatio: string
+  videoResolution: string
+  videoNegativePrompt: string
   referenceSnippetId: string
   referenceAssetId: string
 }
@@ -185,6 +188,9 @@ const Editor = ({ project, config, onBack, onOpenSettings }: EditorProps) => {
     frameRangeEnd: '',
     frameIndices: '',
     frameRepeatCount: '1',
+    videoAspectRatio: '16:9',
+    videoResolution: '720p',
+    videoNegativePrompt: '',
     referenceSnippetId: '',
     referenceAssetId: '',
   })
@@ -761,7 +767,32 @@ const Editor = ({ project, config, onBack, onOpenSettings }: EditorProps) => {
       payload.reference_asset_id = generationForm.referenceAssetId
     }
 
-    if (generationForm.mode !== 'image') {
+    const isFrameMode =
+      generationForm.mode === 'insert_frames' || generationForm.mode === 'replace_frames'
+    const isVideoMode = generationForm.mode === 'video'
+
+    if (isVideoMode) {
+      payload.model = 'veo-3.1-generate-preview'
+      const videoParameters: Record<string, unknown> = {}
+      if (generationForm.videoAspectRatio) {
+        videoParameters.aspect_ratio = generationForm.videoAspectRatio
+      }
+      if (generationForm.videoResolution) {
+        videoParameters.resolution = generationForm.videoResolution
+      }
+      const negativePrompt = generationForm.videoNegativePrompt.trim()
+      if (negativePrompt) {
+        videoParameters.negative_prompt = negativePrompt
+      }
+      if (Object.keys(videoParameters).length > 0) {
+        payload.parameters = {
+          ...(payload.parameters ?? {}),
+          ...videoParameters,
+        }
+      }
+    }
+
+    if (isFrameMode) {
       if (!generationForm.targetAssetId) {
         setGenerationError('Select a target video asset for frame operations.')
         return
@@ -1087,11 +1118,11 @@ const Editor = ({ project, config, onBack, onOpenSettings }: EditorProps) => {
                       className="max-w-full max-h-full object-contain rounded-lg shadow-2xl"
                     />
                   ) : (
-                    <div className="flex flex-col items-center gap-4 text-neutral-600">
-                      <div className="w-full max-w-2xl aspect-video rounded-xl border-2 border-dashed border-neutral-800 flex flex-col items-center justify-center bg-neutral-900/50">
-                        <Film className="h-16 w-16 mb-4 text-neutral-700" />
-                        <span className="text-sm text-neutral-500">No preview available</span>
-                        <span className="text-xs text-neutral-600 mt-1">
+                    <div className="flex flex-col items-center justify-center w-full h-full min-h-0 p-4">
+                      <div className="w-full max-w-2xl max-h-full aspect-video rounded-xl border-2 border-dashed border-neutral-600 flex flex-col items-center justify-center bg-neutral-900/80 gap-3">
+                        <Film className="h-12 w-12 text-neutral-500 shrink-0" />
+                        <span className="text-sm text-neutral-400">No preview available</span>
+                        <span className="text-xs text-neutral-500">
                           Export or render a preview to see it here
                         </span>
                       </div>
@@ -1369,6 +1400,7 @@ const Editor = ({ project, config, onBack, onOpenSettings }: EditorProps) => {
               className="w-full rounded border border-neutral-700 bg-neutral-800 px-3 py-2 text-sm text-neutral-200 focus:border-accent-500 focus:outline-none"
             >
               <option value="image">Image Generation</option>
+              <option value="video">Video Generation (Veo 3.1)</option>
               <option value="replace_frames">Replace Frames</option>
               <option value="insert_frames">Insert Frames</option>
             </select>
@@ -1421,7 +1453,8 @@ const Editor = ({ project, config, onBack, onOpenSettings }: EditorProps) => {
             </select>
           </label>
 
-          {generationForm.mode !== 'image' && (
+          {(generationForm.mode === 'insert_frames' ||
+            generationForm.mode === 'replace_frames') && (
             <>
               <label className="block space-y-1">
                 <span className="text-xs text-neutral-400">Target Video Asset</span>
@@ -1520,6 +1553,61 @@ const Editor = ({ project, config, onBack, onOpenSettings }: EditorProps) => {
             </>
           )}
 
+          {generationForm.mode === 'video' && (
+            <>
+              <label className="block space-y-1">
+                <span className="text-xs text-neutral-400">Aspect Ratio</span>
+                <select
+                  value={generationForm.videoAspectRatio}
+                  onChange={(event) =>
+                    setGenerationForm((prev) => ({
+                      ...prev,
+                      videoAspectRatio: event.target.value,
+                    }))
+                  }
+                  className="w-full rounded border border-neutral-700 bg-neutral-800 px-3 py-2 text-sm text-neutral-200 focus:border-accent-500 focus:outline-none"
+                >
+                  <option value="16:9">16:9 (Landscape)</option>
+                  <option value="9:16">9:16 (Portrait)</option>
+                </select>
+              </label>
+
+              <label className="block space-y-1">
+                <span className="text-xs text-neutral-400">Resolution</span>
+                <select
+                  value={generationForm.videoResolution}
+                  onChange={(event) =>
+                    setGenerationForm((prev) => ({
+                      ...prev,
+                      videoResolution: event.target.value,
+                    }))
+                  }
+                  className="w-full rounded border border-neutral-700 bg-neutral-800 px-3 py-2 text-sm text-neutral-200 focus:border-accent-500 focus:outline-none"
+                >
+                  <option value="720p">720p</option>
+                  <option value="1080p">1080p</option>
+                  <option value="4k">4K</option>
+                </select>
+              </label>
+
+              <label className="block space-y-1">
+                <span className="text-xs text-neutral-400">Negative Prompt (optional)</span>
+                <input
+                  type="text"
+                  value={generationForm.videoNegativePrompt}
+                  onChange={(event) =>
+                    setGenerationForm((prev) => ({
+                      ...prev,
+                      videoNegativePrompt: event.target.value,
+                    }))
+                  }
+                  className="w-full rounded border border-neutral-700 bg-neutral-800 px-3 py-2 text-sm text-neutral-200 focus:border-accent-500 focus:outline-none"
+                  placeholder="e.g. cartoon, low quality"
+                />
+              </label>
+            </>
+          )}
+
           <div className="flex justify-end gap-3">
             <button
               onClick={() => setGenerateModalOpen(false)}
@@ -1553,11 +1641,19 @@ const Editor = ({ project, config, onBack, onOpenSettings }: EditorProps) => {
       >
         <div className="space-y-4">
           {pendingGeneration?.generated_preview_url ? (
-            <img
-              src={pendingGeneration.generated_preview_url}
-              alt="Generated preview"
-              className="w-full rounded border border-neutral-700 bg-neutral-950 object-contain"
-            />
+            pendingGeneration.generated_asset?.asset_type?.startsWith('video/') ? (
+              <video
+                src={pendingGeneration.generated_preview_url}
+                controls
+                className="w-full rounded border border-neutral-700 bg-neutral-950 object-contain"
+              />
+            ) : (
+              <img
+                src={pendingGeneration.generated_preview_url}
+                alt="Generated preview"
+                className="w-full rounded border border-neutral-700 bg-neutral-950 object-contain"
+              />
+            )
           ) : (
             <div className="rounded border border-neutral-800 bg-neutral-900 px-3 py-8 text-center text-xs text-neutral-500">
               Preview unavailable. You can still approve or deny.
@@ -1567,9 +1663,11 @@ const Editor = ({ project, config, onBack, onOpenSettings }: EditorProps) => {
           <div className="rounded border border-neutral-800 bg-neutral-900 px-3 py-2 text-xs text-neutral-400">
             <p className="truncate">Prompt: {pendingGeneration?.prompt}</p>
             <p>Mode: {pendingGeneration?.mode}</p>
-            {pendingGeneration?.mode !== 'image' && (
+            {(pendingGeneration?.mode === 'insert_frames' ||
+              pendingGeneration?.mode === 'replace_frames') && (
               <p>Frame repeat count: {pendingGeneration?.frame_repeat_count ?? 1}</p>
             )}
+            {pendingGeneration?.mode === 'video' && <p>Model: {pendingGeneration?.model}</p>}
           </div>
 
           {generationError && (

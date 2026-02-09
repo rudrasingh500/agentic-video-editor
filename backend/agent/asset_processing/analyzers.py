@@ -1,11 +1,10 @@
 import base64
-import base64
 import json
 import logging
 import os
 from typing import Any
 
-from openai import OpenAI
+from openai import APIStatusError, OpenAI
 from utils.video_utils import get_video_duration
 
 from .prompts import (
@@ -16,6 +15,8 @@ from .prompts import (
 
 MODEL = "google/gemini-3-flash-preview"
 logger = logging.getLogger(__name__)
+
+MAX_INLINE_MEDIA_BYTES = int(os.getenv("OPENROUTER_MAX_INLINE_MEDIA_BYTES", "8000000"))
 
 REASONING_CONFIG = {
     "reasoning": {
@@ -57,37 +58,57 @@ def _get_client() -> OpenAI:
     )
 
 
-def extract_metadata(content: bytes, content_type: str) -> dict | None:
+def extract_metadata(
+    content: bytes,
+    content_type: str,
+    source_url: str | None = None,
+) -> dict | None:
     if content_type in IMAGE_TYPES:
-        return analyze_image(content, content_type)
+        return analyze_image(content, content_type, source_url=source_url)
     elif content_type in VIDEO_TYPES:
-        return analyze_video(content, content_type)
+        return analyze_video(content, content_type, source_url=source_url)
     elif content_type in AUDIO_TYPES:
-        return analyze_audio(content, content_type)
+        return analyze_audio(content, content_type, source_url=source_url)
     return None
 
 
-def analyze_image(content: bytes, content_type: str) -> dict:
-    b64 = base64.b64encode(content).decode("utf-8")
+def analyze_image(content: bytes, content_type: str, source_url: str | None = None) -> dict:
+    media_part = _build_media_part("image_url", content, content_type, source_url)
+    if media_part is None:
+        logger.warning(
+            "Image analysis skipped: payload too large for inline upload and no source URL"
+        )
+        return _fallback_image_metadata()
 
-    client = _get_client()
-    response = client.chat.completions.create(
-        model=MODEL,
-        messages=[
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": f"data:{content_type};base64,{b64}"},
-                    },
-                    {"type": "text", "text": IMAGE_ANALYSIS_PROMPT},
-                ],
-            }
-        ],
-        response_format={"type": "json_object"},
-        extra_body=REASONING_CONFIG,
-    )
+    try:
+        client = _get_client()
+        response = client.chat.completions.create(
+            model=MODEL,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        media_part,
+                        {"type": "text", "text": IMAGE_ANALYSIS_PROMPT},
+                    ],
+                }
+            ],
+            response_format={"type": "json_object"},
+            extra_body=REASONING_CONFIG,
+        )
+    except Exception as exc:
+        if _is_payload_too_large_error(exc):
+            logger.warning(
+                "Image analysis request exceeded gateway payload limit (413). "
+                "Using fallback metadata."
+            )
+        else:
+            logger.warning(
+                "Image analysis failed (%s). Using fallback metadata.",
+                f"{type(exc).__name__}: {exc}",
+            )
+        return _fallback_image_metadata()
+
     parsed = _extract_response_json(response)
     if parsed is not None:
         return parsed
@@ -95,27 +116,43 @@ def analyze_image(content: bytes, content_type: str) -> dict:
     return _fallback_image_metadata()
 
 
-def analyze_video(content: bytes, content_type: str) -> dict:
-    b64 = base64.b64encode(content).decode("utf-8")
+def analyze_video(content: bytes, content_type: str, source_url: str | None = None) -> dict:
+    media_part = _build_media_part("video_url", content, content_type, source_url)
+    if media_part is None:
+        logger.warning(
+            "Video analysis skipped: payload too large for inline upload and no source URL"
+        )
+        return _fallback_video_metadata(content, content_type)
 
-    client = _get_client()
-    response = client.chat.completions.create(
-        model=MODEL,
-        messages=[
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "video_url",
-                        "video_url": {"url": f"data:{content_type};base64,{b64}"},
-                    },
-                    {"type": "text", "text": VIDEO_ANALYSIS_PROMPT},
-                ],
-            }
-        ],
-        response_format={"type": "json_object"},
-        extra_body=REASONING_CONFIG,
-    )
+    try:
+        client = _get_client()
+        response = client.chat.completions.create(
+            model=MODEL,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        media_part,
+                        {"type": "text", "text": VIDEO_ANALYSIS_PROMPT},
+                    ],
+                }
+            ],
+            response_format={"type": "json_object"},
+            extra_body=REASONING_CONFIG,
+        )
+    except Exception as exc:
+        if _is_payload_too_large_error(exc):
+            logger.warning(
+                "Video analysis request exceeded gateway payload limit (413). "
+                "Using fallback metadata."
+            )
+        else:
+            logger.warning(
+                "Video analysis failed (%s). Using fallback metadata.",
+                f"{type(exc).__name__}: {exc}",
+            )
+        return _fallback_video_metadata(content, content_type)
+
     parsed = _extract_response_json(response)
     if parsed is not None:
         return parsed
@@ -123,32 +160,80 @@ def analyze_video(content: bytes, content_type: str) -> dict:
     return _fallback_video_metadata(content, content_type)
 
 
-def analyze_audio(content: bytes, content_type: str) -> dict:
-    b64 = base64.b64encode(content).decode("utf-8")
+def analyze_audio(content: bytes, content_type: str, source_url: str | None = None) -> dict:
+    media_part = _build_media_part("audio_url", content, content_type, source_url)
+    if media_part is None:
+        logger.warning(
+            "Audio analysis skipped: payload too large for inline upload and no source URL"
+        )
+        return _fallback_audio_metadata()
 
-    client = _get_client()
-    response = client.chat.completions.create(
-        model=MODEL,
-        messages=[
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "audio_url",
-                        "audio_url": {"url": f"data:{content_type};base64,{b64}"},
-                    },
-                    {"type": "text", "text": AUDIO_ANALYSIS_PROMPT},
-                ],
-            }
-        ],
-        response_format={"type": "json_object"},
-        extra_body=REASONING_CONFIG,
-    )
+    try:
+        client = _get_client()
+        response = client.chat.completions.create(
+            model=MODEL,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        media_part,
+                        {"type": "text", "text": AUDIO_ANALYSIS_PROMPT},
+                    ],
+                }
+            ],
+            response_format={"type": "json_object"},
+            extra_body=REASONING_CONFIG,
+        )
+    except Exception as exc:
+        if _is_payload_too_large_error(exc):
+            logger.warning(
+                "Audio analysis request exceeded gateway payload limit (413). "
+                "Using fallback metadata."
+            )
+        else:
+            logger.warning(
+                "Audio analysis failed (%s). Using fallback metadata.",
+                f"{type(exc).__name__}: {exc}",
+            )
+        return _fallback_audio_metadata()
+
     parsed = _extract_response_json(response)
     if parsed is not None:
         return parsed
     logger.warning("Audio analysis returned no JSON payload; using fallback metadata")
     return _fallback_audio_metadata()
+
+
+def _build_media_part(
+    media_field: str,
+    content: bytes,
+    content_type: str,
+    source_url: str | None,
+) -> dict[str, Any] | None:
+    if source_url:
+        return {
+            "type": media_field,
+            media_field: {"url": source_url},
+        }
+
+    if len(content) > MAX_INLINE_MEDIA_BYTES:
+        return None
+
+    b64 = base64.b64encode(content).decode("utf-8")
+    return {
+        "type": media_field,
+        media_field: {"url": f"data:{content_type};base64,{b64}"},
+    }
+
+
+def _is_payload_too_large_error(exc: Exception) -> bool:
+    if isinstance(exc, APIStatusError):
+        status_code = getattr(exc, "status_code", None)
+        if status_code == 413:
+            return True
+
+    text = str(exc).lower()
+    return "413" in text and "payload" in text and "large" in text
 
 
 def _extract_response_json(response: Any) -> dict | None:

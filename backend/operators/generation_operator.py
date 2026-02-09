@@ -19,7 +19,11 @@ from operators.asset_operator import upload_asset
 from operators.snippet_operator import attach_generation_anchor
 from utils.frame_editing import apply_frame_edit
 from utils.gcs_utils import download_file, generate_signed_url
-from utils.nano_banana_provider import DEFAULT_MODEL, generate_image
+from utils.nano_banana_provider import (
+    DEFAULT_MODEL as DEFAULT_NANO_BANANA_MODEL,
+    generate_image,
+)
+from utils.veo_provider import DEFAULT_VEO_MODEL, generate_video
 
 
 ASSET_BUCKET = "video-editor"
@@ -46,7 +50,7 @@ def create_generation(
     request_context: dict | None = None,
 ) -> AssetGeneration:
     normalized_mode = str(mode or "image").strip().lower()
-    if normalized_mode not in {"image", "insert_frames", "replace_frames"}:
+    if normalized_mode not in {"image", "video", "insert_frames", "replace_frames"}:
         raise ValueError(f"Unsupported generation mode: {mode}")
 
     normalized_frame_range, normalized_frame_indices = _normalize_frame_inputs(
@@ -82,20 +86,63 @@ def create_generation(
     if normalized_frame_repeat_count is not None:
         generation_parameters["frame_repeat_count"] = normalized_frame_repeat_count
 
-    generation_result = generate_image(
-        prompt=prompt,
-        reference_image_bytes=reference.get("image_bytes"),
-        reference_content_type=reference.get("content_type"),
-        model=model,
-        parameters=generation_parameters,
-    )
+    if normalized_mode == "video":
+        reference_hint = _build_reference_prompt_hint(reference)
+        if reference_hint:
+            generation_parameters["reference_prompt_hint"] = reference_hint
+
+        try:
+            generation_result = generate_video(
+                prompt=prompt,
+                reference_image_bytes=reference.get("image_bytes"),
+                reference_content_type=reference.get("content_type"),
+                model=model,
+                parameters=generation_parameters,
+            )
+        except RuntimeError as exc:
+            if not _is_veo_reference_unsupported_error(exc) or reference.get("image_bytes") is None:
+                raise
+
+            fallback_prompt = _augment_video_prompt_with_reference_hint(
+                base_prompt=prompt,
+                reference_hint=reference_hint,
+            )
+            generation_result = generate_video(
+                prompt=fallback_prompt,
+                reference_image_bytes=None,
+                reference_content_type=None,
+                model=model,
+                parameters=generation_parameters,
+            )
+            generation_parameters["veo_reference_mode"] = "prompt_hint_fallback"
+
+        generated_content = generation_result.video_bytes
+        generated_content_type = generation_result.content_type
+        resolved_model = generation_result.model or model or DEFAULT_VEO_MODEL
+        provider = "google"
+
+        metadata = dict(generation_parameters.get("veo_metadata") or {})
+        metadata.update(generation_result.metadata or {})
+        generation_parameters["veo_metadata"] = metadata
+    else:
+        generation_result = generate_image(
+            prompt=prompt,
+            reference_image_bytes=reference.get("image_bytes"),
+            reference_content_type=reference.get("content_type"),
+            model=model,
+            parameters=generation_parameters,
+        )
+        generated_content = generation_result.image_bytes
+        generated_content_type = generation_result.content_type
+        resolved_model = generation_result.model or model or DEFAULT_NANO_BANANA_MODEL
+        provider = "openrouter"
 
     generated_asset = upload_asset(
         db=db,
         project_id=project_id,
-        asset_name=_build_generated_asset_name(normalized_mode, generation_result.content_type),
-        content=generation_result.image_bytes,
-        content_type=generation_result.content_type,
+        asset_name=_build_generated_asset_name(normalized_mode, generated_content_type),
+        content=generated_content,
+        content_type=generated_content_type,
     )
 
     generation = AssetGeneration(
@@ -103,8 +150,8 @@ def create_generation(
         timeline_id=timeline_id,
         request_origin=request_origin,
         requestor=requestor,
-        provider="openrouter",
-        model=generation_result.model or model or DEFAULT_MODEL,
+        provider=provider,
+        model=resolved_model,
         mode=normalized_mode,
         status="pending",
         prompt=prompt,
@@ -303,7 +350,7 @@ def _normalize_frame_inputs(
     frame_range: dict | None,
     frame_indices: list[int] | None,
 ) -> tuple[dict | None, list[int] | None]:
-    if mode == "image":
+    if mode in {"image", "video"}:
         return None, None
 
     normalized_range = None
@@ -331,7 +378,7 @@ def _normalize_frame_repeat_count(
     mode: str,
     frame_repeat_count: int | None,
 ) -> int | None:
-    if mode == "image":
+    if mode in {"image", "video"}:
         return None
 
     if frame_repeat_count is None:
@@ -356,6 +403,37 @@ def _extract_frame_repeat_count(parameters: dict | None) -> int:
     except (TypeError, ValueError):
         return 1
     return parsed if parsed >= 1 else 1
+
+
+def _is_veo_reference_unsupported_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return (
+        "inlinedata" in message and "isn't supported" in message
+    ) or (
+        "referenceimages" in message and "isn't supported" in message
+    )
+
+
+def _build_reference_prompt_hint(reference: dict) -> str | None:
+    value = reference.get("prompt_hint")
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    return text or None
+
+
+def _augment_video_prompt_with_reference_hint(
+    base_prompt: str,
+    reference_hint: str | None,
+) -> str:
+    base = base_prompt.strip()
+    if not reference_hint:
+        return base
+    return (
+        f"{base}\n\n"
+        "Match the same primary subject identity as the selected reference snippet.\n"
+        f"Reference details: {reference_hint}"
+    )
 
 
 def _resolve_reference_image(
@@ -389,6 +467,7 @@ def _resolve_reference_image(
             "image_bytes": image_bytes,
             "content_type": image_content_type,
             "reference_snippet_id": snippet.snippet_id,
+            "prompt_hint": _snippet_to_prompt_hint(snippet),
         }
 
     if reference_identity_id:
@@ -406,6 +485,7 @@ def _resolve_reference_image(
             "content_type": image_content_type,
             "reference_snippet_id": snippet.snippet_id,
             "reference_identity_id": identity.identity_id,
+            "prompt_hint": _snippet_to_prompt_hint(snippet),
         }
 
     if reference_character_model_id:
@@ -423,6 +503,7 @@ def _resolve_reference_image(
             "content_type": image_content_type,
             "reference_snippet_id": snippet.snippet_id,
             "reference_character_model_id": character_model.character_model_id,
+            "prompt_hint": _snippet_to_prompt_hint(snippet),
         }
 
     if reference_asset_id:
@@ -438,12 +519,34 @@ def _resolve_reference_image(
             "image_bytes": image_bytes,
             "content_type": asset.asset_type,
             "reference_asset_id": asset.asset_id,
+            "prompt_hint": None,
         }
 
     return {
         "image_bytes": None,
         "content_type": None,
+        "prompt_hint": None,
     }
+
+
+def _snippet_to_prompt_hint(snippet: Snippet) -> str | None:
+    parts: list[str] = []
+    if snippet.descriptor:
+        text = str(snippet.descriptor).strip()
+        if text:
+            parts.append(text)
+    if snippet.notes:
+        text = str(snippet.notes).strip()
+        if text:
+            parts.append(text)
+    if isinstance(snippet.tags, list) and snippet.tags:
+        tags = [str(tag).strip() for tag in snippet.tags if str(tag).strip()]
+        if tags:
+            parts.append(f"tags: {', '.join(tags[:8])}")
+
+    if not parts:
+        return None
+    return "; ".join(parts)
 
 
 def _download_snippet_preview(snippet: Snippet) -> tuple[bytes | None, str]:
@@ -545,7 +648,7 @@ def _attach_snippet_anchor_if_needed(
 def _build_generated_asset_name(mode: str, content_type: str) -> str:
     extension = mimetypes.guess_extension(content_type or "") or ".png"
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    return f"nano_banana_{mode}_{timestamp}{extension}"
+    return f"generated_{mode}_{timestamp}{extension}"
 
 
 def _build_applied_video_asset_name(target_name: str, mode: str) -> str:
