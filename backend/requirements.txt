@@ -4,6 +4,9 @@ sqlalchemy
 alembic
 psycopg2-binary
 pgvector
+numpy
+opencv-python-headless
+mediapipe
 rq
 redis
 google-cloud-storage

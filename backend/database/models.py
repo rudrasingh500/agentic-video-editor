@@ -463,3 +463,389 @@ class EntitySimilarity(Base):
             f"<EntitySimilarity {self.entity_a_id} <-> {self.entity_b_id} "
             f"score={self.similarity_score:.2f} confirmed={self.is_confirmed}>"
         )
+
+
+class Snippet(Base):
+    __tablename__ = "snippets"
+
+    snippet_id = Column(
+        UUID, unique=True, index=True, nullable=False, primary_key=True, default=uuid4
+    )
+    project_id = Column(
+        UUID,
+        ForeignKey("projects.project_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    asset_id = Column(
+        UUID,
+        ForeignKey("assets.asset_id", ondelete="CASCADE"),
+        nullable=True,
+    )
+
+    snippet_type = Column(String, nullable=False)  # face, person, character, item
+    source_type = Column(String, nullable=False)  # video_ingest, generated_asset, manual
+    source_ref = Column(JSONB, nullable=False, default=dict)
+
+    frame_index = Column(Integer, nullable=True)
+    timestamp_ms = Column(Integer, nullable=True)
+    bbox = Column(JSONB, nullable=True)
+
+    crop_blob_path = Column(String, nullable=True)
+    preview_blob_path = Column(String, nullable=True)
+
+    descriptor = Column(String, nullable=True)
+    embedding = Column(Vector(EMBEDDING_DIMENSIONS), nullable=True)
+
+    tags = Column(JSONB, nullable=True)
+    notes = Column(String, nullable=True)
+    quality_score = Column(Float, nullable=True)
+
+    created_by = Column(String, nullable=False, default="system")
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
+    updated_at = Column(
+        DateTime, nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (
+        Index("ix_snippets_project_id", project_id),
+        Index("ix_snippets_asset_id", asset_id),
+        Index("ix_snippets_type", snippet_type),
+        Index("ix_snippets_source_type", source_type),
+        Index(
+            "ix_snippets_embedding",
+            embedding,
+            postgresql_using="ivfflat",
+            postgresql_ops={"embedding": "vector_cosine_ops"},
+        ),
+    )
+
+
+class SnippetIdentity(Base):
+    __tablename__ = "snippet_identities"
+
+    identity_id = Column(
+        UUID, unique=True, index=True, nullable=False, primary_key=True, default=uuid4
+    )
+    project_id = Column(
+        UUID,
+        ForeignKey("projects.project_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    identity_type = Column(String, nullable=False)  # person, item
+    name = Column(String, nullable=False)
+    description = Column(String, nullable=True)
+    status = Column(String, nullable=False, default="active")
+
+    canonical_snippet_id = Column(
+        UUID,
+        ForeignKey("snippets.snippet_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    prototype_embedding = Column(Vector(EMBEDDING_DIMENSIONS), nullable=True)
+
+    merged_into_id = Column(
+        UUID,
+        ForeignKey("snippet_identities.identity_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    created_by = Column(String, nullable=False, default="system")
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
+    updated_at = Column(
+        DateTime, nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (
+        Index("ix_snippet_identities_project_id", project_id),
+        Index("ix_snippet_identities_type", identity_type),
+        Index("ix_snippet_identities_status", status),
+        Index("ix_snippet_identities_merged", merged_into_id),
+        Index(
+            "ix_snippet_identities_embedding",
+            prototype_embedding,
+            postgresql_using="ivfflat",
+            postgresql_ops={"prototype_embedding": "vector_cosine_ops"},
+        ),
+    )
+
+
+class SnippetIdentityLink(Base):
+    __tablename__ = "snippet_identity_links"
+
+    link_id = Column(
+        UUID, unique=True, index=True, nullable=False, primary_key=True, default=uuid4
+    )
+    project_id = Column(
+        UUID,
+        ForeignKey("projects.project_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    snippet_id = Column(
+        UUID,
+        ForeignKey("snippets.snippet_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    identity_id = Column(
+        UUID,
+        ForeignKey("snippet_identities.identity_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    confidence = Column(Float, nullable=True)
+    is_primary = Column(Boolean, nullable=False, default=False)
+    link_source = Column(String, nullable=False, default="system")
+    status = Column(String, nullable=False, default="active")
+    metadata_json = Column("metadata", JSONB, nullable=False, default=dict)
+
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
+    updated_at = Column(
+        DateTime, nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (
+        Index("ix_snippet_identity_links_project", project_id),
+        Index("ix_snippet_identity_links_snippet", snippet_id),
+        Index("ix_snippet_identity_links_identity", identity_id),
+    )
+
+
+class CharacterModel(Base):
+    __tablename__ = "character_models"
+
+    character_model_id = Column(
+        UUID, unique=True, index=True, nullable=False, primary_key=True, default=uuid4
+    )
+    project_id = Column(
+        UUID,
+        ForeignKey("projects.project_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    model_type = Column(String, nullable=False, default="character")  # character, item
+    name = Column(String, nullable=False)
+    description = Column(String, nullable=True)
+    canonical_prompt = Column(String, nullable=True)
+    status = Column(String, nullable=False, default="active")
+
+    canonical_snippet_id = Column(
+        UUID,
+        ForeignKey("snippets.snippet_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    merged_into_id = Column(
+        UUID,
+        ForeignKey("character_models.character_model_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    created_by = Column(String, nullable=False, default="system")
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
+    updated_at = Column(
+        DateTime, nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (
+        Index("ix_character_models_project", project_id),
+        Index("ix_character_models_type", model_type),
+        Index("ix_character_models_status", status),
+        Index("ix_character_models_merged", merged_into_id),
+    )
+
+
+class CharacterModelSnippetLink(Base):
+    __tablename__ = "character_model_snippet_links"
+
+    link_id = Column(
+        UUID, unique=True, index=True, nullable=False, primary_key=True, default=uuid4
+    )
+    character_model_id = Column(
+        UUID,
+        ForeignKey("character_models.character_model_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    snippet_id = Column(
+        UUID,
+        ForeignKey("snippets.snippet_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    role = Column(String, nullable=False, default="reference")
+    metadata_json = Column("metadata", JSONB, nullable=False, default=dict)
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        Index("ix_character_model_snippet_links_model", character_model_id),
+        Index("ix_character_model_snippet_links_snippet", snippet_id),
+    )
+
+
+class CharacterModelIdentityLink(Base):
+    __tablename__ = "character_model_identity_links"
+
+    link_id = Column(
+        UUID, unique=True, index=True, nullable=False, primary_key=True, default=uuid4
+    )
+    character_model_id = Column(
+        UUID,
+        ForeignKey("character_models.character_model_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    identity_id = Column(
+        UUID,
+        ForeignKey("snippet_identities.identity_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    role = Column(String, nullable=False, default="primary")
+    metadata_json = Column("metadata", JSONB, nullable=False, default=dict)
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        Index("ix_character_model_identity_links_model", character_model_id),
+        Index("ix_character_model_identity_links_identity", identity_id),
+    )
+
+
+class IdentityMergeEvent(Base):
+    __tablename__ = "identity_merge_events"
+
+    event_id = Column(
+        UUID, unique=True, index=True, nullable=False, primary_key=True, default=uuid4
+    )
+    project_id = Column(
+        UUID,
+        ForeignKey("projects.project_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    source_identity_id = Column(
+        UUID,
+        ForeignKey("snippet_identities.identity_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    target_identity_id = Column(
+        UUID,
+        ForeignKey("snippet_identities.identity_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    reason = Column(String, nullable=True)
+    actor = Column(String, nullable=False, default="system")
+    confidence = Column(Float, nullable=True)
+    metadata_json = Column("metadata", JSONB, nullable=False, default=dict)
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        Index("ix_identity_merge_events_project", project_id),
+        Index("ix_identity_merge_events_source", source_identity_id),
+        Index("ix_identity_merge_events_target", target_identity_id),
+    )
+
+
+class CharacterModelMergeEvent(Base):
+    __tablename__ = "character_model_merge_events"
+
+    event_id = Column(
+        UUID, unique=True, index=True, nullable=False, primary_key=True, default=uuid4
+    )
+    project_id = Column(
+        UUID,
+        ForeignKey("projects.project_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    source_model_id = Column(
+        UUID,
+        ForeignKey("character_models.character_model_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    target_model_id = Column(
+        UUID,
+        ForeignKey("character_models.character_model_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    reason = Column(String, nullable=True)
+    actor = Column(String, nullable=False, default="system")
+    metadata_json = Column("metadata", JSONB, nullable=False, default=dict)
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        Index("ix_character_model_merge_events_project", project_id),
+        Index("ix_character_model_merge_events_source", source_model_id),
+        Index("ix_character_model_merge_events_target", target_model_id),
+    )
+
+
+class SnippetMergeSuggestion(Base):
+    __tablename__ = "snippet_merge_suggestions"
+
+    suggestion_id = Column(
+        UUID, unique=True, index=True, nullable=False, primary_key=True, default=uuid4
+    )
+    project_id = Column(
+        UUID,
+        ForeignKey("projects.project_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    snippet_id = Column(
+        UUID,
+        ForeignKey("snippets.snippet_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    candidate_identity_id = Column(
+        UUID,
+        ForeignKey("snippet_identities.identity_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    similarity_score = Column(Float, nullable=False)
+    decision = Column(String, nullable=False, default="pending")
+    decided_by = Column(String, nullable=True)
+    decided_at = Column(DateTime, nullable=True)
+    metadata_json = Column("metadata", JSONB, nullable=False, default=dict)
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        Index("ix_snippet_merge_suggestions_project", project_id),
+        Index("ix_snippet_merge_suggestions_snippet", snippet_id),
+        Index("ix_snippet_merge_suggestions_identity", candidate_identity_id),
+        Index("ix_snippet_merge_suggestions_decision", decision),
+    )
+
+
+class GenerationReferenceAnchor(Base):
+    __tablename__ = "generation_reference_anchors"
+
+    anchor_id = Column(
+        UUID, unique=True, index=True, nullable=False, primary_key=True, default=uuid4
+    )
+    project_id = Column(
+        UUID,
+        ForeignKey("projects.project_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    timeline_id = Column(
+        UUID,
+        ForeignKey("timelines.timeline_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    anchor_type = Column(String, nullable=False)  # snippet, identity, character_model
+    snippet_id = Column(
+        UUID,
+        ForeignKey("snippets.snippet_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    identity_id = Column(
+        UUID,
+        ForeignKey("snippet_identities.identity_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    character_model_id = Column(
+        UUID,
+        ForeignKey("character_models.character_model_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    request_context = Column(JSONB, nullable=False, default=dict)
+    created_by = Column(String, nullable=False, default="system")
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        Index("ix_generation_reference_anchors_project", project_id),
+        Index("ix_generation_reference_anchors_timeline", timeline_id),
+        Index("ix_generation_reference_anchors_type", anchor_type),
+    )

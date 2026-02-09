@@ -14,6 +14,7 @@ from handlers.edit_handler import router as edit_router
 from handlers.health_handler import router as health_router
 from handlers.project_handler import router as project_router
 from handlers.render_handler import router as render_router
+from handlers.snippet_handler import router as snippet_router
 from handlers.timeline_handler import router as timeline_router
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -52,6 +53,7 @@ app.include_router(health_router)
 app.include_router(auth_router)
 app.include_router(project_router)
 app.include_router(asset_router)
+app.include_router(snippet_router)
 app.include_router(timeline_router)
 app.include_router(render_router)
 app.include_router(edit_router, prefix="/projects/{project_id}/edit", tags=["edit"])

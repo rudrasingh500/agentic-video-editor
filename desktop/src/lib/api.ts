@@ -1,10 +1,13 @@
 import type { AppConfig } from './config'
 import type {
   Asset,
+  CharacterModel,
   EditPatchSummary,
   EditSessionDetail,
   EditSessionSummary,
   Project,
+  Snippet,
+  SnippetIdentity,
 } from './types'
 
 const normalizeBaseUrl = (baseUrl: string) => baseUrl.replace(/\/+$/, '')
@@ -95,6 +98,31 @@ export const api = {
       config,
       `/projects/${projectId}/assets/${assetId}`,
       { method: 'DELETE' },
+    ),
+  listSnippets: (config: AppConfig, projectId: string) =>
+    apiFetch<{ ok: boolean; snippets: Snippet[] }>(
+      config,
+      `/projects/${projectId}/snippets`,
+    ),
+  getSnippet: (config: AppConfig, projectId: string, snippetId: string) =>
+    apiFetch<{ ok: boolean; snippet: Snippet; preview_url?: string | null }>(
+      config,
+      `/projects/${projectId}/snippets/items/${snippetId}`,
+    ),
+  listSnippetIdentities: (config: AppConfig, projectId: string) =>
+    apiFetch<{ ok: boolean; identities: SnippetIdentity[] }>(
+      config,
+      `/projects/${projectId}/snippets/identities`,
+    ),
+  listCharacterModels: (config: AppConfig, projectId: string) =>
+    apiFetch<{ ok: boolean; character_models: CharacterModel[] }>(
+      config,
+      `/projects/${projectId}/snippets/character-models`,
+    ),
+  listSnippetMergeSuggestions: (config: AppConfig, projectId: string) =>
+    apiFetch<{ ok: boolean; suggestions: Record<string, unknown>[] }>(
+      config,
+      `/projects/${projectId}/snippets/merge-suggestions`,
     ),
   getTimeline: (config: AppConfig, projectId: string) =>
     apiFetch<{ ok: boolean; timeline: Record<string, unknown>; version: number }>(

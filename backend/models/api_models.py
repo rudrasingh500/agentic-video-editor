@@ -193,3 +193,175 @@ class EditSessionCloseResponse(BaseModel):
     """Response from closing/cancelling a session."""
 
     ok: bool
+
+
+class SnippetCreateRequest(BaseModel):
+    snippet_type: str
+    source_type: str
+    source_ref: dict[str, Any] = Field(default_factory=dict)
+    asset_id: str | None = None
+    frame_index: int | None = None
+    timestamp_ms: int | None = None
+    bbox: dict[str, Any] | None = None
+    descriptor: str | None = None
+    embedding: list[float] | None = None
+    tags: list[str] = Field(default_factory=list)
+    notes: str | None = None
+    quality_score: float | None = None
+    created_by: str = "user"
+
+
+class SnippetResponse(BaseModel):
+    snippet_id: str
+    project_id: str
+    asset_id: str | None = None
+    snippet_type: str
+    source_type: str
+    source_ref: dict[str, Any] = Field(default_factory=dict)
+    frame_index: int | None = None
+    timestamp_ms: int | None = None
+    bbox: dict[str, Any] | None = None
+    descriptor: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    notes: str | None = None
+    quality_score: float | None = None
+    created_by: str
+    created_at: datetime
+
+
+class SnippetDetailResponse(BaseModel):
+    ok: bool
+    snippet: SnippetResponse
+    preview_url: str | None = None
+
+
+class SnippetListResponse(BaseModel):
+    ok: bool
+    snippets: list[SnippetResponse]
+
+
+class IdentityCreateRequest(BaseModel):
+    name: str
+    identity_type: str
+    description: str | None = None
+    snippet_ids: list[str] = Field(default_factory=list)
+    created_by: str = "user"
+
+
+class IdentityResponse(BaseModel):
+    identity_id: str
+    project_id: str
+    identity_type: str
+    name: str
+    description: str | None = None
+    status: str
+    canonical_snippet_id: str | None = None
+    merged_into_id: str | None = None
+    created_by: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class IdentityDetailResponse(BaseModel):
+    ok: bool
+    identity: IdentityResponse
+
+
+class IdentityListResponse(BaseModel):
+    ok: bool
+    identities: list[IdentityResponse]
+
+
+class IdentityMergeRequest(BaseModel):
+    source_identity_ids: list[str]
+    target_identity_id: str
+    actor: str = "agent"
+    reason: str | None = None
+
+
+class IdentityMergeResponse(BaseModel):
+    ok: bool
+    identity: IdentityResponse
+
+
+class CharacterModelCreateRequest(BaseModel):
+    name: str
+    model_type: str = "character"
+    description: str | None = None
+    canonical_prompt: str | None = None
+    identity_ids: list[str] = Field(default_factory=list)
+    snippet_ids: list[str] = Field(default_factory=list)
+    created_by: str = "user"
+
+
+class CharacterModelResponse(BaseModel):
+    character_model_id: str
+    project_id: str
+    model_type: str
+    name: str
+    description: str | None = None
+    canonical_prompt: str | None = None
+    status: str
+    canonical_snippet_id: str | None = None
+    merged_into_id: str | None = None
+    created_by: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class CharacterModelDetailResponse(BaseModel):
+    ok: bool
+    character_model: CharacterModelResponse
+
+
+class CharacterModelListResponse(BaseModel):
+    ok: bool
+    character_models: list[CharacterModelResponse]
+
+
+class CharacterModelMergeRequest(BaseModel):
+    source_model_ids: list[str]
+    target_model_id: str
+    actor: str = "agent"
+    reason: str | None = None
+
+
+class CharacterModelMergeResponse(BaseModel):
+    ok: bool
+    character_model: CharacterModelResponse
+
+
+class SnippetMergeSuggestionResponse(BaseModel):
+    ok: bool
+    suggestions: list[dict[str, Any]]
+
+
+class SnippetMergeDecisionRequest(BaseModel):
+    decision: str
+    actor: str = "agent"
+
+
+class SnippetMergeDecisionResponse(BaseModel):
+    ok: bool
+    suggestion_id: str
+    decision: str
+
+
+class AttachGenerationAnchorRequest(BaseModel):
+    anchor_type: str
+    timeline_id: str | None = None
+    snippet_id: str | None = None
+    identity_id: str | None = None
+    character_model_id: str | None = None
+    request_context: dict[str, Any] = Field(default_factory=dict)
+    created_by: str = "agent"
+
+
+class AttachGenerationAnchorResponse(BaseModel):
+    ok: bool
+    anchor_id: str
+
+
+class BestIdentityCandidatesResponse(BaseModel):
+    ok: bool
+    candidates: list[dict[str, Any]]

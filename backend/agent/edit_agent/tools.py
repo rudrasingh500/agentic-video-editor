@@ -19,7 +19,18 @@ from sqlalchemy.dialects.postgresql import array, ARRAY
 from sqlalchemy.types import String
 from sqlalchemy.orm import Session
 
-from database.models import Assets, ProjectEntity, EntitySimilarity, RenderJob
+from database.models import (
+    Assets,
+    CharacterModel,
+    CharacterModelIdentityLink,
+    CharacterModelSnippetLink,
+    EntitySimilarity,
+    ProjectEntity,
+    RenderJob,
+    Snippet,
+    SnippetIdentity,
+    SnippetIdentityLink,
+)
 from models.timeline_models import (
     Clip,
     ExternalReference,
@@ -464,6 +475,103 @@ ASSET_RETRIEVAL_TOOLS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_snippets",
+            "description": "List stored snippets (face/person/item) for this project.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "snippet_type": {
+                        "type": "string",
+                        "enum": ["face", "person", "character", "item"],
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of snippets to return (default 50)",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_snippet_details",
+            "description": "Get snippet metadata and preview URL.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "snippet_id": {
+                        "type": "string",
+                        "description": "Snippet UUID",
+                    },
+                },
+                "required": ["snippet_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_character_models",
+            "description": "List available character models for generation consistency.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "model_type": {
+                        "type": "string",
+                        "enum": ["character", "item"],
+                    },
+                    "limit": {
+                        "type": "integer",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_character_model_from_snippets",
+            "description": "Create a character model from one or more snippets.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "snippet_ids": {"type": "array", "items": {"type": "string"}},
+                    "model_type": {
+                        "type": "string",
+                        "enum": ["character", "item"],
+                    },
+                    "description": {"type": "string"},
+                },
+                "required": ["name", "snippet_ids"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "merge_snippet_identities",
+            "description": "Merge multiple snippet identities into a single target identity.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "source_identity_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                    "target_identity_id": {"type": "string"},
+                    "reason": {"type": "string"},
+                },
+                "required": ["source_identity_ids", "target_identity_id"],
+            },
+        },
+    },
 ]
 
 
@@ -826,6 +934,11 @@ def execute_tool(
         "merge_entities": _merge_entities,
         "rename_entity": _rename_entity,
         "find_entity_appearances": _find_entity_appearances,
+        "list_snippets": _list_snippets,
+        "get_snippet_details": _get_snippet_details,
+        "list_character_models": _list_character_models,
+        "create_character_model_from_snippets": _create_character_model_from_snippets,
+        "merge_snippet_identities": _merge_snippet_identities,
         # Edit agent tools
         "skills_registry": _skills_registry,
         "get_timeline_snapshot": _get_timeline_snapshot,
@@ -1836,6 +1949,243 @@ def _find_entity_appearances(
         "total_appearances": len(appearances),
         "include_unconfirmed": include_unconfirmed_matches,
         "appearances": appearances,
+    }
+
+
+def _list_snippets(
+    project_id: str,
+    user_id: str,
+    timeline_id: str,
+    db: Session,
+    snippet_type: str | None = None,
+    limit: int = 50,
+) -> dict[str, Any]:
+    query = db.query(Snippet).filter(Snippet.project_id == project_id)
+    if snippet_type:
+        query = query.filter(Snippet.snippet_type == snippet_type)
+
+    snippets = query.order_by(Snippet.created_at.desc()).limit(limit).all()
+    return {
+        "count": len(snippets),
+        "snippet_type_filter": snippet_type,
+        "snippets": [
+            {
+                "snippet_id": str(snippet.snippet_id),
+                "snippet_type": snippet.snippet_type,
+                "asset_id": str(snippet.asset_id) if snippet.asset_id else None,
+                "timestamp_ms": snippet.timestamp_ms,
+                "descriptor": snippet.descriptor,
+                "quality_score": snippet.quality_score,
+                "tags": snippet.tags or [],
+            }
+            for snippet in snippets
+        ],
+    }
+
+
+def _get_snippet_details(
+    project_id: str,
+    user_id: str,
+    timeline_id: str,
+    db: Session,
+    snippet_id: str,
+) -> dict[str, Any]:
+    snippet = db.query(Snippet).filter(
+        Snippet.project_id == project_id,
+        Snippet.snippet_id == snippet_id,
+    ).first()
+    if not snippet:
+        return {"error": f"Snippet not found: {snippet_id}"}
+
+    preview_url = None
+    if snippet.preview_blob_path:
+        preview_url = generate_signed_url(
+            bucket_name=os.getenv("GCS_BUCKET", "video-editor"),
+            blob_name=snippet.preview_blob_path,
+            expiration=timedelta(hours=1),
+        )
+
+    linked_identities = db.query(SnippetIdentityLink).filter(
+        SnippetIdentityLink.snippet_id == snippet.snippet_id,
+        SnippetIdentityLink.status == "active",
+    ).all()
+
+    return {
+        "snippet_id": str(snippet.snippet_id),
+        "snippet_type": snippet.snippet_type,
+        "source_type": snippet.source_type,
+        "source_ref": snippet.source_ref or {},
+        "asset_id": str(snippet.asset_id) if snippet.asset_id else None,
+        "timestamp_ms": snippet.timestamp_ms,
+        "frame_index": snippet.frame_index,
+        "bbox": snippet.bbox,
+        "descriptor": snippet.descriptor,
+        "quality_score": snippet.quality_score,
+        "tags": snippet.tags or [],
+        "preview_url": preview_url,
+        "identity_links": [
+            {
+                "identity_id": str(link.identity_id),
+                "confidence": link.confidence,
+                "is_primary": link.is_primary,
+                "link_source": link.link_source,
+            }
+            for link in linked_identities
+        ],
+    }
+
+
+def _list_character_models(
+    project_id: str,
+    user_id: str,
+    timeline_id: str,
+    db: Session,
+    model_type: str | None = None,
+    limit: int = 50,
+) -> dict[str, Any]:
+    query = db.query(CharacterModel).filter(
+        CharacterModel.project_id == project_id,
+        CharacterModel.merged_into_id.is_(None),
+    )
+    if model_type:
+        query = query.filter(CharacterModel.model_type == model_type)
+    models = query.order_by(CharacterModel.updated_at.desc()).limit(limit).all()
+
+    return {
+        "count": len(models),
+        "models": [
+            {
+                "character_model_id": str(model.character_model_id),
+                "name": model.name,
+                "model_type": model.model_type,
+                "description": model.description,
+                "canonical_prompt": model.canonical_prompt,
+                "canonical_snippet_id": (
+                    str(model.canonical_snippet_id) if model.canonical_snippet_id else None
+                ),
+                "status": model.status,
+            }
+            for model in models
+        ],
+    }
+
+
+def _create_character_model_from_snippets(
+    project_id: str,
+    user_id: str,
+    timeline_id: str,
+    db: Session,
+    name: str,
+    snippet_ids: list[str],
+    model_type: str = "character",
+    description: str | None = None,
+) -> dict[str, Any]:
+    if not snippet_ids:
+        return {"error": "snippet_ids is required"}
+
+    snippets = db.query(Snippet).filter(
+        Snippet.project_id == project_id,
+        Snippet.snippet_id.in_(snippet_ids),
+    ).all()
+    if not snippets:
+        return {"error": "No valid snippets found"}
+
+    model = CharacterModel(
+        character_model_id=uuid4(),
+        project_id=project_id,
+        model_type=model_type,
+        name=name,
+        description=description,
+        canonical_snippet_id=snippets[0].snippet_id,
+        created_by="agent",
+    )
+    db.add(model)
+    db.flush()
+
+    for snippet in snippets:
+        db.add(
+            CharacterModelSnippetLink(
+                link_id=uuid4(),
+                character_model_id=model.character_model_id,
+                snippet_id=snippet.snippet_id,
+                role="reference",
+                metadata_json={"created_by": "agent"},
+            )
+        )
+
+    db.commit()
+    return {
+        "success": True,
+        "character_model_id": str(model.character_model_id),
+        "name": model.name,
+        "model_type": model.model_type,
+        "snippet_count": len(snippets),
+    }
+
+
+def _merge_snippet_identities(
+    project_id: str,
+    user_id: str,
+    timeline_id: str,
+    db: Session,
+    source_identity_ids: list[str],
+    target_identity_id: str,
+    reason: str | None = None,
+) -> dict[str, Any]:
+    target = db.query(SnippetIdentity).filter(
+        SnippetIdentity.project_id == project_id,
+        SnippetIdentity.identity_id == target_identity_id,
+    ).first()
+    if not target:
+        return {"error": f"Target identity not found: {target_identity_id}"}
+
+    merged = 0
+    for source_id in source_identity_ids:
+        if source_id == target_identity_id:
+            continue
+        source = db.query(SnippetIdentity).filter(
+            SnippetIdentity.project_id == project_id,
+            SnippetIdentity.identity_id == source_id,
+        ).first()
+        if not source:
+            continue
+
+        source.merged_into_id = target.identity_id
+        source.status = "merged"
+
+        links = db.query(SnippetIdentityLink).filter(
+            SnippetIdentityLink.identity_id == source.identity_id,
+            SnippetIdentityLink.status == "active",
+        ).all()
+        for link in links:
+            exists = db.query(SnippetIdentityLink).filter(
+                SnippetIdentityLink.identity_id == target.identity_id,
+                SnippetIdentityLink.snippet_id == link.snippet_id,
+                SnippetIdentityLink.status == "active",
+            ).first()
+            if exists:
+                continue
+            db.add(
+                SnippetIdentityLink(
+                    link_id=uuid4(),
+                    project_id=project_id,
+                    snippet_id=link.snippet_id,
+                    identity_id=target.identity_id,
+                    confidence=link.confidence,
+                    is_primary=False,
+                    link_source="agent",
+                    status="active",
+                    metadata_json={"merged_from": str(source.identity_id), "reason": reason},
+                )
+            )
+        merged += 1
+
+    db.commit()
+    return {
+        "success": True,
+        "target_identity_id": str(target.identity_id),
+        "target_name": target.name,
+        "merged_count": merged,
     }
 
 
