@@ -56,11 +56,48 @@ jobs:
           VITE_SESSION_TOKEN: ""
           VITE_WEBHOOK_TOKEN: ""
           VITE_RENDER_WEBHOOK_SECRET: ""
+          RENDERER_FFMPEG_BIN: C:/ProgramData/chocolatey/lib/ffmpeg/tools/ffmpeg/bin/ffmpeg.exe
+          RENDERER_FFPROBE_BIN: C:/ProgramData/chocolatey/lib/ffmpeg/tools/ffmpeg/bin/ffprobe.exe
         run: |
           if [ -z "$VITE_BACKEND_URL" ]; then
             export VITE_BACKEND_URL="http://localhost:8000"
           fi
           npm run build
+
+      - name: Verify bundled render tools
+        shell: pwsh
+        run: |
+          $bundleDirs = Get-ChildItem -Path "desktop/release" -Recurse -Directory | Where-Object { $_.Name -eq "render-bundle" }
+          if (-not $bundleDirs) {
+            throw "render-bundle directory not found in desktop/release output"
+          }
+
+          $required = @("renderer.exe", "ffmpeg.exe", "ffprobe.exe")
+          $verified = $false
+
+          foreach ($bundle in $bundleDirs) {
+            $allPresent = $true
+            foreach ($fileName in $required) {
+              $filePath = Join-Path $bundle.FullName $fileName
+              if (-not (Test-Path $filePath)) {
+                $allPresent = $false
+                break
+              }
+              if ((Get-Item $filePath).Length -le 0) {
+                throw "Bundled file is empty: $filePath"
+              }
+            }
+
+            if ($allPresent) {
+              Write-Host "Verified bundled render tools in $($bundle.FullName)"
+              $verified = $true
+              break
+            }
+          }
+
+          if (-not $verified) {
+            throw "No render-bundle directory contained all required files: renderer.exe, ffmpeg.exe, ffprobe.exe"
+          }
 
       - name: Upload release artifacts
         uses: actions/upload-artifact@v4

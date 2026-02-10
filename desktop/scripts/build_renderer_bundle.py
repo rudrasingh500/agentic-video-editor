@@ -74,14 +74,53 @@ def resolve_binary(binary_name: str, override: str) -> Path:
         candidate = Path(override).expanduser().resolve()
         if not candidate.exists():
             raise FileNotFoundError(f"Binary not found: {candidate}")
-        return candidate
+        return _resolve_windows_shim(binary_name, candidate)
 
     resolved = shutil.which(binary_name)
     if not resolved:
         raise FileNotFoundError(
             f"Could not resolve '{binary_name}' in PATH. Set --{binary_name}-bin instead."
         )
-    return Path(resolved).resolve()
+    return _resolve_windows_shim(binary_name, Path(resolved).resolve())
+
+
+def _resolve_windows_shim(binary_name: str, candidate: Path) -> Path:
+    if os.name != "nt":
+        return candidate
+
+    candidate_lower = str(candidate).lower().replace("\\", "/")
+    if "/chocolatey/bin/" not in candidate_lower:
+        return candidate
+
+    package_names = [binary_name]
+    if binary_name in {"ffmpeg", "ffprobe"}:
+        package_names = ["ffmpeg", binary_name]
+
+    choco_root = candidate.parent.parent
+    for package_name in package_names:
+        path_candidates = [
+            choco_root
+            / "lib"
+            / package_name
+            / "tools"
+            / package_name
+            / "bin"
+            / candidate.name,
+            choco_root / "lib" / package_name / "tools" / "bin" / candidate.name,
+        ]
+        for real_binary in path_candidates:
+            if real_binary.exists():
+                print(
+                    f"Resolved Chocolatey shim for {binary_name}: "
+                    f"{candidate} -> {real_binary}"
+                )
+                return real_binary.resolve()
+
+    raise FileNotFoundError(
+        f"Resolved '{binary_name}' to Chocolatey shim at {candidate}, but could not "
+        "find the real binary under Chocolatey lib tools directories. "
+        f"Set --{binary_name}-bin to the actual executable path."
+    )
 
 
 def copy_binary(source: Path, destination: Path) -> None:
@@ -147,6 +186,20 @@ def write_bundle_manifest(bundle_dir: Path, platform_name: str) -> None:
     )
 
 
+def validate_bundle_files(bundle_dir: Path, platform_name: str) -> None:
+    required_files = [
+        platform_executable("renderer", platform_name),
+        platform_executable("ffmpeg", platform_name),
+        platform_executable("ffprobe", platform_name),
+    ]
+    for file_name in required_files:
+        file_path = bundle_dir / file_name
+        if not file_path.exists():
+            raise FileNotFoundError(f"Required bundled file is missing: {file_path}")
+        if file_path.stat().st_size <= 0:
+            raise ValueError(f"Required bundled file is empty: {file_path}")
+
+
 def main() -> None:
     args = parse_args()
     platform_name = detect_platform(args.platform)
@@ -201,6 +254,7 @@ def main() -> None:
         bundle_dir / platform_executable("ffprobe", platform_name),
     )
 
+    validate_bundle_files(bundle_dir, platform_name)
     write_bundle_manifest(bundle_dir, platform_name)
 
     print(f"Renderer bundle created at: {bundle_dir}")
