@@ -13,28 +13,46 @@ const App = () => {
   const [activeProject, setActiveProject] = useState<Project | null>(null)
 
   const ensureSession = useCallback(async (activeConfig: AppConfig): Promise<AppConfig> => {
-    if (activeConfig.sessionToken) {
-      try {
-        const validation = await api.validateSession(activeConfig)
-        if (validation.valid) {
-          const webhookToken =
-            validation.webhook_token ?? activeConfig.webhookToken ?? activeConfig.sessionToken
+    try {
+      const validation = await api.validateSession(activeConfig)
+      if (validation.valid) {
+        const normalizedWebhookToken = validation.webhook_token ?? ''
+        const resolvedSessionToken =
+          activeConfig.sessionToken || normalizedWebhookToken || activeConfig.webhookToken
+        const resolvedWebhookToken =
+          normalizedWebhookToken || activeConfig.webhookToken || resolvedSessionToken
 
-          if (webhookToken !== activeConfig.webhookToken) {
-            setConfig((prev) => {
-              if (prev.webhookToken === webhookToken) {
-                return prev
-              }
-              return { ...prev, webhookToken }
-            })
-            return { ...activeConfig, webhookToken }
+        if (
+          resolvedSessionToken !== activeConfig.sessionToken ||
+          resolvedWebhookToken !== activeConfig.webhookToken
+        ) {
+          const nextConfig = {
+            ...activeConfig,
+            sessionToken: resolvedSessionToken,
+            webhookToken: resolvedWebhookToken,
           }
 
-          return activeConfig
+          setConfig((prev) => {
+            if (
+              prev.sessionToken === nextConfig.sessionToken &&
+              prev.webhookToken === nextConfig.webhookToken
+            ) {
+              return prev
+            }
+            return {
+              ...prev,
+              sessionToken: nextConfig.sessionToken,
+              webhookToken: nextConfig.webhookToken,
+            }
+          })
+
+          return nextConfig
         }
-      } catch {
-        // Fallback to creating a new session.
+
+        return activeConfig
       }
+    } catch {
+      // Fallback to creating a new session.
     }
 
     try {
