@@ -96,6 +96,13 @@ You can set defaults without changing request payloads:
 
 - `RENDER_EXECUTION_MODE`: `cloud` (default) or `local`
 
+## Third-Party Licenses
+
+This software uses code from FFmpeg (http://ffmpeg.org), licensed under the
+LGPLv2.1+. FFmpeg is used as an external command-line tool and is distributed
+unmodified. FFmpeg source code can be obtained from http://ffmpeg.org/download.html
+or from the FFMPEG_LICENSE.txt file included with this distribution.
+
 ## Deployment and CI/CD
 
 See `DEPLOYMENT.md` for:

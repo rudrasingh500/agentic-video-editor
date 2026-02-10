@@ -255,6 +255,11 @@ def main() -> None:
     )
 
     validate_bundle_files(bundle_dir, platform_name)
+
+    license_source = render_job_dir / "FFMPEG_LICENSE.txt"
+    if license_source.exists():
+        copy_binary(license_source, bundle_dir / "FFMPEG_LICENSE.txt")
+
     write_bundle_manifest(bundle_dir, platform_name)
 
     print(f"Renderer bundle created at: {bundle_dir}")
