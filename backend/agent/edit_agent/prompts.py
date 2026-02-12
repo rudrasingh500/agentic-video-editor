@@ -48,6 +48,11 @@ Step D - Call edit_timeline with your patch
 
 Step E - Check the result for errors before continuing
 
+Timing guardrail (critical for visibility):
+- Any still image/title card/b-roll image should remain on screen for at least 0.5 to 1.0 seconds minimum.
+- Prefer >= 1.0s when readability matters (titles/text-heavy frames).
+- Avoid ultra-short flashes unless the user explicitly asks for a strobe/flash effect.
+
 ═══════════════════════════════════════════════════════════════════════════════
 PHASE 4: VERIFY (MANDATORY - Cannot skip)
 ═══════════════════════════════════════════════════════════════════════════════
