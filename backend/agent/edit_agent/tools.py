@@ -72,6 +72,7 @@ from operators.generation_operator import (
 from utils.gcs_utils import generate_signed_url, parse_gcs_url
 from utils.embeddings import get_query_embedding
 from utils.video_utils import (
+    downscale_video_for_embedding,
     extract_video_segment,
     get_video_duration,
     MAX_VIDEO_DURATION_SECONDS,
@@ -2863,6 +2864,13 @@ def _view_asset(
             else:
                 result["chunk_extraction_failed"] = True
 
+    if media_type == "video":
+        original_size = len(content_to_embed)
+        content_to_embed = downscale_video_for_embedding(content_to_embed, content_type)
+        if len(content_to_embed) < original_size:
+            result["downscaled_for_embedding"] = True
+            result["original_size_bytes"] = original_size
+
     # Embed the content as base64
     b64_data = base64.b64encode(content_to_embed).decode("utf-8")
     result["_multimodal"] = {
@@ -3305,6 +3313,12 @@ def _view_render_output(
             )
         else:
             result["chunk_extraction_failed"] = True
+
+    original_size = len(content_to_embed)
+    content_to_embed = downscale_video_for_embedding(content_to_embed, content_type)
+    if len(content_to_embed) < original_size:
+        result["downscaled_for_embedding"] = True
+        result["original_size_bytes"] = original_size
 
     # Embed the video content
     b64_data = base64.b64encode(content_to_embed).decode("utf-8")
