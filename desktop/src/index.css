@@ -104,6 +104,50 @@
     -webkit-text-fill-color: transparent;
     background-clip: text;
   }
+
+  .chat-markdown {
+    line-height: 1.45;
+  }
+
+  .chat-markdown p {
+    margin: 0;
+  }
+
+  .chat-markdown p + p {
+    margin-top: 0.5rem;
+  }
+
+  .chat-markdown ul,
+  .chat-markdown ol {
+    margin: 0.4rem 0;
+    padding-left: 1.1rem;
+  }
+
+  .chat-markdown code {
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 0.8em;
+    background: rgba(255, 255, 255, 0.08);
+    padding: 0.08rem 0.3rem;
+    border-radius: 0.25rem;
+  }
+
+  .chat-markdown pre {
+    margin: 0.45rem 0;
+    padding: 0.55rem 0.65rem;
+    border-radius: 0.45rem;
+    background: rgba(0, 0, 0, 0.32);
+    overflow-x: auto;
+  }
+
+  .chat-markdown pre code {
+    background: transparent;
+    padding: 0;
+  }
+
+  .chat-markdown a {
+    color: #7dd3fc;
+    text-decoration: underline;
+  }
 }
 
 @layer utilities {

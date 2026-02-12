@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog } from "electron";
+import { app, BrowserWindow, ipcMain, dialog, Menu, shell } from "electron";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import fs from "node:fs";
@@ -188,7 +188,37 @@ app.on("activate", () => {
     createWindow();
   }
 });
-app.whenReady().then(createWindow);
+const createApplicationMenu = () => {
+  const template = [
+    {
+      label: "Help",
+      submenu: [
+        {
+          label: "About",
+          click: () => {
+            dialog.showMessageBox(win, {
+              type: "info",
+              title: "About",
+              message: "Auteur Video Editor",
+              detail: "This software uses libraries from the FFmpeg project under the LGPLv2.1 license.\n\nFFmpeg is a trademark of Fabrice Bellard.\n\nFFmpeg source code is available at:\nhttps://ffmpeg.org/download.html",
+              buttons: ["OK", "View License"]
+            }).then((result) => {
+              if (result.response === 1) {
+                shell.openExternal("https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html");
+              }
+            });
+          }
+        }
+      ]
+    }
+  ];
+  const menu = Menu.buildFromTemplate(template);
+  Menu.setApplicationMenu(menu);
+};
+app.whenReady().then(() => {
+  createWindow();
+  createApplicationMenu();
+});
 ipcMain.handle("dialog:open-files", async () => {
   if (!win) {
     return [];

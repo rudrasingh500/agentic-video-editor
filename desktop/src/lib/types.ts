@@ -49,6 +49,18 @@ export type EditSessionPendingPatch = {
   created_at?: string
 }
 
+export type EditSessionActivityEvent = {
+  event_id: string
+  event_type: string
+  status: string
+  label: string
+  created_at?: string | null
+  iteration?: number | null
+  tool_name?: string | null
+  summary?: string | null
+  meta?: Record<string, unknown>
+}
+
 export type EditSessionDetail = {
   session_id: string
   project_id: string
@@ -57,6 +69,7 @@ export type EditSessionDetail = {
   status: string
   messages: EditSessionMessage[]
   pending_patches: EditSessionPendingPatch[]
+  activity_events: EditSessionActivityEvent[]
   created_at: string
   updated_at: string
 }

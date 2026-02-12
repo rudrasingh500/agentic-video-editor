@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 from uuid import UUID, uuid4
 
 from openai import OpenAI
@@ -56,6 +57,23 @@ PARALLEL_SAFE_TOOLS = {
 }
 
 _TOOL_EXECUTOR = ThreadPoolExecutor(max_workers=max(1, PARALLEL_WORKERS))
+ACTIVITY_EVENT_LIMIT = 300
+
+TOOL_ACTIVITY_LABELS = {
+    "get_timeline_snapshot": "Inspecting timeline",
+    "list_assets_summaries": "Reviewing project assets",
+    "get_asset_details": "Inspecting asset details",
+    "search_by_tags": "Searching assets by tags",
+    "search_transcript": "Searching transcript",
+    "search_faces_speakers": "Searching faces and speakers",
+    "search_events_scenes": "Searching events and scenes",
+    "search_objects": "Searching objects",
+    "semantic_search": "Running semantic search",
+    "skills_registry": "Reviewing available edit skills",
+    "render_output": "Rendering preview",
+    "view_render_output": "Reviewing rendered output",
+    "run_quality_checks": "Running quality checks",
+}
 
 # JSON Schema for structured output - enforces the final response format
 FINAL_RESPONSE_SCHEMA: dict[str, Any] = {
@@ -418,11 +436,128 @@ def _execute_tool_calls(
     return ordered
 
 
+def _summarize_edit_operations(tool_args: dict[str, Any]) -> tuple[int, list[str]]:
+    patch = tool_args.get("patch")
+    if not isinstance(patch, dict):
+        return 0, []
+    operations = patch.get("operations")
+    if not isinstance(operations, list):
+        return 0, []
+    operation_types: list[str] = []
+    for operation in operations:
+        if not isinstance(operation, dict):
+            continue
+        operation_type = operation.get("operation_type")
+        if isinstance(operation_type, str) and operation_type:
+            operation_types.append(operation_type)
+    return len(operations), operation_types
+
+
+def _format_tool_activity_label(
+    tool_name: str,
+    tool_args: dict[str, Any],
+    result: dict[str, Any] | None,
+    status: str,
+) -> str:
+    if tool_name == "edit_timeline":
+        operation_count, operation_types = _summarize_edit_operations(tool_args)
+        patch = tool_args.get("patch") if isinstance(tool_args.get("patch"), dict) else {}
+        description = patch.get("description") if isinstance(patch, dict) else None
+        description_text = (
+            str(description).strip() if isinstance(description, str) and description.strip() else ""
+        )
+        if status == "started":
+            if operation_count > 0:
+                if description_text:
+                    return f"Planning edits: {description_text}"
+                return f"Planning timeline edits ({operation_count} operations)"
+            return "Preparing timeline edits"
+        if result and result.get("applied"):
+            type_preview = ", ".join(operation_types[:3]) if operation_types else "timeline edits"
+            suffix = "" if operation_count <= 0 else f" ({operation_count} operations)"
+            if description_text:
+                return f"Applied edits: {description_text}{suffix}"
+            return f"Applied {type_preview}{suffix}"
+        return "Timeline edit was not applied"
+
+    if tool_name == "undo_to_version":
+        if status == "started":
+            return "Preparing undo"
+        target_version = None if not result else result.get("restored_version")
+        if target_version is None:
+            return "Undo completed"
+        return f"Undo completed to version {target_version}"
+
+    base = TOOL_ACTIVITY_LABELS.get(
+        tool_name,
+        f"Running {tool_name.replace('_', ' ')}",
+    )
+    if status == "started":
+        return base
+    return f"Completed: {base}"
+
+
+def _trim_activity_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if len(events) <= ACTIVITY_EVENT_LIMIT:
+        return events
+    return events[-ACTIVITY_EVENT_LIMIT:]
+
+
+def _extract_plan_text(content: str | None) -> str | None:
+    if not content:
+        return None
+    text = content.strip()
+    if not text:
+        return None
+    text = re.sub(r"\s+", " ", text)
+    if len(text) > 240:
+        text = text[:240].rstrip() + "..."
+    return text
+
+
+def _emit_activity_event(
+    session_record: EditSession,
+    db: Session,
+    on_event: Callable[[dict[str, Any]], None] | None,
+    *,
+    event_type: str,
+    status: str,
+    label: str,
+    iteration: int | None = None,
+    tool_name: str | None = None,
+    summary: str | None = None,
+    meta: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    event = {
+        "event_id": str(uuid4()),
+        "event_type": event_type,
+        "status": status,
+        "label": label,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "iteration": iteration,
+        "tool_name": tool_name,
+        "summary": summary,
+        "meta": meta or {},
+    }
+
+    existing = list(session_record.activity_events or [])
+    existing.append(event)
+    session_record.activity_events = _trim_activity_events(existing)
+    session_record.updated_at = datetime.now(timezone.utc)
+    db.commit()
+
+    if on_event:
+        on_event(event)
+
+    return event
+
+
 def orchestrate_edit(
     project_id: UUID | str,
     user_id: UUID | str,
     request: EditRequest,
     db: Session,
+    on_event: Callable[[dict[str, Any]], None] | None = None,
 ) -> EditAgentResult:
     try:
         project_uuid = (
@@ -464,6 +599,7 @@ def orchestrate_edit(
             title=request.message[:80],
             messages=[],
             pending_patches=[],
+            activity_events=[],
             status="active",
         )
         db.add(session_record)
@@ -492,12 +628,30 @@ def orchestrate_edit(
     final_content = ""
 
     iteration = 0
+    _emit_activity_event(
+        session_record,
+        db,
+        on_event,
+        event_type="run_started",
+        status="started",
+        label="Agent run started",
+        summary=request.message,
+        meta={"project_id": str(project_uuid)},
+    )
     while True:
         if max_iterations > 0 and iteration >= max_iterations:
             logger.warning("Edit agent max iterations reached")
+            _emit_activity_event(
+                session_record,
+                db,
+                on_event,
+                event_type="warning",
+                status="completed",
+                label="Iteration limit reached",
+                iteration=iteration,
+            )
             break
         logger.debug("Edit agent iteration %s", iteration + 1)
-        
         # Inject progress context for iterations after the first
         progress_context = _build_progress_context(iteration, trace, applied, max_iterations)
         if progress_context:
@@ -523,11 +677,33 @@ def orchestrate_edit(
             )
         except Exception as exc:
             logger.error(f"OpenRouter API error: {exc}")
+            _emit_activity_event(
+                session_record,
+                db,
+                on_event,
+                event_type="run_failed",
+                status="failed",
+                label="Agent request failed",
+                iteration=iteration,
+                summary=str(exc),
+            )
             break
 
         message = response.choices[0].message
         final_content = message.content or ""
         _log_payload("assistant_message", final_content)
+        plan_text = _extract_plan_text(final_content)
+        if message.tool_calls and plan_text:
+            _emit_activity_event(
+                session_record,
+                db,
+                on_event,
+                event_type="plan",
+                status="completed",
+                label=f"Plan: {plan_text}",
+                iteration=iteration,
+                summary=plan_text,
+            )
 
         reasoning = getattr(message, "reasoning", None)
         if not reasoning:
@@ -562,6 +738,21 @@ def orchestrate_edit(
                     tool_args = {}
 
                 parsed_calls.append((tool_call, tool_args))
+                _emit_activity_event(
+                    session_record,
+                    db,
+                    on_event,
+                    event_type="tool_started",
+                    status="started",
+                    label=_format_tool_activity_label(
+                        tool_name,
+                        tool_args,
+                        None,
+                        "started",
+                    ),
+                    iteration=iteration,
+                    tool_name=tool_name,
+                )
                 _log_payload(
                     "tool_call",
                     {"name": tool_name, "arguments": tool_args},
@@ -585,6 +776,23 @@ def orchestrate_edit(
 
                 trace_entry["result"] = result
                 trace.append(trace_entry)
+
+                _emit_activity_event(
+                    session_record,
+                    db,
+                    on_event,
+                    event_type="tool_completed",
+                    status="failed" if result.get("error") else "completed",
+                    label=_format_tool_activity_label(
+                        tool_name,
+                        tool_args,
+                        result,
+                        "completed",
+                    ),
+                    iteration=iteration,
+                    tool_name=tool_name,
+                    summary=result.get("error") if isinstance(result, dict) else None,
+                )
 
                 _log_payload(
                     "tool_result",
@@ -612,6 +820,17 @@ def orchestrate_edit(
                         warnings.extend([f"quality_check: {issue}" for issue in issues])
                 elif result.get("error"):
                     warnings.append(f"{tool_name}: {result['error']}")
+                    _emit_activity_event(
+                        session_record,
+                        db,
+                        on_event,
+                        event_type="warning",
+                        status="completed",
+                        label=f"{tool_name} returned an error",
+                        iteration=iteration,
+                        tool_name=tool_name,
+                        summary=str(result.get("error")),
+                    )
 
                 # Handle multimodal content in tool results
                 result_payload = dict(result)
@@ -711,11 +930,30 @@ def orchestrate_edit(
                         })
             except Exception as exc:
                 logger.error(f"Verification iteration error: {exc}")
+                _emit_activity_event(
+                    session_record,
+                    db,
+                    on_event,
+                    event_type="warning",
+                    status="failed",
+                    label="Verification step failed",
+                    iteration=iteration,
+                    summary=str(exc),
+                )
         else:
             # Max iterations reached, add warning
             warnings.append(
                 "Edits were applied but verification was skipped due to iteration limit. "
                 "Consider using view_render_output to verify the changes."
+            )
+            _emit_activity_event(
+                session_record,
+                db,
+                on_event,
+                event_type="warning",
+                status="completed",
+                label="Verification skipped due to iteration limit",
+                iteration=iteration,
             )
 
     # Make a final call with structured output to ensure clean response format
@@ -760,6 +998,21 @@ def orchestrate_edit(
         session_record.pending_patches = existing_patches + pending_patch_entries
     session_record.updated_at = datetime.now(timezone.utc)
     db.commit()
+
+    _emit_activity_event(
+        session_record,
+        db,
+        on_event,
+        event_type="run_completed",
+        status="completed",
+        label="Agent run completed",
+        summary=final_message,
+        meta={
+            "applied": applied,
+            "new_version": new_version,
+            "warnings_count": len(warnings),
+        },
+    )
 
     _log_run(db, project_uuid, trace, pending_patch_entries, final_message)
 
@@ -912,18 +1165,24 @@ def _log_run(
     final_message: str,
 ) -> None:
     try:
+        sanitized_trace = _sanitize_json_value(trace)
+        sanitized_pending_patches = _sanitize_json_value(pending_patches)
         run = AgentRun(
             run_id=uuid4(),
             project_id=project_id,
             trace={
                 "agent": "edit_agent",
                 "iterations": len(
-                    set(t.get("iteration", 0) for t in trace if "iteration" in t)
+                    set(
+                        t.get("iteration", 0)
+                        for t in sanitized_trace
+                        if "iteration" in t
+                    )
                 ),
-                "tool_calls": trace,
+                "tool_calls": sanitized_trace,
                 "final_message": final_message,
             },
-            analysis_segments=pending_patches,
+            analysis_segments=sanitized_pending_patches,
         )
         db.add(run)
         db.commit()
@@ -954,3 +1213,17 @@ def _log_payload(label: str, payload: Any) -> None:
     if LOG_MAX_CHARS > 0 and len(message) > LOG_MAX_CHARS:
         message = f"{message[:LOG_MAX_CHARS]}... [truncated]"
     logger.info("Edit agent %s: %s", label, message)
+
+
+def _sanitize_json_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(k): _sanitize_json_value(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_sanitize_json_value(item) for item in value]
+    if isinstance(value, tuple):
+        return [_sanitize_json_value(item) for item in value]
+    if isinstance(value, float):
+        if math.isfinite(value):
+            return value
+        return None
+    return value

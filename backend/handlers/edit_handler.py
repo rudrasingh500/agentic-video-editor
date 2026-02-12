@@ -6,12 +6,17 @@ Provides endpoints for:
 - Listing and applying pending patches
 """
 
+import json
 import logging
+import queue
+import threading
+from typing import Any, Callable
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
+from starlette.responses import StreamingResponse
 
 from database.base import SessionLocal, get_db
 from database.models import Project, Timeline
@@ -57,6 +62,7 @@ def _run_edit_agent_in_thread(
     project_id: UUID,
     user_id: UUID,
     request: EditRequest,
+    on_event: Callable[[dict[str, Any]], None] | None = None,
 ) -> EditAgentResult:
     db = SessionLocal()
     try:
@@ -65,9 +71,104 @@ def _run_edit_agent_in_thread(
             user_id=user_id,
             request=request,
             db=db,
+            on_event=on_event,
         )
     finally:
         db.close()
+
+
+def _stream_edit_agent_events(
+    project_id: UUID,
+    user_id: UUID,
+    request: EditRequest,
+):
+    events: queue.Queue[dict | None] = queue.Queue()
+    result_holder: dict[str, EditAgentResult | Exception | None] = {"result": None}
+
+    def _on_event(event: dict) -> None:
+        events.put(event)
+
+    def _runner() -> None:
+        try:
+            result = _run_edit_agent_in_thread(
+                project_id=project_id,
+                user_id=user_id,
+                request=request,
+                on_event=_on_event,
+            )
+            result_holder["result"] = result
+            patch_summaries = [
+                {
+                    "patch_id": p.patch_id,
+                    "agent_type": p.agent_type.value,
+                    "operation_count": len(p.patch.operations) if p.patch else 0,
+                    "description": p.patch.description if p.patch else "",
+                    "created_at": p.created_at.isoformat(),
+                }
+                for p in result.pending_patches
+            ]
+            events.put({
+                "event_id": f"final-{result.session_id}",
+                "event_type": "final_result",
+                "status": "completed",
+                "label": "Final result ready",
+                "created_at": None,
+                "meta": {
+                    "session_id": result.session_id,
+                    "message": result.message,
+                    "pending_patches": patch_summaries,
+                    "warnings": result.warnings,
+                    "applied": result.applied,
+                    "new_version": result.new_version,
+                },
+            })
+        except SessionNotFoundError as exc:
+            result_holder["result"] = exc
+            events.put({
+                "event_id": "error-session-not-found",
+                "event_type": "error",
+                "status": "failed",
+                "label": "Session not found",
+                "summary": str(exc),
+                "created_at": None,
+                "meta": {},
+            })
+        except SessionClosedError as exc:
+            result_holder["result"] = exc
+            events.put({
+                "event_id": "error-session-closed",
+                "event_type": "error",
+                "status": "failed",
+                "label": "Session is closed",
+                "summary": str(exc),
+                "created_at": None,
+                "meta": {},
+            })
+        except Exception as exc:  # pragma: no cover - defensive error bridge
+            result_holder["result"] = exc
+            events.put({
+                "event_id": "error-agent-run",
+                "event_type": "error",
+                "status": "failed",
+                "label": "Edit agent failed",
+                "summary": str(exc),
+                "created_at": None,
+                "meta": {},
+            })
+        finally:
+            events.put(None)
+
+    threading.Thread(target=_runner, daemon=True).start()
+
+    while True:
+        event = events.get()
+        if event is None:
+            break
+        yield f"{json.dumps(event)}\n"
+
+    result = result_holder.get("result")
+    if isinstance(result, Exception):
+        logger.warning("Streaming edit request finished with error: %s", result)
 
 
 def _require_user_id(session: SessionData) -> UUID:
@@ -178,6 +279,31 @@ async def send_edit_request(
     )
 
 
+@router.post("/stream")
+async def stream_edit_request(
+    project_id: UUID,
+    body: EditRequestBody,
+    project: Project = Depends(require_project),
+    db: Session = Depends(get_db),
+    session: SessionData = Depends(get_auth_session),
+) -> StreamingResponse:
+    user_id = _require_user_id(session)
+    try:
+        _ensure_timeline(db, project, f"user:{user_id}")
+    except Exception:
+        db.rollback()
+        logger.exception("Failed to initialize timeline for project %s", project.project_id)
+        raise HTTPException(status_code=500, detail="Failed to initialize timeline")
+
+    request = EditRequest(
+        message=body.message,
+        session_id=body.session_id,
+    )
+
+    event_stream = _stream_edit_agent_events(project.project_id, user_id, request)
+    return StreamingResponse(event_stream, media_type="application/x-ndjson")
+
+
 @router.get("/sessions", response_model=EditSessionListResponse)
 async def list_edit_sessions(
     project_id: UUID,
@@ -259,6 +385,7 @@ async def get_edit_session(
         status=session.status.value,
         messages=[m.model_dump(mode="json") for m in session.messages],
         pending_patches=[p.model_dump(mode="json") for p in session.pending_patches],
+        activity_events=[e.model_dump(mode="json") for e in session.activity_events],
         created_at=session.created_at,
         updated_at=session.updated_at,
     )

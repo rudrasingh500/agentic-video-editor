@@ -3,6 +3,7 @@ import type {
   Asset,
   CharacterModel,
   EditPatchSummary,
+  EditSessionActivityEvent,
   EditSessionDetail,
   EditSessionSummary,
   GenerationCreatePayload,
@@ -70,6 +71,53 @@ const apiFetch = async <T>(
   }
 
   return response.json() as Promise<T>
+}
+
+type StreamEditEvent = EditSessionActivityEvent
+
+const streamNdjson = async (
+  response: Response,
+  onEvent: (event: StreamEditEvent) => void,
+) => {
+  if (!response.body) {
+    throw new Error('Streaming response body is empty')
+  }
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  let reading = true
+  while (reading) {
+    const { done, value } = await reader.read()
+    if (done) {
+      reading = false
+      continue
+    }
+    buffer += decoder.decode(value, { stream: true })
+    const lines = buffer.split('\n')
+    buffer = lines.pop() ?? ''
+    for (const line of lines) {
+      const trimmed = line.trim()
+      if (!trimmed) {
+        continue
+      }
+      try {
+        onEvent(JSON.parse(trimmed) as StreamEditEvent)
+      } catch {
+        // Ignore malformed event lines.
+      }
+    }
+  }
+
+  const tail = buffer.trim()
+  if (tail) {
+    try {
+      onEvent(JSON.parse(tail) as StreamEditEvent)
+    } catch {
+      // Ignore malformed tail.
+    }
+  }
 }
 
 export const api = {
@@ -209,9 +257,46 @@ export const api = {
       applied: boolean
       new_version: number | null
       }>(config, `/projects/${projectId}/edit`, {
-        method: 'POST',
-        body: JSON.stringify({ message, session_id: sessionId }),
+       method: 'POST',
+       body: JSON.stringify({ message, session_id: sessionId }),
       }),
+  streamEditRequest: async (
+    config: AppConfig,
+    projectId: string,
+    message: string,
+    onEvent: (event: StreamEditEvent) => void,
+    sessionId?: string | null,
+  ) => {
+    const url = `${normalizeBaseUrl(config.baseUrl)}/projects/${projectId}/edit/stream`
+    const headers = new Headers()
+    if (config.devToken && !config.sessionToken) {
+      headers.set('Authorization', `Bearer ${config.devToken}`)
+    }
+    if (config.sessionToken) {
+      headers.set('X-Session-Token', config.sessionToken)
+    }
+    headers.set('Content-Type', 'application/json')
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers,
+      credentials: 'include',
+      body: JSON.stringify({ message, session_id: sessionId }),
+    })
+
+    if (!response.ok) {
+      let detail = response.statusText
+      try {
+        const data = await response.json()
+        detail = data.detail ?? JSON.stringify(data)
+      } catch {
+        // Ignore JSON parsing errors.
+      }
+      throw new Error(detail)
+    }
+
+    await streamNdjson(response, onEvent)
+  },
   listEditSessions: (config: AppConfig, projectId: string) =>
     apiFetch<{ ok: boolean; sessions: EditSessionSummary[]; total: number }>(
       config,

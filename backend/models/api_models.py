@@ -247,6 +247,7 @@ class EditSessionDetailResponse(BaseModel):
     status: str
     messages: list[dict[str, Any]]
     pending_patches: list[dict[str, Any]]
+    activity_events: list[dict[str, Any]] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
 

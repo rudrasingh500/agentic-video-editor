@@ -32,6 +32,7 @@ import ChatSidebar from '../components/ChatSidebar'
 import type {
   Asset,
   EditPatchSummary,
+  EditSessionActivityEvent,
   EditSessionDetail,
   EditSessionPendingPatch,
   EditSessionSummary,
@@ -236,6 +237,8 @@ const Editor = ({ project, config, onBack }: EditorProps) => {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [pendingPatches, setPendingPatches] = useState<EditPatchSummary[]>([])
+  const [activityEvents, setActivityEvents] = useState<EditSessionActivityEvent[]>([])
+  const [agentBusy, setAgentBusy] = useState(false)
   const [gpuInfo, setGpuInfo] = useState<GpuInfo | null>(null)
   const [renderState, setRenderState] = useState<RenderState>({})
   const [renderLogs, setRenderLogs] = useState<string[]>([])
@@ -302,6 +305,10 @@ const Editor = ({ project, config, onBack }: EditorProps) => {
       created_at: patch.created_at ?? new Date().toISOString(),
     }))
 
+  const mapActivityEvents = (
+    events: EditSessionActivityEvent[] | undefined,
+  ): EditSessionActivityEvent[] => (events || []).filter((event) => !!event.event_id)
+
   const loadSession = useCallback(
     async (nextSessionId: string) => {
       setSessionsError(null)
@@ -314,6 +321,7 @@ const Editor = ({ project, config, onBack }: EditorProps) => {
       saveSessionId(project.project_id, detail.session_id)
       setMessages(mapSessionMessages(detail))
       setPendingPatches(mapPendingPatches(detail.pending_patches))
+      setActivityEvents(mapActivityEvents(detail.activity_events))
     },
     [config, project.project_id],
   )
@@ -333,6 +341,7 @@ const Editor = ({ project, config, onBack }: EditorProps) => {
           setSessionId(null)
           setMessages([])
           setPendingPatches([])
+          setActivityEvents([])
         }
       } catch (error) {
         setSessionsError((error as Error).message)
@@ -347,6 +356,7 @@ const Editor = ({ project, config, onBack }: EditorProps) => {
     setSessionId(null)
     setMessages([])
     setPendingPatches([])
+    setActivityEvents([])
     saveSessionId(project.project_id, null)
   }, [project.project_id])
 
@@ -995,28 +1005,68 @@ const Editor = ({ project, config, onBack }: EditorProps) => {
     }
     setMessages((prev) => [...prev, newMessage])
     setChatInput('')
+    setAgentBusy(true)
 
     try {
-      const response = await api.sendEditRequest(
+      let finalEventSeen = false
+      await api.streamEditRequest(
         config,
         project.project_id,
         trimmed,
+        (event) => {
+          setActivityEvents((prev) => {
+            const next = [...prev, event]
+            return next.length > 300 ? next.slice(next.length - 300) : next
+          })
+
+          if (event.event_type !== 'final_result') {
+            return
+          }
+
+          const meta = event.meta ?? {}
+          const resultSessionId =
+            typeof meta['session_id'] === 'string' ? meta['session_id'] : null
+          const resultMessage =
+            typeof meta['message'] === 'string' ? meta['message'] : 'Edit completed.'
+          const resultPatches = Array.isArray(meta['pending_patches'])
+            ? (meta['pending_patches'] as EditPatchSummary[])
+            : []
+          const resultVersion =
+            typeof meta['new_version'] === 'number' ? meta['new_version'] : null
+
+          finalEventSeen = true
+          if (resultSessionId && resultSessionId !== sessionId) {
+            setSessionId(resultSessionId)
+            saveSessionId(project.project_id, resultSessionId)
+          }
+          setPendingPatches(resultPatches)
+          if (resultVersion) {
+            setTimelineVersion(resultVersion)
+          }
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: crypto.randomUUID(),
+              role: 'assistant',
+              content: resultMessage,
+            },
+          ])
+        },
         sessionId,
       )
-      if (response.session_id && response.session_id !== sessionId) {
-        setSessionId(response.session_id)
-        saveSessionId(project.project_id, response.session_id)
+
+      if (!finalEventSeen) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: crypto.randomUUID(),
+            role: 'assistant',
+            content: 'Edit finished, but no final response payload was received.',
+          },
+        ])
       }
-      setPendingPatches(response.pending_patches ?? [])
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: crypto.randomUUID(),
-          role: 'assistant',
-          content: response.message,
-        },
-      ])
-      refreshSessions(response.session_id).catch(() => {})
+
+      refreshSessions().catch(() => {})
       fetchAssets(true).catch(() => {})
     } catch (error) {
       setMessages((prev) => [
@@ -1027,6 +1077,8 @@ const Editor = ({ project, config, onBack }: EditorProps) => {
           content: `There was an error: ${(error as Error).message}`,
         },
       ])
+    } finally {
+      setAgentBusy(false)
     }
   }
 
@@ -1449,6 +1501,8 @@ const Editor = ({ project, config, onBack }: EditorProps) => {
           onNewSession={handleNewSession}
           pendingPatches={pendingPatches}
           onApplyPatches={handleApplyPatches}
+          activityEvents={activityEvents}
+          agentBusy={agentBusy}
           gpuAvailable={gpuInfo?.available}
         />
       </div>

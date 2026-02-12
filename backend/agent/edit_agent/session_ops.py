@@ -22,6 +22,7 @@ from models.timeline_models import (
 
 from .types import (
     EditAgentType,
+    EditSessionActivityEvent,
     EditMessage,
     EditOperation,
     EditPatch,
@@ -227,6 +228,7 @@ def _get_session_record(db: Session, session_id: str) -> EditSession | None:
 def _record_to_session(record: EditSession) -> EditSessionData:
     messages_raw = record.messages or []
     patches_raw = record.pending_patches or []
+    activity_events_raw = record.activity_events or []
 
     messages = [
         EditMessage(
@@ -250,6 +252,22 @@ def _record_to_session(record: EditSession) -> EditSessionData:
             )
         )
 
+    activity_events = [
+        EditSessionActivityEvent(
+            event_id=str(event.get("event_id") or uuid4()),
+            event_type=str(event.get("event_type") or "info"),
+            status=str(event.get("status") or "completed"),
+            label=str(event.get("label") or ""),
+            created_at=_parse_dt(event.get("created_at")) or record.created_at,
+            iteration=event.get("iteration"),
+            tool_name=event.get("tool_name"),
+            summary=event.get("summary"),
+            meta=event.get("meta") if isinstance(event.get("meta"), dict) else {},
+        )
+        for event in activity_events_raw
+        if isinstance(event, dict)
+    ]
+
     return EditSessionData(
         session_id=str(record.session_id),
         project_id=str(record.project_id),
@@ -258,6 +276,7 @@ def _record_to_session(record: EditSession) -> EditSessionData:
         status=EditSessionStatus(record.status),
         messages=messages,
         pending_patches=pending,
+        activity_events=activity_events,
         created_at=record.created_at,
         updated_at=record.updated_at,
     )

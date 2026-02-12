@@ -279,6 +279,7 @@ class EditSession(Base):
     title = Column(String, nullable=True)
     messages = Column(JSONB, nullable=False, default=list)
     pending_patches = Column(JSONB, nullable=False, default=list)
+    activity_events = Column(JSONB, nullable=False, default=list)
     status = Column(String, nullable=False, default="active")
 
     created_at = Column(DateTime, nullable=False, server_default=func.now())

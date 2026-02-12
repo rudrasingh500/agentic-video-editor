@@ -72,6 +72,18 @@ class EditMessage(BaseModel):
     created_at: datetime
 
 
+class EditSessionActivityEvent(BaseModel):
+    event_id: str
+    event_type: str
+    status: str
+    label: str
+    created_at: datetime
+    iteration: int | None = None
+    tool_name: str | None = None
+    summary: str | None = None
+    meta: dict[str, Any] = Field(default_factory=dict)
+
+
 class EditSessionData(BaseModel):
     session_id: str
     project_id: str
@@ -80,6 +92,7 @@ class EditSessionData(BaseModel):
     status: EditSessionStatus
     messages: list[EditMessage] = Field(default_factory=list)
     pending_patches: list[PendingPatch] = Field(default_factory=list)
+    activity_events: list[EditSessionActivityEvent] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
 
