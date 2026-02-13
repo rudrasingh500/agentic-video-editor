@@ -486,7 +486,10 @@ ASSET_RETRIEVAL_TOOLS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "list_snippets",
-            "description": "List stored snippets (face/person/item) for this project.",
+            "description": (
+                "List raw stored snippets (face/person/item) for this project. "
+                "For people workflows, prefer list_snippet_identities."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -497,6 +500,31 @@ ASSET_RETRIEVAL_TOOLS: list[dict[str, Any]] = [
                     "limit": {
                         "type": "integer",
                         "description": "Maximum number of snippets to return (default 50)",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_snippet_identities",
+            "description": (
+                "List snippet identities with their linked snippets. "
+                "Use this to choose a person identity and inspect its snippet set."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "identity_type": {
+                        "type": "string",
+                        "enum": ["character", "item"],
+                        "description": "Identity type filter (default character)",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of identities to return (default 50)",
                     },
                 },
                 "required": [],
@@ -783,7 +811,9 @@ EDIT_AGENT_TOOLS: list[dict[str, Any]] = [
                     },
                     "reference_identity_id": {
                         "type": "string",
-                        "description": "Optional identity UUID (uses canonical snippet)",
+                        "description": (
+                            "Optional identity UUID (uses all linked identity snippets as references)"
+                        ),
                     },
                     "reference_character_model_id": {
                         "type": "string",
@@ -1087,6 +1117,7 @@ def execute_tool(
         "rename_entity": _rename_entity,
         "find_entity_appearances": _find_entity_appearances,
         "list_snippets": _list_snippets,
+        "list_snippet_identities": _list_snippet_identities,
         "get_snippet_details": _get_snippet_details,
         "list_character_models": _list_character_models,
         "create_character_model_from_snippets": _create_character_model_from_snippets,
@@ -2106,6 +2137,120 @@ def _find_entity_appearances(
     }
 
 
+def _snippet_summary_payload(
+    snippet: Snippet,
+    identity: SnippetIdentity | None = None,
+) -> dict[str, Any]:
+    is_poster = bool(identity and identity.canonical_snippet_id == snippet.snippet_id)
+    identity_name = identity.name if identity else None
+    display_label = f"{identity_name} (Poster)" if identity_name and is_poster else identity_name
+
+    return {
+        "snippet_id": str(snippet.snippet_id),
+        "snippet_type": snippet.snippet_type,
+        "asset_id": str(snippet.asset_id) if snippet.asset_id else None,
+        "timestamp_ms": snippet.timestamp_ms,
+        "descriptor": snippet.descriptor,
+        "quality_score": snippet.quality_score,
+        "tags": snippet.tags or [],
+        "identity_id": str(identity.identity_id) if identity else None,
+        "identity_name": identity_name,
+        "is_identity_poster": is_poster,
+        "display_label": display_label,
+    }
+
+
+def _list_snippet_identities(
+    project_id: str,
+    user_id: str,
+    timeline_id: str,
+    db: Session,
+    identity_type: str = "character",
+    limit: int = 50,
+) -> dict[str, Any]:
+    query = db.query(SnippetIdentity).filter(
+        SnippetIdentity.project_id == project_id,
+        SnippetIdentity.merged_into_id.is_(None),
+    )
+    if identity_type:
+        query = query.filter(SnippetIdentity.identity_type == identity_type)
+
+    identities = query.order_by(SnippetIdentity.updated_at.desc()).limit(limit).all()
+    identity_ids = [identity.identity_id for identity in identities]
+
+    links = []
+    if identity_ids:
+        links = (
+            db.query(SnippetIdentityLink)
+            .filter(
+                SnippetIdentityLink.project_id == project_id,
+                SnippetIdentityLink.identity_id.in_(identity_ids),
+                SnippetIdentityLink.status == "active",
+            )
+            .order_by(
+                SnippetIdentityLink.is_primary.desc(),
+                SnippetIdentityLink.confidence.desc().nullslast(),
+                SnippetIdentityLink.created_at.desc(),
+            )
+            .all()
+        )
+
+    snippet_ids = list({link.snippet_id for link in links})
+    snippets = []
+    if snippet_ids:
+        snippets = db.query(Snippet).filter(
+            Snippet.project_id == project_id,
+            Snippet.snippet_id.in_(snippet_ids),
+        ).all()
+    snippet_by_id = {snippet.snippet_id: snippet for snippet in snippets}
+
+    links_by_identity: dict[UUID, list[SnippetIdentityLink]] = {}
+    for link in links:
+        links_by_identity.setdefault(link.identity_id, []).append(link)
+
+    identity_payloads: list[dict[str, Any]] = []
+    for identity in identities:
+        ordered_links = links_by_identity.get(identity.identity_id, [])
+        ordered_snippet_ids: list[UUID] = []
+        if identity.canonical_snippet_id:
+            ordered_snippet_ids.append(identity.canonical_snippet_id)
+
+        for link in ordered_links:
+            if link.snippet_id in ordered_snippet_ids:
+                continue
+            ordered_snippet_ids.append(link.snippet_id)
+
+        snippet_payloads: list[dict[str, Any]] = []
+        for snippet_id in ordered_snippet_ids:
+            snippet = snippet_by_id.get(snippet_id)
+            if not snippet:
+                continue
+            snippet_payloads.append(_snippet_summary_payload(snippet, identity=identity))
+
+        identity_payloads.append(
+            {
+                "identity_id": str(identity.identity_id),
+                "identity_type": identity.identity_type,
+                "name": identity.name,
+                "description": identity.description,
+                "status": identity.status,
+                "canonical_snippet_id": (
+                    str(identity.canonical_snippet_id)
+                    if identity.canonical_snippet_id
+                    else None
+                ),
+                "snippet_count": len(snippet_payloads),
+                "snippets": snippet_payloads,
+            }
+        )
+
+    return {
+        "count": len(identity_payloads),
+        "identity_type_filter": identity_type,
+        "identities": identity_payloads,
+    }
+
+
 def _list_snippets(
     project_id: str,
     user_id: str,
@@ -2119,21 +2264,46 @@ def _list_snippets(
         query = query.filter(Snippet.snippet_type == snippet_type)
 
     snippets = query.order_by(Snippet.created_at.desc()).limit(limit).all()
+    snippet_ids = [snippet.snippet_id for snippet in snippets]
+
+    links = []
+    if snippet_ids:
+        links = db.query(SnippetIdentityLink).filter(
+            SnippetIdentityLink.project_id == project_id,
+            SnippetIdentityLink.snippet_id.in_(snippet_ids),
+            SnippetIdentityLink.status == "active",
+        ).all()
+
+    identity_ids = list({link.identity_id for link in links})
+    identities = []
+    if identity_ids:
+        identities = db.query(SnippetIdentity).filter(
+            SnippetIdentity.project_id == project_id,
+            SnippetIdentity.identity_id.in_(identity_ids),
+        ).all()
+    identity_by_id = {identity.identity_id: identity for identity in identities}
+
+    best_link_by_snippet: dict[UUID, SnippetIdentityLink] = {}
+    for link in links:
+        current = best_link_by_snippet.get(link.snippet_id)
+        if current is None:
+            best_link_by_snippet[link.snippet_id] = link
+            continue
+        current_rank = (1 if current.is_primary else 0, float(current.confidence or 0.0))
+        link_rank = (1 if link.is_primary else 0, float(link.confidence or 0.0))
+        if link_rank > current_rank:
+            best_link_by_snippet[link.snippet_id] = link
+
+    snippet_payloads: list[dict[str, Any]] = []
+    for snippet in snippets:
+        best_link = best_link_by_snippet.get(snippet.snippet_id)
+        identity = identity_by_id.get(best_link.identity_id) if best_link else None
+        snippet_payloads.append(_snippet_summary_payload(snippet, identity=identity))
+
     return {
         "count": len(snippets),
         "snippet_type_filter": snippet_type,
-        "snippets": [
-            {
-                "snippet_id": str(snippet.snippet_id),
-                "snippet_type": snippet.snippet_type,
-                "asset_id": str(snippet.asset_id) if snippet.asset_id else None,
-                "timestamp_ms": snippet.timestamp_ms,
-                "descriptor": snippet.descriptor,
-                "quality_score": snippet.quality_score,
-                "tags": snippet.tags or [],
-            }
-            for snippet in snippets
-        ],
+        "snippets": snippet_payloads,
     }
 
 

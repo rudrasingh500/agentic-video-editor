@@ -27,25 +27,61 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
 )
 
+
+def _attach_file_handler(
+    logger_name: str,
+    log_file_path: Path,
+    level_name: str | None = None,
+) -> None:
+    logger_level = (level_name or LOG_LEVEL).upper()
+    logger_level_value = getattr(logging, logger_level, logging.INFO)
+
+    log_file_path.parent.mkdir(parents=True, exist_ok=True)
+    file_handler = logging.FileHandler(log_file_path, encoding="utf-8")
+    file_handler.setLevel(logger_level_value)
+    file_handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s")
+    )
+
+    target_logger = logging.getLogger(logger_name)
+    if not any(
+        isinstance(handler, logging.FileHandler)
+        and getattr(handler, "baseFilename", None) == str(log_file_path)
+        for handler in target_logger.handlers
+    ):
+        target_logger.addHandler(file_handler)
+    target_logger.setLevel(logger_level_value)
+
 EDIT_AGENT_LOG_FILE = os.getenv("EDIT_AGENT_LOG_FILE", "").strip()
 if EDIT_AGENT_LOG_FILE:
     log_path = Path(EDIT_AGENT_LOG_FILE)
     if not log_path.is_absolute():
         log_path = ROOT_DIR / log_path
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    file_handler = logging.FileHandler(log_path, encoding="utf-8")
-    file_handler.setLevel(LOG_LEVEL)
-    file_handler.setFormatter(
-        logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s")
-    )
-    edit_logger = logging.getLogger("agent.edit_agent")
-    if not any(
-        isinstance(handler, logging.FileHandler)
-        and getattr(handler, "baseFilename", None) == str(log_path)
-        for handler in edit_logger.handlers
-    ):
-        edit_logger.addHandler(file_handler)
-    edit_logger.setLevel(LOG_LEVEL)
+    _attach_file_handler("agent.edit_agent", log_path)
+
+ASSET_PROCESSING_LOG_FILE = os.getenv(
+    "ASSET_PROCESSING_LOG_FILE", "backend/log/asset_processing.log"
+).strip()
+ASSET_PROCESSING_LOG_LEVEL = os.getenv("ASSET_PROCESSING_LOG_LEVEL", "INFO").strip()
+if ASSET_PROCESSING_LOG_FILE:
+    asset_log_path = Path(ASSET_PROCESSING_LOG_FILE)
+    if not asset_log_path.is_absolute():
+        asset_log_path = ROOT_DIR / asset_log_path
+    _attach_file_handler("agent.asset_processing", asset_log_path, level_name=ASSET_PROCESSING_LOG_LEVEL)
+
+AGENT_RUNS_AND_JOBS_LOG_FILE = os.getenv(
+    "AGENT_RUNS_AND_JOBS_LOG_FILE", "backend/log/agent_runs_and_jobs.log"
+).strip()
+AGENT_RUNS_AND_JOBS_LOG_LEVEL = os.getenv("AGENT_RUNS_AND_JOBS_LOG_LEVEL", "INFO").strip()
+if AGENT_RUNS_AND_JOBS_LOG_FILE:
+    agent_job_log_path = Path(AGENT_RUNS_AND_JOBS_LOG_FILE)
+    if not agent_job_log_path.is_absolute():
+        agent_job_log_path = ROOT_DIR / agent_job_log_path
+    _attach_file_handler("agent.edit_agent", agent_job_log_path, level_name=AGENT_RUNS_AND_JOBS_LOG_LEVEL)
+    _attach_file_handler("handlers.edit_handler", agent_job_log_path, level_name=AGENT_RUNS_AND_JOBS_LOG_LEVEL)
+    _attach_file_handler("handlers.render_handler", agent_job_log_path, level_name=AGENT_RUNS_AND_JOBS_LOG_LEVEL)
+    _attach_file_handler("operators.render_operator", agent_job_log_path, level_name=AGENT_RUNS_AND_JOBS_LOG_LEVEL)
+    _attach_file_handler("utils.cloud_run_jobs", agent_job_log_path, level_name=AGENT_RUNS_AND_JOBS_LOG_LEVEL)
 
 app = FastAPI(app_name="Agent Editor Backend")
 

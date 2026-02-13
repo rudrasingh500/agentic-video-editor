@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from database.base import get_db
-from database.models import CharacterModel, Project, SnippetIdentity
+from database.models import CharacterModel, Project, Snippet, SnippetIdentity, SnippetIdentityLink
 from dependencies.project import require_project
 from models.api_models import (
     AttachGenerationAnchorRequest,
@@ -24,6 +24,8 @@ from models.api_models import (
     IdentityMergeRequest,
     IdentityMergeResponse,
     IdentityResponse,
+    IdentityUpdateRequest,
+    IdentityWithSnippetsResponse,
     SnippetCreateRequest,
     SnippetDetailResponse,
     SnippetListResponse,
@@ -41,19 +43,30 @@ from operators.snippet_operator import (
     decide_merge_suggestion,
     get_snippet,
     get_snippet_preview_url,
+    list_identity_snippets_map,
     list_character_models,
     list_identities,
     list_merge_suggestions,
     list_snippets,
     merge_character_models,
     merge_identities,
+    update_identity,
 )
 
 
 router = APIRouter(prefix="/projects/{project_id}/snippets", tags=["snippets"])
 
 
-def _snippet_to_response(snippet) -> SnippetResponse:
+def _snippet_to_response(
+    snippet,
+    preview_url: str | None = None,
+    identity_name: str | None = None,
+    is_identity_poster: bool = False,
+) -> SnippetResponse:
+    display_label = None
+    if identity_name:
+        display_label = f"{identity_name} (Poster)" if is_identity_poster else identity_name
+
     return SnippetResponse(
         snippet_id=str(snippet.snippet_id),
         project_id=str(snippet.project_id),
@@ -68,9 +81,57 @@ def _snippet_to_response(snippet) -> SnippetResponse:
         tags=snippet.tags or [],
         notes=snippet.notes,
         quality_score=snippet.quality_score,
+        identity_name=identity_name,
+        is_identity_poster=is_identity_poster,
+        display_label=display_label,
+        preview_url=preview_url,
         created_by=snippet.created_by,
         created_at=snippet.created_at,
     )
+
+
+def _snippet_identity_display_map(
+    db: Session,
+    project_id: UUID,
+    snippet_ids: list[UUID],
+) -> dict[UUID, tuple[str, bool]]:
+    if not snippet_ids:
+        return {}
+
+    links = db.query(SnippetIdentityLink).filter(
+        SnippetIdentityLink.project_id == project_id,
+        SnippetIdentityLink.snippet_id.in_(snippet_ids),
+        SnippetIdentityLink.status == "active",
+    ).all()
+    if not links:
+        return {}
+
+    identity_ids = list({link.identity_id for link in links})
+    identities = db.query(SnippetIdentity).filter(
+        SnippetIdentity.project_id == project_id,
+        SnippetIdentity.identity_id.in_(identity_ids),
+    ).all()
+    identity_by_id = {identity.identity_id: identity for identity in identities}
+
+    best_link_by_snippet: dict[UUID, SnippetIdentityLink] = {}
+    for link in links:
+        current = best_link_by_snippet.get(link.snippet_id)
+        if current is None:
+            best_link_by_snippet[link.snippet_id] = link
+            continue
+        current_rank = (1 if current.is_primary else 0, float(current.confidence or 0.0))
+        link_rank = (1 if link.is_primary else 0, float(link.confidence or 0.0))
+        if link_rank > current_rank:
+            best_link_by_snippet[link.snippet_id] = link
+
+    result: dict[UUID, tuple[str, bool]] = {}
+    for snippet_id, link in best_link_by_snippet.items():
+        identity = identity_by_id.get(link.identity_id)
+        if not identity:
+            continue
+        is_poster = identity.canonical_snippet_id == snippet_id
+        result[snippet_id] = (identity.name, bool(is_poster))
+    return result
 
 
 def _identity_to_response(identity: SnippetIdentity) -> IdentityResponse:
@@ -131,7 +192,12 @@ async def create_snippet_endpoint(
     )
     db.commit()
     db.refresh(snippet)
-    return SnippetDetailResponse(ok=True, snippet=_snippet_to_response(snippet), preview_url=get_snippet_preview_url(snippet))
+    preview_url = get_snippet_preview_url(snippet)
+    return SnippetDetailResponse(
+        ok=True,
+        snippet=_snippet_to_response(snippet, preview_url=preview_url),
+        preview_url=preview_url,
+    )
 
 
 @router.get("", response_model=SnippetListResponse)
@@ -151,7 +217,23 @@ async def list_snippets_endpoint(
         limit=limit,
         offset=offset,
     )
-    return SnippetListResponse(ok=True, snippets=[_snippet_to_response(s) for s in snippets])
+    identity_map = _snippet_identity_display_map(
+        db,
+        project.project_id,
+        [snippet.snippet_id for snippet in snippets],
+    )
+    return SnippetListResponse(
+        ok=True,
+        snippets=[
+            _snippet_to_response(
+                s,
+                preview_url=get_snippet_preview_url(s),
+                identity_name=(identity_map.get(s.snippet_id) or (None, False))[0],
+                is_identity_poster=(identity_map.get(s.snippet_id) or (None, False))[1],
+            )
+            for s in snippets
+        ],
+    )
 
 
 @router.get("/items/{snippet_id}", response_model=SnippetDetailResponse)
@@ -163,7 +245,19 @@ async def get_snippet_endpoint(
     snippet = get_snippet(db, project.project_id, snippet_id)
     if not snippet:
         raise HTTPException(status_code=404, detail="Snippet not found")
-    return SnippetDetailResponse(ok=True, snippet=_snippet_to_response(snippet), preview_url=get_snippet_preview_url(snippet))
+    identity_map = _snippet_identity_display_map(db, project.project_id, [snippet.snippet_id])
+    identity_name, is_poster = identity_map.get(snippet.snippet_id, (None, False))
+    preview_url = get_snippet_preview_url(snippet)
+    return SnippetDetailResponse(
+        ok=True,
+        snippet=_snippet_to_response(
+            snippet,
+            preview_url=preview_url,
+            identity_name=identity_name,
+            is_identity_poster=is_poster,
+        ),
+        preview_url=preview_url,
+    )
 
 
 @router.post("/identities", response_model=IdentityDetailResponse)
@@ -190,6 +284,7 @@ async def create_identity_endpoint(
 async def list_identities_endpoint(
     identity_type: str | None = None,
     include_merged: bool = False,
+    include_snippets: bool = False,
     limit: int = 50,
     offset: int = 0,
     project: Project = Depends(require_project),
@@ -203,7 +298,53 @@ async def list_identities_endpoint(
         limit=limit,
         offset=offset,
     )
-    return IdentityListResponse(ok=True, identities=[_identity_to_response(i) for i in identities])
+    if not include_snippets:
+        return IdentityListResponse(ok=True, identities=[_identity_to_response(i) for i in identities])
+
+    snippets_map = list_identity_snippets_map(
+        db,
+        project.project_id,
+        [identity.identity_id for identity in identities],
+    )
+    response_items: list[IdentityResponse | IdentityWithSnippetsResponse] = []
+    for identity in identities:
+        identity_base = _identity_to_response(identity)
+        linked_snippets = snippets_map.get(identity.identity_id, [])
+        response_items.append(
+            IdentityWithSnippetsResponse(
+                **identity_base.model_dump(),
+                snippets=[
+                    _snippet_to_response(snippet, preview_url=get_snippet_preview_url(snippet))
+                    for snippet in linked_snippets
+                ],
+            )
+        )
+    return IdentityListResponse(ok=True, identities=response_items)
+
+
+@router.patch("/identities/{identity_id}", response_model=IdentityDetailResponse)
+async def update_identity_endpoint(
+    identity_id: UUID,
+    body: IdentityUpdateRequest,
+    project: Project = Depends(require_project),
+    db: Session = Depends(get_db),
+):
+    if body.name is None and body.description is None:
+        raise HTTPException(status_code=400, detail="No identity updates provided")
+
+    updated = update_identity(
+        db=db,
+        project_id=project.project_id,
+        identity_id=identity_id,
+        name=body.name,
+        description=body.description,
+    )
+    if not updated:
+        raise HTTPException(status_code=404, detail="Identity not found")
+
+    db.commit()
+    db.refresh(updated)
+    return IdentityDetailResponse(ok=True, identity=_identity_to_response(updated))
 
 
 @router.get("/identities/{identity_id}", response_model=IdentityDetailResponse)
@@ -328,17 +469,76 @@ async def list_merge_suggestions_endpoint(
     db: Session = Depends(get_db),
 ):
     suggestions = list_merge_suggestions(db, project.project_id, decision=decision, limit=limit)
+    snippet_ids = [item.snippet_id for item in suggestions]
+    candidate_ids = [item.candidate_identity_id for item in suggestions]
+
+    snippets = db.query(Snippet).filter(
+        Snippet.project_id == project.project_id,
+        Snippet.snippet_id.in_(snippet_ids),
+    ).all() if snippet_ids else []
+    snippets_by_id = {snippet.snippet_id: snippet for snippet in snippets}
+
+    identities = db.query(SnippetIdentity).filter(
+        SnippetIdentity.project_id == project.project_id,
+        SnippetIdentity.identity_id.in_(candidate_ids),
+    ).all() if candidate_ids else []
+    identities_by_id = {identity.identity_id: identity for identity in identities}
+
+    canonical_snippet_ids = [
+        identity.canonical_snippet_id
+        for identity in identities
+        if identity.canonical_snippet_id is not None
+    ]
+    canonical_snippets = db.query(Snippet).filter(
+        Snippet.project_id == project.project_id,
+        Snippet.snippet_id.in_(canonical_snippet_ids),
+    ).all() if canonical_snippet_ids else []
+    canonical_by_id = {snippet.snippet_id: snippet for snippet in canonical_snippets}
+
     return SnippetMergeSuggestionResponse(
         ok=True,
         suggestions=[
             {
-                "suggestion_id": str(item.suggestion_id),
-                "snippet_id": str(item.snippet_id),
-                "candidate_identity_id": str(item.candidate_identity_id),
-                "similarity_score": item.similarity_score,
-                "decision": item.decision,
-                "metadata": item.metadata_json or {},
-                "created_at": item.created_at,
+                **{
+                    "suggestion_id": str(item.suggestion_id),
+                    "snippet_id": str(item.snippet_id),
+                    "candidate_identity_id": str(item.candidate_identity_id),
+                    "similarity_score": item.similarity_score,
+                    "decision": item.decision,
+                    "metadata": item.metadata_json or {},
+                    "created_at": item.created_at,
+                },
+                **{
+                    "snippet_preview_url": get_snippet_preview_url(snippets_by_id[item.snippet_id])
+                    if item.snippet_id in snippets_by_id
+                    else None,
+                    "candidate_identity_name": (
+                        identities_by_id[item.candidate_identity_id].name
+                        if item.candidate_identity_id in identities_by_id
+                        else None
+                    ),
+                    "candidate_identity_canonical_snippet_id": (
+                        str(identities_by_id[item.candidate_identity_id].canonical_snippet_id)
+                        if (
+                            item.candidate_identity_id in identities_by_id
+                            and identities_by_id[item.candidate_identity_id].canonical_snippet_id
+                        )
+                        else None
+                    ),
+                    "candidate_identity_preview_url": (
+                        get_snippet_preview_url(
+                            canonical_by_id[
+                                identities_by_id[item.candidate_identity_id].canonical_snippet_id
+                            ]
+                        )
+                        if (
+                            item.candidate_identity_id in identities_by_id
+                            and identities_by_id[item.candidate_identity_id].canonical_snippet_id
+                            in canonical_by_id
+                        )
+                        else None
+                    ),
+                },
             }
             for item in suggestions
         ],

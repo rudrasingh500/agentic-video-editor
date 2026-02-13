@@ -36,6 +36,7 @@ def generate_image(
     prompt: str,
     reference_image_bytes: bytes | None = None,
     reference_content_type: str | None = None,
+    reference_images: list[dict[str, Any]] | None = None,
     model: str | None = None,
     parameters: dict[str, Any] | None = None,
 ) -> NanoBananaImageResult:
@@ -43,9 +44,25 @@ def generate_image(
         raise ValueError("Prompt is required")
 
     content: list[dict[str, Any]] = [{"type": "text", "text": prompt.strip()}]
-    if reference_image_bytes:
-        mime = reference_content_type or "image/png"
-        b64_data = base64.b64encode(reference_image_bytes).decode("utf-8")
+
+    normalized_reference_images: list[tuple[bytes, str]] = []
+    if reference_images:
+        for entry in reference_images:
+            if not isinstance(entry, dict):
+                continue
+            image_bytes = entry.get("image_bytes")
+            if not isinstance(image_bytes, (bytes, bytearray)):
+                continue
+            mime = str(entry.get("content_type") or "image/png")
+            normalized_reference_images.append((bytes(image_bytes), mime))
+
+    if not normalized_reference_images and reference_image_bytes:
+        normalized_reference_images.append(
+            (reference_image_bytes, reference_content_type or "image/png")
+        )
+
+    for image_bytes, mime in normalized_reference_images:
+        b64_data = base64.b64encode(image_bytes).decode("utf-8")
         content.append(
             {
                 "type": "image_url",

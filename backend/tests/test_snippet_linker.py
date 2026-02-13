@@ -35,6 +35,8 @@ def _build_snippet(snippet_type: str = "face", embedding: list[float] | None = N
         project_id=uuid4(),
         snippet_type=snippet_type,
         embedding=embedding,
+        quality_score=0.99,
+        source_ref={"verification": {"label": "face", "confidence": 0.99}},
     )
 
 
@@ -63,6 +65,26 @@ def test_strict_auto_link_returns_new_identity_for_missing_embedding():
 
     assert result["decision"] == "new_identity"
     assert result["reason"] == "missing_embedding"
+
+
+def test_strict_auto_link_skips_unverified_face_snippet():
+    snippet = _build_snippet(snippet_type="face", embedding=[0.3, 0.2, 0.1])
+    snippet.source_ref = {}
+
+    result = snippet_linker.strict_auto_link_snippet(_FakeSession(), snippet)
+
+    assert result["decision"] == "skipped"
+    assert result["reason"] == "face_verification_missing"
+
+
+def test_strict_auto_link_skips_low_quality_face_snippet():
+    snippet = _build_snippet(snippet_type="face", embedding=[0.3, 0.2, 0.1])
+    snippet.quality_score = 0.5
+
+    result = snippet_linker.strict_auto_link_snippet(_FakeSession(), snippet)
+
+    assert result["decision"] == "skipped"
+    assert result["reason"] == "face_quality_below_threshold"
 
 
 def test_strict_auto_link_auto_attaches_without_metadata_arg_mismatch(monkeypatch):

@@ -22,6 +22,11 @@ def process_asset(asset_id: str, project_id: str) -> None:
     db = next(get_db())
     asset = None
     try:
+        logger.info(
+            "asset_processing_start asset_id=%s project_id=%s",
+            asset_id,
+            project_id,
+        )
         asset = (
             db.query(Assets)
             .filter(Assets.asset_id == asset_id, Assets.project_id == project_id)
@@ -56,12 +61,25 @@ def process_asset(asset_id: str, project_id: str) -> None:
             )
             return
 
+        logger.debug(
+            "asset_downloaded asset_id=%s bytes=%d asset_url=%s",
+            asset_id,
+            len(content),
+            asset.asset_url,
+        )
+
         content_type = asset.asset_type
         if not content_type or content_type == "application/octet-stream":
             guessed, _ = mimetypes.guess_type(asset.asset_name)
             if guessed:
                 content_type = guessed
                 asset.asset_type = guessed
+
+        logger.debug(
+            "asset_content_type_resolved asset_id=%s content_type=%s",
+            asset_id,
+            content_type,
+        )
 
         metadata_source_url = None
         try:
@@ -81,6 +99,13 @@ def process_asset(asset_id: str, project_id: str) -> None:
             content,
             content_type,
             source_url=metadata_source_url,
+        )
+
+        logger.debug(
+            "asset_metadata_extracted asset_id=%s has_metadata=%s keys=%s",
+            asset_id,
+            bool(metadata),
+            sorted(list(metadata.keys())) if isinstance(metadata, dict) else [],
         )
 
         if metadata:
@@ -106,10 +131,16 @@ def process_asset(asset_id: str, project_id: str) -> None:
             if embedding:
                 asset.embedding = embedding
 
-            asset.indexing_status = "completed"
-            asset.indexing_completed_at = datetime.now(timezone.utc)
+            logger.debug(
+                "asset_metadata_counts asset_id=%s tags=%d faces=%d objects=%d scenes=%d",
+                asset_id,
+                len(asset.asset_tags or []),
+                len(asset.asset_faces or []) if isinstance(asset.asset_faces, list) else 0,
+                len(asset.asset_objects or []) if isinstance(asset.asset_objects, list) else 0,
+                len(asset.asset_scenes or []) if isinstance(asset.asset_scenes, list) else 0,
+            )
+
             db.commit()
-            logger.info("Completed indexing asset %s", asset_id)
 
             # Link entities and compute cross-asset similarities
             try:
@@ -129,7 +160,16 @@ def process_asset(asset_id: str, project_id: str) -> None:
 
             # Extract snippets (face/person) and auto-link identities
             try:
-                extracted_snippets = extract_snippets_from_asset(content, content_type)
+                extracted_snippets = extract_snippets_from_asset(
+                    content,
+                    content_type,
+                    metadata=metadata,
+                )
+                logger.info(
+                    "snippet_extraction_candidates asset_id=%s total=%d",
+                    asset_id,
+                    len(extracted_snippets),
+                )
                 snippet_results = {
                     "created": 0,
                     "auto_attached": 0,
@@ -157,6 +197,7 @@ def process_asset(asset_id: str, project_id: str) -> None:
                                     "asset_id": str(asset.asset_id),
                                     "asset_name": asset.asset_name,
                                     "asset_type": asset.asset_type,
+                                    "verification": item.get("verification") or {},
                                 },
                                 frame_index=item.get("frame_index"),
                                 timestamp_ms=item.get("timestamp_ms"),
@@ -170,15 +211,37 @@ def process_asset(asset_id: str, project_id: str) -> None:
                                 created_by="system:asset_processor",
                             )
                             snippet_results["created"] += 1
+                            logger.debug(
+                                "snippet_created asset_id=%s snippet_id=%s type=%s frame=%s ts_ms=%s quality=%.4f",
+                                asset_id,
+                                snippet.snippet_id,
+                                snippet.snippet_type,
+                                snippet.frame_index,
+                                snippet.timestamp_ms,
+                                float(snippet.quality_score or 0.0),
+                            )
 
                             if snippet.snippet_type not in {"face", "item"}:
                                 snippet_results["skipped"] += 1
+                                logger.debug(
+                                    "snippet_link_skipped asset_id=%s snippet_id=%s reason=snippet_type_not_auto_linked type=%s",
+                                    asset_id,
+                                    snippet.snippet_id,
+                                    snippet.snippet_type,
+                                )
                                 continue
 
                             decision = strict_auto_link_snippet(db, snippet)
                             key = decision.get("decision")
                             if key in snippet_results:
                                 snippet_results[key] += 1
+                            logger.debug(
+                                "snippet_link_decision asset_id=%s snippet_id=%s decision=%s details=%s",
+                                asset_id,
+                                snippet.snippet_id,
+                                key,
+                                decision,
+                            )
                     except Exception as snippet_error:
                         snippet_results["failed"] += 1
                         logger.warning(
@@ -205,6 +268,11 @@ def process_asset(asset_id: str, project_id: str) -> None:
                     asset_id,
                     str(e),
                 )
+
+            asset.indexing_status = "completed"
+            asset.indexing_completed_at = datetime.now(timezone.utc)
+            db.commit()
+            logger.info("Completed indexing asset %s", asset_id)
         else:
             asset.indexing_status = "failed"
             asset.indexing_error = f"Unsupported media type: {asset.asset_type}"
@@ -226,4 +294,9 @@ def process_asset(asset_id: str, project_id: str) -> None:
         logger.exception("Asset indexing failed for asset %s", asset_id)
         raise
     finally:
+        logger.info(
+            "asset_processing_end asset_id=%s project_id=%s",
+            asset_id,
+            project_id,
+        )
         db.close()

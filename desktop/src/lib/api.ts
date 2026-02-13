@@ -12,6 +12,8 @@ import type {
   Project,
   Snippet,
   SnippetIdentity,
+  SnippetIdentityWithSnippets,
+  SnippetMergeSuggestion,
 } from './types'
 
 const normalizeBaseUrl = (baseUrl: string) => baseUrl.replace(/\/+$/, '')
@@ -180,20 +182,55 @@ export const api = {
       `/projects/${projectId}/assets/${assetId}`,
       { method: 'DELETE' },
     ),
-  listSnippets: (config: AppConfig, projectId: string) =>
+  listSnippets: (config: AppConfig, projectId: string, snippetType?: string) =>
     apiFetch<{ ok: boolean; snippets: Snippet[] }>(
       config,
-      `/projects/${projectId}/snippets`,
+      snippetType
+        ? `/projects/${projectId}/snippets?snippet_type=${encodeURIComponent(snippetType)}`
+        : `/projects/${projectId}/snippets`,
     ),
   getSnippet: (config: AppConfig, projectId: string, snippetId: string) =>
     apiFetch<{ ok: boolean; snippet: Snippet; preview_url?: string | null }>(
       config,
       `/projects/${projectId}/snippets/items/${snippetId}`,
     ),
-  listSnippetIdentities: (config: AppConfig, projectId: string) =>
-    apiFetch<{ ok: boolean; identities: SnippetIdentity[] }>(
+  listSnippetIdentities: (
+    config: AppConfig,
+    projectId: string,
+    includeSnippets: boolean = false,
+  ) =>
+    apiFetch<{ ok: boolean; identities: Array<SnippetIdentity | SnippetIdentityWithSnippets> }>(
       config,
-      `/projects/${projectId}/snippets/identities`,
+      includeSnippets
+        ? `/projects/${projectId}/snippets/identities?include_snippets=true`
+        : `/projects/${projectId}/snippets/identities`,
+    ),
+  updateSnippetIdentity: (
+    config: AppConfig,
+    projectId: string,
+    identityId: string,
+    payload: { name?: string; description?: string },
+  ) =>
+    apiFetch<{ ok: boolean; identity: SnippetIdentity }>(
+      config,
+      `/projects/${projectId}/snippets/identities/${identityId}`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify(payload),
+      },
+    ),
+  mergeSnippetIdentities: (
+    config: AppConfig,
+    projectId: string,
+    payload: { source_identity_ids: string[]; target_identity_id: string; actor?: string; reason?: string },
+  ) =>
+    apiFetch<{ ok: boolean; identity: SnippetIdentity }>(
+      config,
+      `/projects/${projectId}/snippets/identities/merge`,
+      {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      },
     ),
   listCharacterModels: (config: AppConfig, projectId: string) =>
     apiFetch<{ ok: boolean; character_models: CharacterModel[] }>(
@@ -201,9 +238,23 @@ export const api = {
       `/projects/${projectId}/snippets/character-models`,
     ),
   listSnippetMergeSuggestions: (config: AppConfig, projectId: string) =>
-    apiFetch<{ ok: boolean; suggestions: Record<string, unknown>[] }>(
+    apiFetch<{ ok: boolean; suggestions: SnippetMergeSuggestion[] }>(
       config,
       `/projects/${projectId}/snippets/merge-suggestions`,
+    ),
+  decideSnippetMergeSuggestion: (
+    config: AppConfig,
+    projectId: string,
+    suggestionId: string,
+    decision: 'accepted' | 'rejected',
+  ) =>
+    apiFetch<{ ok: boolean; suggestion_id: string; decision: string }>(
+      config,
+      `/projects/${projectId}/snippets/merge-suggestions/${suggestionId}/decision`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ decision, actor: 'user' }),
+      },
     ),
   createGeneration: (
     config: AppConfig,

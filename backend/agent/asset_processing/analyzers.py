@@ -63,16 +63,28 @@ def extract_metadata(
     content_type: str,
     source_url: str | None = None,
 ) -> dict | None:
+    logger.debug(
+        "metadata_extract_start content_type=%s bytes=%d has_source_url=%s",
+        content_type,
+        len(content),
+        bool(source_url),
+    )
     if content_type in IMAGE_TYPES:
         return analyze_image(content, content_type, source_url=source_url)
     elif content_type in VIDEO_TYPES:
         return analyze_video(content, content_type, source_url=source_url)
     elif content_type in AUDIO_TYPES:
         return analyze_audio(content, content_type, source_url=source_url)
+    logger.warning("metadata_extract_unsupported_type content_type=%s", content_type)
     return None
 
 
 def analyze_image(content: bytes, content_type: str, source_url: str | None = None) -> dict:
+    logger.debug(
+        "analyze_image_start bytes=%d has_source_url=%s",
+        len(content),
+        bool(source_url),
+    )
     media_part = _build_media_part("image_url", content, content_type, source_url)
     if media_part is None:
         logger.warning(
@@ -111,12 +123,21 @@ def analyze_image(content: bytes, content_type: str, source_url: str | None = No
 
     parsed = _extract_response_json(response)
     if parsed is not None:
+        logger.debug(
+            "analyze_image_success keys=%s",
+            sorted(list(parsed.keys())),
+        )
         return parsed
     logger.warning("Image analysis returned no JSON payload; using fallback metadata")
     return _fallback_image_metadata()
 
 
 def analyze_video(content: bytes, content_type: str, source_url: str | None = None) -> dict:
+    logger.debug(
+        "analyze_video_start bytes=%d has_source_url=%s",
+        len(content),
+        bool(source_url),
+    )
     media_part = _build_media_part("video_url", content, content_type, source_url)
     if media_part is None:
         logger.warning(
@@ -155,12 +176,21 @@ def analyze_video(content: bytes, content_type: str, source_url: str | None = No
 
     parsed = _extract_response_json(response)
     if parsed is not None:
+        logger.debug(
+            "analyze_video_success keys=%s",
+            sorted(list(parsed.keys())),
+        )
         return parsed
     logger.warning("Video analysis returned no JSON payload; using fallback metadata")
     return _fallback_video_metadata(content, content_type)
 
 
 def analyze_audio(content: bytes, content_type: str, source_url: str | None = None) -> dict:
+    logger.debug(
+        "analyze_audio_start bytes=%d has_source_url=%s",
+        len(content),
+        bool(source_url),
+    )
     media_part = _build_media_part("audio_url", content, content_type, source_url)
     if media_part is None:
         logger.warning(
@@ -199,6 +229,10 @@ def analyze_audio(content: bytes, content_type: str, source_url: str | None = No
 
     parsed = _extract_response_json(response)
     if parsed is not None:
+        logger.debug(
+            "analyze_audio_success keys=%s",
+            sorted(list(parsed.keys())),
+        )
         return parsed
     logger.warning("Audio analysis returned no JSON payload; using fallback metadata")
     return _fallback_audio_metadata()
@@ -211,12 +245,19 @@ def _build_media_part(
     source_url: str | None,
 ) -> dict[str, Any] | None:
     if source_url:
+        logger.debug("media_part_using_source_url media_field=%s", media_field)
         return {
             "type": media_field,
             media_field: {"url": source_url},
         }
 
     if len(content) > MAX_INLINE_MEDIA_BYTES:
+        logger.warning(
+            "media_part_inline_skipped media_field=%s bytes=%d max_bytes=%d",
+            media_field,
+            len(content),
+            MAX_INLINE_MEDIA_BYTES,
+        )
         return None
 
     b64 = base64.b64encode(content).decode("utf-8")

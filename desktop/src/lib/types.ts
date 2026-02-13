@@ -88,6 +88,10 @@ export type Snippet = {
   tags: string[]
   notes?: string | null
   quality_score?: number | null
+  identity_name?: string | null
+  is_identity_poster?: boolean
+  display_label?: string | null
+  preview_url?: string | null
   created_by: string
   created_at: string
 }
@@ -104,6 +108,24 @@ export type SnippetIdentity = {
   created_by: string
   created_at: string
   updated_at: string
+}
+
+export type SnippetIdentityWithSnippets = SnippetIdentity & {
+  snippets: Snippet[]
+}
+
+export type SnippetMergeSuggestion = {
+  suggestion_id: string
+  snippet_id: string
+  candidate_identity_id: string
+  candidate_identity_name?: string | null
+  candidate_identity_canonical_snippet_id?: string | null
+  similarity_score: number
+  decision: string
+  snippet_preview_url?: string | null
+  candidate_identity_preview_url?: string | null
+  metadata?: Record<string, unknown>
+  created_at?: string
 }
 
 export type CharacterModel = {

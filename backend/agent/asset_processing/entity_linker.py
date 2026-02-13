@@ -72,6 +72,11 @@ def link_asset_entities(asset: Assets, db: Session) -> dict:
 
     project_id = str(asset.project_id)
     asset_id = str(asset.asset_id)
+    logger.debug(
+        "entity_link_start asset_id=%s project_id=%s",
+        asset_id,
+        project_id,
+    )
 
     # Process each entity type
     for entity_type, config in ENTITY_CONFIGS.items():
@@ -79,10 +84,21 @@ def link_asset_entities(asset: Assets, db: Session) -> dict:
         source_data = getattr(asset, source_field, None)
 
         if not source_data:
+            logger.debug(
+                "entity_link_skip_type asset_id=%s entity_type=%s reason=no_source_data",
+                asset_id,
+                entity_type,
+            )
             continue
 
         # Handle both list and dict formats
         items = source_data if isinstance(source_data, list) else [source_data]
+        logger.debug(
+            "entity_link_process_type asset_id=%s entity_type=%s candidates=%d",
+            asset_id,
+            entity_type,
+            len(items),
+        )
 
         for item in items:
             if not item or not isinstance(item, dict):
@@ -115,6 +131,13 @@ def link_asset_entities(asset: Assets, db: Session) -> dict:
                 continue
 
     db.commit()
+
+    logger.debug(
+        "entity_link_complete asset_id=%s entities_created=%d similarities_found=%d",
+        asset_id,
+        entities_created,
+        similarities_found,
+    )
 
     return {
         "entities_created": entities_created,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import mimetypes
 from datetime import datetime, timezone
 from uuid import UUID
@@ -86,6 +87,16 @@ def create_generation(
     if normalized_frame_repeat_count is not None:
         generation_parameters["frame_repeat_count"] = normalized_frame_repeat_count
 
+    reference_images = reference.get("reference_images") or []
+    if reference_images:
+        generation_parameters["reference_image_count"] = len(reference_images)
+
+    reference_snippet_ids = reference.get("reference_snippet_ids") or []
+    if reference_snippet_ids:
+        generation_parameters["reference_snippet_ids"] = [
+            str(snippet_id) for snippet_id in reference_snippet_ids
+        ]
+
     if normalized_mode == "video":
         reference_hint = _build_reference_prompt_hint(reference)
         if reference_hint:
@@ -129,6 +140,7 @@ def create_generation(
             prompt=prompt,
             reference_image_bytes=reference.get("image_bytes"),
             reference_content_type=reference.get("content_type"),
+            reference_images=reference_images,
             model=model,
             parameters=generation_parameters,
         )
@@ -460,32 +472,62 @@ def _resolve_reference_image(
         snippet = _get_snippet(db, project_id, reference_snippet_id)
         if not snippet:
             raise ValueError("reference_snippet_id not found")
-        image_bytes, image_content_type = _download_snippet_preview(snippet)
-        if image_bytes is None:
+        reference_entry = _build_snippet_reference_entry(snippet)
+        if not reference_entry:
             raise ValueError("Snippet has no preview image")
         return {
-            "image_bytes": image_bytes,
-            "content_type": image_content_type,
+            "image_bytes": reference_entry["image_bytes"],
+            "content_type": reference_entry["content_type"],
             "reference_snippet_id": snippet.snippet_id,
-            "prompt_hint": _snippet_to_prompt_hint(snippet),
+            "reference_snippet_ids": [snippet.snippet_id],
+            "reference_images": [
+                {
+                    "image_bytes": reference_entry["image_bytes"],
+                    "content_type": reference_entry["content_type"],
+                }
+            ],
+            "prompt_hint": reference_entry.get("prompt_hint"),
         }
 
     if reference_identity_id:
         identity = _get_identity(db, project_id, reference_identity_id)
         if not identity:
             raise ValueError("reference_identity_id not found")
-        snippet = _resolve_identity_snippet(db, project_id, identity)
-        if not snippet:
+
+        identity_snippets = _list_identity_reference_snippets(db, project_id, identity)
+        if not identity_snippets:
             raise ValueError("No snippet available for reference identity")
-        image_bytes, image_content_type = _download_snippet_preview(snippet)
-        if image_bytes is None:
+
+        reference_entries = [
+            entry
+            for snippet in identity_snippets
+            if (entry := _build_snippet_reference_entry(snippet)) is not None
+        ]
+        if not reference_entries:
             raise ValueError("Identity snippet has no preview image")
+
+        primary_entry = reference_entries[0]
+        contact_sheet = _build_reference_contact_sheet(reference_entries)
+        if contact_sheet is not None:
+            resolved_image_bytes, resolved_content_type = contact_sheet
+        else:
+            resolved_image_bytes = primary_entry["image_bytes"]
+            resolved_content_type = primary_entry["content_type"]
+
         return {
-            "image_bytes": image_bytes,
-            "content_type": image_content_type,
-            "reference_snippet_id": snippet.snippet_id,
+            "image_bytes": resolved_image_bytes,
+            "content_type": resolved_content_type,
+            "reference_snippet_id": primary_entry["snippet_id"],
+            "reference_snippet_ids": [entry["snippet_id"] for entry in reference_entries],
             "reference_identity_id": identity.identity_id,
-            "prompt_hint": _snippet_to_prompt_hint(snippet),
+            "reference_images": [
+                {
+                    "image_bytes": entry["image_bytes"],
+                    "content_type": entry["content_type"],
+                }
+                for entry in reference_entries
+            ],
+            "prompt_hint": _merge_reference_prompt_hints(reference_entries),
         }
 
     if reference_character_model_id:
@@ -495,15 +537,22 @@ def _resolve_reference_image(
         snippet = _resolve_character_model_snippet(db, project_id, character_model)
         if not snippet:
             raise ValueError("No snippet available for reference character model")
-        image_bytes, image_content_type = _download_snippet_preview(snippet)
-        if image_bytes is None:
+        reference_entry = _build_snippet_reference_entry(snippet)
+        if not reference_entry:
             raise ValueError("Character model snippet has no preview image")
         return {
-            "image_bytes": image_bytes,
-            "content_type": image_content_type,
+            "image_bytes": reference_entry["image_bytes"],
+            "content_type": reference_entry["content_type"],
             "reference_snippet_id": snippet.snippet_id,
+            "reference_snippet_ids": [snippet.snippet_id],
             "reference_character_model_id": character_model.character_model_id,
-            "prompt_hint": _snippet_to_prompt_hint(snippet),
+            "reference_images": [
+                {
+                    "image_bytes": reference_entry["image_bytes"],
+                    "content_type": reference_entry["content_type"],
+                }
+            ],
+            "prompt_hint": reference_entry.get("prompt_hint"),
         }
 
     if reference_asset_id:
@@ -519,14 +568,172 @@ def _resolve_reference_image(
             "image_bytes": image_bytes,
             "content_type": asset.asset_type,
             "reference_asset_id": asset.asset_id,
+            "reference_images": [
+                {
+                    "image_bytes": image_bytes,
+                    "content_type": asset.asset_type or "image/jpeg",
+                }
+            ],
+            "reference_snippet_ids": [],
             "prompt_hint": None,
         }
 
     return {
         "image_bytes": None,
         "content_type": None,
+        "reference_images": [],
+        "reference_snippet_ids": [],
         "prompt_hint": None,
     }
+
+
+def _build_snippet_reference_entry(snippet: Snippet) -> dict | None:
+    image_bytes, image_content_type = _download_snippet_preview(snippet)
+    if image_bytes is None:
+        return None
+
+    return {
+        "snippet_id": snippet.snippet_id,
+        "image_bytes": image_bytes,
+        "content_type": image_content_type,
+        "prompt_hint": _snippet_to_prompt_hint(snippet),
+    }
+
+
+def _merge_reference_prompt_hints(reference_entries: list[dict]) -> str | None:
+    hints: list[str] = []
+    for entry in reference_entries:
+        hint = entry.get("prompt_hint")
+        if not isinstance(hint, str):
+            continue
+        text = hint.strip()
+        if not text or text in hints:
+            continue
+        hints.append(text)
+
+    if not hints:
+        return None
+    return " | ".join(hints)
+
+
+def _list_identity_reference_snippets(
+    db: Session,
+    project_id: UUID,
+    identity: SnippetIdentity,
+) -> list[Snippet]:
+    links = (
+        db.query(SnippetIdentityLink)
+        .filter(
+            SnippetIdentityLink.project_id == project_id,
+            SnippetIdentityLink.identity_id == identity.identity_id,
+            SnippetIdentityLink.status == "active",
+        )
+        .order_by(
+            SnippetIdentityLink.is_primary.desc(),
+            SnippetIdentityLink.confidence.desc().nullslast(),
+            SnippetIdentityLink.created_at.desc(),
+        )
+        .all()
+    )
+
+    ordered_snippet_ids: list[UUID] = []
+    if identity.canonical_snippet_id:
+        ordered_snippet_ids.append(identity.canonical_snippet_id)
+
+    for link in links:
+        if link.snippet_id in ordered_snippet_ids:
+            continue
+        ordered_snippet_ids.append(link.snippet_id)
+
+    if not ordered_snippet_ids:
+        return []
+
+    snippets = db.query(Snippet).filter(
+        Snippet.project_id == project_id,
+        Snippet.snippet_id.in_(ordered_snippet_ids),
+    ).all()
+    snippet_by_id = {snippet.snippet_id: snippet for snippet in snippets}
+
+    return [
+        snippet_by_id[snippet_id]
+        for snippet_id in ordered_snippet_ids
+        if snippet_id in snippet_by_id
+    ]
+
+
+def _build_reference_contact_sheet(
+    reference_entries: list[dict],
+) -> tuple[bytes, str] | None:
+    if len(reference_entries) < 2:
+        return None
+
+    try:
+        import cv2  # type: ignore
+        import numpy as np  # type: ignore
+    except Exception:
+        return None
+
+    decoded_images: list = []
+    for entry in reference_entries:
+        image_bytes = entry.get("image_bytes")
+        if not isinstance(image_bytes, (bytes, bytearray)):
+            continue
+        decoded = cv2.imdecode(np.frombuffer(bytes(image_bytes), dtype=np.uint8), cv2.IMREAD_COLOR)
+        if decoded is None or decoded.size == 0:
+            continue
+        decoded_images.append(decoded)
+
+    if len(decoded_images) < 2:
+        return None
+
+    item_count = len(decoded_images)
+    padding = 8
+    columns = max(2, math.ceil(math.sqrt(item_count)))
+    rows = math.ceil(item_count / columns)
+
+    max_canvas_size = 3072
+    max_tile_width = max(1, (max_canvas_size - (columns + 1) * padding) // columns)
+    max_tile_height = max(1, (max_canvas_size - (rows + 1) * padding) // rows)
+    tile_size = min(224, max_tile_width, max_tile_height)
+    if tile_size < 16:
+        return None
+
+    canvas_height = rows * tile_size + (rows + 1) * padding
+    canvas_width = columns * tile_size + (columns + 1) * padding
+    canvas = np.full((canvas_height, canvas_width, 3), 240, dtype=np.uint8)
+
+    for index, image in enumerate(decoded_images):
+        row = index // columns
+        col = index % columns
+        tile = np.full((tile_size, tile_size, 3), 18, dtype=np.uint8)
+
+        height, width = image.shape[:2]
+        if height <= 0 or width <= 0:
+            continue
+
+        scale = min(tile_size / width, tile_size / height)
+        resized_width = max(1, int(round(width * scale)))
+        resized_height = max(1, int(round(height * scale)))
+        interpolation = cv2.INTER_AREA if scale < 1 else cv2.INTER_CUBIC
+        resized = cv2.resize(image, (resized_width, resized_height), interpolation=interpolation)
+
+        offset_y = (tile_size - resized_height) // 2
+        offset_x = (tile_size - resized_width) // 2
+        tile[offset_y:offset_y + resized_height, offset_x:offset_x + resized_width] = resized
+
+        start_y = padding + row * (tile_size + padding)
+        start_x = padding + col * (tile_size + padding)
+        canvas[start_y:start_y + tile_size, start_x:start_x + tile_size] = tile
+
+    encoded_ok, encoded = cv2.imencode(
+        ".jpg",
+        canvas,
+        [int(cv2.IMWRITE_JPEG_QUALITY), 92],
+    )
+    if not encoded_ok:
+        return None
+
+    return bytes(encoded.tobytes()), "image/jpeg"
 
 
 def _snippet_to_prompt_hint(snippet: Snippet) -> str | None:
@@ -565,22 +772,10 @@ def _resolve_identity_snippet(
     project_id: UUID,
     identity: SnippetIdentity,
 ) -> Snippet | None:
-    if identity.canonical_snippet_id:
-        return _get_snippet(db, project_id, identity.canonical_snippet_id)
-
-    link = (
-        db.query(SnippetIdentityLink)
-        .filter(
-            SnippetIdentityLink.project_id == project_id,
-            SnippetIdentityLink.identity_id == identity.identity_id,
-            SnippetIdentityLink.status == "active",
-        )
-        .order_by(SnippetIdentityLink.is_primary.desc(), SnippetIdentityLink.confidence.desc().nullslast())
-        .first()
-    )
-    if not link:
+    snippets = _list_identity_reference_snippets(db, project_id, identity)
+    if not snippets:
         return None
-    return _get_snippet(db, project_id, link.snippet_id)
+    return snippets[0]
 
 
 def _resolve_character_model_snippet(

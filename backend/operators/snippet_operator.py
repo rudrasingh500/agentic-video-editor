@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from collections import defaultdict
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
@@ -185,6 +186,68 @@ def list_identities(
     if not include_merged:
         query = query.filter(SnippetIdentity.merged_into_id.is_(None))
     return query.order_by(SnippetIdentity.updated_at.desc()).offset(offset).limit(limit).all()
+
+
+def update_identity(
+    db: Session,
+    project_id: UUID,
+    identity_id: UUID,
+    name: str | None = None,
+    description: str | None = None,
+) -> SnippetIdentity | None:
+    identity = db.query(SnippetIdentity).filter(
+        SnippetIdentity.project_id == project_id,
+        SnippetIdentity.identity_id == identity_id,
+    ).first()
+    if not identity:
+        return None
+
+    if name is not None:
+        identity.name = name
+    if description is not None:
+        identity.description = description
+    identity.updated_at = datetime.now(timezone.utc)
+    db.flush()
+    return identity
+
+
+def list_identity_snippets_map(
+    db: Session,
+    project_id: UUID,
+    identity_ids: list[UUID],
+) -> dict[UUID, list[Snippet]]:
+    if not identity_ids:
+        return {}
+
+    links = db.query(SnippetIdentityLink).filter(
+        SnippetIdentityLink.project_id == project_id,
+        SnippetIdentityLink.identity_id.in_(identity_ids),
+        SnippetIdentityLink.status == "active",
+    ).all()
+
+    if not links:
+        return {identity_id: [] for identity_id in identity_ids}
+
+    snippet_ids = {link.snippet_id for link in links}
+    snippets = db.query(Snippet).filter(
+        Snippet.project_id == project_id,
+        Snippet.snippet_id.in_(snippet_ids),
+    ).all()
+    snippet_by_id = {snippet.snippet_id: snippet for snippet in snippets}
+
+    mapped: dict[UUID, list[Snippet]] = defaultdict(list)
+    for link in links:
+        snippet = snippet_by_id.get(link.snippet_id)
+        if snippet:
+            mapped[link.identity_id].append(snippet)
+
+    for identity_id in identity_ids:
+        mapped.setdefault(identity_id, [])
+
+    for identity_id in identity_ids:
+        mapped[identity_id].sort(key=lambda snippet: snippet.created_at or datetime.min, reverse=True)
+
+    return dict(mapped)
 
 
 def merge_identities(

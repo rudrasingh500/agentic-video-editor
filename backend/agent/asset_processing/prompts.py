@@ -302,3 +302,30 @@ Return null for non-music audio.
 }
 
 Return ONLY the JSON object, no additional text or markdown."""
+
+
+FACE_VERIFICATION_PROMPT = """You are verifying whether a detector candidate actually contains a real human face suitable for identity linking.
+
+You may receive:
+- candidate crop image (close-up)
+- optional full-frame context image
+- bbox metadata for where the candidate came from
+
+Return ONLY a JSON object with this exact schema:
+{
+  "label": "face" | "person_context" | "not_person",
+  "confidence": 0.0-1.0,
+  "reason": "short explanation",
+  "occlusion": "none" | "partial" | "heavy" | "unknown",
+  "frontalness": "frontal" | "partial_profile" | "profile" | "unknown"
+}
+
+Rules:
+- Use "face" only when a real human face is clearly visible.
+- Small, low-resolution, or slightly blurry faces can still be "face" if human facial structure is visible.
+- Side-facing/profile faces are still "face" when key facial structure is visible (eye + nose bridge + jaw/mouth outline).
+- Use "person_context" for body/torso/person-like context where the face is not clearly visible.
+- Use "not_person" for objects, textures, animals, scenery, artifacts, or uncertain cases.
+- Consider full-frame context when available; reject pareidolia from bark, sand, foliage, shadows, fabric, or compression artifacts.
+- Be conservative. If uncertain, return "not_person".
+"""

@@ -4,9 +4,9 @@ sqlalchemy
 alembic
 psycopg2-binary
 pgvector
-numpy
-opencv-python-headless
-mediapipe
+numpy==1.26.4
+opencv-python-headless==4.11.0.86
+mediapipe==0.10.21
 rq
 redis
 google-cloud-storage

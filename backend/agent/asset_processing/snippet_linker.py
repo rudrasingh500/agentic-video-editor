@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import os
 from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
@@ -15,25 +14,18 @@ from database.models import (
     SnippetIdentityLink,
     SnippetMergeSuggestion,
 )
+from . import config
 
 
 logger = logging.getLogger(__name__)
 
 
-def _env_float(name: str, default: float) -> float:
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    try:
-        return float(raw)
-    except ValueError:
-        logger.warning("Invalid %s=%r. Using default %.3f", name, raw, default)
-        return default
-
-
-STRICT_AUTO_ATTACH_MIN_SIM = _env_float("SNIPPET_AUTO_ATTACH_MIN_SIM", 0.955)
-STRICT_AUTO_ATTACH_MIN_MARGIN = _env_float("SNIPPET_AUTO_ATTACH_MIN_MARGIN", 0.01)
-STRICT_SUGGEST_MIN_SIM = _env_float("SNIPPET_SUGGEST_MIN_SIM", 0.95)
+STRICT_AUTO_ATTACH_MIN_SIM = config.SNIPPET_AUTO_ATTACH_MIN_SIM
+STRICT_AUTO_ATTACH_MIN_MARGIN = config.SNIPPET_AUTO_ATTACH_MIN_MARGIN
+STRICT_SUGGEST_MIN_SIM = config.SNIPPET_SUGGEST_MIN_SIM
+STRICT_MIN_QUALITY_SCORE = config.SNIPPET_STRICT_MIN_QUALITY_SCORE
+STRICT_REQUIRE_FACE_VERIFICATION = config.SNIPPET_REQUIRE_FACE_VERIFICATION
+STRICT_MIN_FACE_VERIFICATION_CONF = config.SNIPPET_STRICT_MIN_FACE_VERIFICATION_CONF
 
 AUTO_LINKABLE_SNIPPET_TYPES = {"face", "item"}
 
@@ -43,14 +35,38 @@ def strict_auto_link_snippet(
     snippet: Snippet,
     actor: str = "system:auto-linker",
 ) -> dict[str, Any]:
+    logger.debug(
+        "snippet_link_start snippet_id=%s project_id=%s type=%s has_embedding=%s",
+        snippet.snippet_id,
+        snippet.project_id,
+        snippet.snippet_type,
+        bool(snippet.embedding),
+    )
+
     if snippet.snippet_type not in AUTO_LINKABLE_SNIPPET_TYPES:
+        logger.debug(
+            "snippet_link_skip snippet_id=%s reason=snippet_type_not_auto_linked type=%s",
+            snippet.snippet_id,
+            snippet.snippet_type,
+        )
         return {
             "decision": "skipped",
             "reason": f"snippet_type_not_auto_linked:{snippet.snippet_type}",
         }
 
     if not snippet.embedding:
+        logger.debug("snippet_link_no_embedding snippet_id=%s", snippet.snippet_id)
         return {"decision": "new_identity", "reason": "missing_embedding"}
+
+    if snippet.snippet_type == "face":
+        face_gate = _face_link_gate(snippet)
+        if face_gate is not None:
+            logger.debug(
+                "snippet_link_skip snippet_id=%s reason=%s",
+                snippet.snippet_id,
+                face_gate,
+            )
+            return {"decision": "skipped", "reason": face_gate}
 
     top_matches = _find_identity_candidates(
         db=db,
@@ -65,6 +81,14 @@ def strict_auto_link_snippet(
     score1 = float(top1["similarity"]) if top1 else 0.0
     score2 = float(top2["similarity"]) if top2 else 0.0
     margin = score1 - score2
+    logger.debug(
+        "snippet_link_candidates snippet_id=%s top_count=%d score1=%.4f score2=%.4f margin=%.4f",
+        snippet.snippet_id,
+        len(top_matches),
+        score1,
+        score2,
+        margin,
+    )
 
     if (
         top1
@@ -77,6 +101,11 @@ def strict_auto_link_snippet(
             SnippetIdentity.merged_into_id.is_(None),
         ).first()
         if not identity:
+            logger.debug(
+                "snippet_link_candidate_missing snippet_id=%s candidate_identity_id=%s",
+                snippet.snippet_id,
+                top1["identity_id"],
+            )
             return {"decision": "new_identity", "reason": "candidate_not_found"}
 
         _attach_snippet_to_identity(
@@ -86,6 +115,13 @@ def strict_auto_link_snippet(
             confidence=score1,
             link_source=actor,
             metadata_json={"policy": "strict_auto", "margin": margin},
+        )
+        logger.debug(
+            "snippet_link_auto_attached snippet_id=%s identity_id=%s similarity=%.4f margin=%.4f",
+            snippet.snippet_id,
+            identity.identity_id,
+            score1,
+            margin,
         )
         return {
             "decision": "auto_attached",
@@ -106,6 +142,14 @@ def strict_auto_link_snippet(
         )
         db.add(suggestion)
         db.flush()
+        logger.debug(
+            "snippet_link_suggested snippet_id=%s suggestion_id=%s identity_id=%s similarity=%.4f margin=%.4f",
+            snippet.snippet_id,
+            suggestion.suggestion_id,
+            top1["identity_id"],
+            score1,
+            margin,
+        )
         return {
             "decision": "suggested",
             "suggestion_id": str(suggestion.suggestion_id),
@@ -123,12 +167,40 @@ def strict_auto_link_snippet(
         link_source=actor,
         metadata_json={"policy": "strict_auto", "reason": "new_identity"},
     )
+    logger.debug(
+        "snippet_link_new_identity snippet_id=%s identity_id=%s",
+        snippet.snippet_id,
+        identity.identity_id,
+    )
     return {
         "decision": "new_identity",
         "identity_id": str(identity.identity_id),
         "similarity": score1,
         "margin": margin,
     }
+
+
+def _face_link_gate(snippet: Snippet) -> str | None:
+    quality_score = float(snippet.quality_score or 0.0)
+    if quality_score < STRICT_MIN_QUALITY_SCORE:
+        return "face_quality_below_threshold"
+
+    if not STRICT_REQUIRE_FACE_VERIFICATION:
+        return None
+
+    source_ref = snippet.source_ref if isinstance(snippet.source_ref, dict) else {}
+    verification = source_ref.get("verification")
+    if not isinstance(verification, dict):
+        return "face_verification_missing"
+
+    label = str(verification.get("label", "")).strip().lower()
+    confidence = float(verification.get("confidence") or 0.0)
+    if label != "face":
+        return "face_verification_not_face"
+    if confidence < STRICT_MIN_FACE_VERIFICATION_CONF:
+        return "face_verification_low_confidence"
+
+    return None
 
 
 def _find_identity_candidates(

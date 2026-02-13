@@ -66,13 +66,38 @@ def _run_edit_agent_in_thread(
 ) -> EditAgentResult:
     db = SessionLocal()
     try:
-        return orchestrate_edit(
+        logger.info(
+            "edit_agent_run_start project_id=%s user_id=%s session_id=%s message_len=%d",
+            project_id,
+            user_id,
+            request.session_id,
+            len(request.message or ""),
+        )
+        result = orchestrate_edit(
             project_id=project_id,
             user_id=user_id,
             request=request,
             db=db,
             on_event=on_event,
         )
+        logger.info(
+            "edit_agent_run_complete project_id=%s user_id=%s session_id=%s pending_patches=%d applied=%s new_version=%s",
+            project_id,
+            user_id,
+            result.session_id,
+            len(result.pending_patches),
+            result.applied,
+            result.new_version,
+        )
+        return result
+    except Exception:
+        logger.exception(
+            "edit_agent_run_failed project_id=%s user_id=%s session_id=%s",
+            project_id,
+            user_id,
+            request.session_id,
+        )
+        raise
     finally:
         db.close()
 
@@ -221,6 +246,13 @@ async def send_edit_request(
         session_id=body.session_id,
     )
 
+    logger.info(
+        "edit_request_received project_id=%s user_id=%s session_id=%s",
+        project.project_id,
+        user_id,
+        request.session_id,
+    )
+
     extra_warnings: list[str] = []
 
     try:
@@ -298,6 +330,13 @@ async def stream_edit_request(
     request = EditRequest(
         message=body.message,
         session_id=body.session_id,
+    )
+
+    logger.info(
+        "edit_stream_request_received project_id=%s user_id=%s session_id=%s",
+        project.project_id,
+        user_id,
+        request.session_id,
     )
 
     event_stream = _stream_edit_agent_events(project.project_id, user_id, request)

@@ -304,6 +304,10 @@ class SnippetResponse(BaseModel):
     tags: list[str] = Field(default_factory=list)
     notes: str | None = None
     quality_score: float | None = None
+    identity_name: str | None = None
+    is_identity_poster: bool = False
+    display_label: str | None = None
+    preview_url: str | None = None
     created_by: str
     created_at: datetime
 
@@ -327,6 +331,11 @@ class IdentityCreateRequest(BaseModel):
     created_by: str = "user"
 
 
+class IdentityUpdateRequest(BaseModel):
+    name: str | None = None
+    description: str | None = None
+
+
 class IdentityResponse(BaseModel):
     identity_id: str
     project_id: str
@@ -341,6 +350,10 @@ class IdentityResponse(BaseModel):
     updated_at: datetime
 
 
+class IdentityWithSnippetsResponse(IdentityResponse):
+    snippets: list[SnippetResponse] = Field(default_factory=list)
+
+
 class IdentityDetailResponse(BaseModel):
     ok: bool
     identity: IdentityResponse
@@ -348,7 +361,7 @@ class IdentityDetailResponse(BaseModel):
 
 class IdentityListResponse(BaseModel):
     ok: bool
-    identities: list[IdentityResponse]
+    identities: list[IdentityResponse | IdentityWithSnippetsResponse]
 
 
 class IdentityMergeRequest(BaseModel):

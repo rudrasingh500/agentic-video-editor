@@ -92,6 +92,14 @@ async def create_render(
     session: SessionData = Depends(get_session),
 ):
     try:
+        logger.info(
+            "render_create_request project_id=%s user_id=%s job_type=%s start_frame=%s end_frame=%s",
+            project.project_id,
+            session.user_id,
+            request.job_type.value,
+            request.start_frame,
+            request.end_frame,
+        )
         job = create_render_job(
             db=db,
             project_id=project.project_id,
@@ -100,6 +108,14 @@ async def create_render(
         )
 
         job = dispatch_render_job(db, job.job_id)
+
+        logger.info(
+            "render_create_dispatched project_id=%s job_id=%s status=%s execution_mode=%s",
+            project.project_id,
+            job.job_id,
+            job.status,
+            (job.job_metadata or {}).get("execution_mode"),
+        )
 
         return RenderJobCreateResponse(ok=True, job=render_job_to_response(job))
 
@@ -339,6 +355,15 @@ async def render_webhook(
         error_message=progress.error_message,
         output_url=progress.output_url,
         output_size_bytes=progress.output_size_bytes,
+    )
+
+    logger.info(
+        "render_webhook_update project_id=%s job_id=%s status=%s progress=%s current_frame=%s",
+        project_id,
+        job_id,
+        progress.status,
+        progress.progress,
+        progress.current_frame,
     )
 
     return {"ok": True, "status": job.status if job else "unknown"}
