@@ -16,6 +16,14 @@ class _FakeQuery:
         return self._first_result
 
 
+class _FakeExecuteResult:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def fetchall(self):
+        return list(self._rows)
+
+
 class _FakeSession:
     def __init__(self, query_results=None):
         self._query_results = list(query_results or [])
@@ -27,6 +35,12 @@ class _FakeSession:
 
     def add(self, obj):
         self.added.append(obj)
+
+    def flush(self):
+        return None
+
+    def execute(self, *args, **kwargs):
+        return _FakeExecuteResult([])
 
 
 def _build_snippet(snippet_type: str = "face", embedding: list[float] | None = None):
@@ -79,7 +93,7 @@ def test_strict_auto_link_skips_unverified_face_snippet():
 
 def test_strict_auto_link_skips_low_quality_face_snippet():
     snippet = _build_snippet(snippet_type="face", embedding=[0.3, 0.2, 0.1])
-    snippet.quality_score = 0.5
+    snippet.quality_score = snippet_linker.STRICT_MIN_QUALITY_SCORE - 0.01
 
     result = snippet_linker.strict_auto_link_snippet(_FakeSession(), snippet)
 
@@ -97,7 +111,7 @@ def test_strict_auto_link_auto_attaches_without_metadata_arg_mismatch(monkeypatc
         "_find_identity_candidates",
         lambda **kwargs: [
             {"identity_id": identity.identity_id, "similarity": 0.99},
-            {"identity_id": uuid4(), "similarity": 0.95},
+            {"identity_id": uuid4(), "similarity": 0.90},
         ],
     )
 

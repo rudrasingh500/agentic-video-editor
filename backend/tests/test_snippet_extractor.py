@@ -39,6 +39,7 @@ def test_compute_visual_embedding_changes_for_different_inputs():
 def test_open_face_detector_falls_back_to_haar(monkeypatch):
     sentinel = object()
     monkeypatch.setattr(snippet_extractor, "mp", SimpleNamespace())
+    monkeypatch.setattr(snippet_extractor, "_refresh_mediapipe_module", lambda: None)
     monkeypatch.setattr(snippet_extractor, "_get_haar_face_cascade", lambda: sentinel)
     monkeypatch.setattr(snippet_extractor, "SNIPPET_REQUIRE_MEDIAPIPE", False)
     monkeypatch.setattr(snippet_extractor, "SNIPPET_ENABLE_HAAR_FALLBACK", True)
@@ -53,6 +54,7 @@ def test_open_face_detector_falls_back_to_haar(monkeypatch):
 
 def test_open_face_detector_skips_when_mediapipe_required(monkeypatch):
     monkeypatch.setattr(snippet_extractor, "mp", SimpleNamespace())
+    monkeypatch.setattr(snippet_extractor, "_refresh_mediapipe_module", lambda: None)
     monkeypatch.setattr(snippet_extractor, "SNIPPET_REQUIRE_MEDIAPIPE", True)
     monkeypatch.setattr(snippet_extractor, "SNIPPET_ENABLE_HAAR_FALLBACK", True)
 
@@ -80,6 +82,7 @@ def test_open_face_detector_prefers_mediapipe(monkeypatch):
     )
 
     monkeypatch.setattr(snippet_extractor, "mp", mp_stub)
+    monkeypatch.setattr(snippet_extractor, "MEDIAPIPE_ENABLE_DUAL_MODEL", False)
     monkeypatch.setattr(snippet_extractor, "_get_haar_face_cascade", lambda: object())
 
     backend, detector_context = snippet_extractor._open_face_detector()
