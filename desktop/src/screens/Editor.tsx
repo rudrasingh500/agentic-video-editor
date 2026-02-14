@@ -5,19 +5,13 @@ import {
   useRef,
   useState,
   type ChangeEvent,
+  type DragEvent,
 } from 'react'
 import {
-  Home,
   Film,
-  Play,
   Upload,
   Trash2,
-  ChevronRight,
-  Download,
-  SkipBack,
-  SkipForward,
-  Volume2,
-  Maximize2,
+  Plus,
   Grid3X3,
   List,
   Sparkles,
@@ -29,9 +23,18 @@ import type { AppConfig } from '../lib/config'
 import { api } from '../lib/api'
 import { loadAssetCache, saveAssetCache, type AssetCacheIndex } from '../lib/assetCache'
 import { loadSessionId, saveSessionId } from '../lib/chatSessions'
+import { DEFAULT_TIMELINE_RATE, makeRationalTime, makeTimeRange } from '../lib/timeUtils'
+import HeaderBar from '../components/editor/HeaderBar'
+import InspectorPanel from '../components/editor/InspectorPanel'
+import PreviewPanel from '../components/editor/PreviewPanel'
 import Modal from '../components/Modal'
 import OutputPanel from '../components/OutputPanel'
 import ChatSidebar from '../components/ChatSidebar'
+import TimelinePanel from '../components/timeline/TimelinePanel'
+import { usePlaybackStore } from '../stores/playbackStore'
+import { useRenderStore } from '../stores/renderStore'
+import { useTimelineStore } from '../stores/timelineStore'
+import { useUiStore } from '../stores/uiStore'
 import type {
   Asset,
   EditPatchSummary,
@@ -48,6 +51,14 @@ import type {
   SnippetIdentityWithSnippets,
   SnippetMergeSuggestion,
 } from '../lib/types'
+import type {
+  RationalTime,
+  TimeRange,
+  Track,
+  TrackItem,
+  TransitionType,
+} from '../lib/timelineTypes'
+import type { GpuInfo } from '../stores/renderStore'
 
 type EditorProps = {
   project: Project
@@ -59,13 +70,6 @@ type ChatMessage = {
   id: string
   role: 'user' | 'assistant'
   content: string
-}
-
-type RenderState = {
-  jobId?: string
-  status?: string
-  progress?: number
-  outputPath?: string
 }
 
 type UploadResult = {
@@ -86,18 +90,6 @@ type SnippetPreviewModalState = {
   imageUrl: string
   title: string
   subtitle?: string
-}
-
-type GpuBackend = 'nvidia' | 'amd' | 'apple' | 'none'
-
-type GpuInfo = {
-  available: boolean
-  detail: string
-  backend: GpuBackend
-  encoders: {
-    h264: boolean
-    h265: boolean
-  }
 }
 
 type GenerationFormState = {
@@ -231,7 +223,7 @@ const toFileUrl = (filePath: string) => {
   return encodeURI(`file://${prefix}${normalized}`)
 }
 
-const formatGpuBackendLabel = (backend: GpuBackend) => {
+const formatGpuBackendLabel = (backend: GpuInfo['backend']) => {
   if (backend === 'nvidia') {
     return 'NVENC'
   }
@@ -244,22 +236,77 @@ const formatGpuBackendLabel = (backend: GpuBackend) => {
   return 'Auto'
 }
 
+const isTrackNode = (value: Track | { OTIO_SCHEMA: string }): value is Track =>
+  value.OTIO_SCHEMA === 'Track.1'
+
+const trackItemDurationSeconds = (item: TrackItem): number => {
+  if (item.OTIO_SCHEMA === 'Clip.1' || item.OTIO_SCHEMA === 'Gap.1') {
+    if (item.source_range.duration.rate <= 0) {
+      return 0
+    }
+    return item.source_range.duration.value / item.source_range.duration.rate
+  }
+
+  if (item.OTIO_SCHEMA === 'Transition.1') {
+    const inSec = item.in_offset.rate > 0 ? item.in_offset.value / item.in_offset.rate : 0
+    const outSec = item.out_offset.rate > 0 ? item.out_offset.value / item.out_offset.rate : 0
+    return inSec + outSec
+  }
+
+  if (item.source_range?.duration.rate && item.source_range.duration.rate > 0) {
+    return item.source_range.duration.value / item.source_range.duration.rate
+  }
+
+  return 0
+}
+
 const Editor = ({ project, config, onBack }: EditorProps) => {
   const [assets, setAssets] = useState<Asset[]>([])
   const [assetsLoading, setAssetsLoading] = useState(false)
   const [assetsError, setAssetsError] = useState<string | null>(null)
-  const [timelineVersion, setTimelineVersion] = useState<number | null>(null)
+  const timelineVersion = useTimelineStore((state) => state.version)
+  const timeline = useTimelineStore((state) => state.timeline)
+  const timelineSaving = useTimelineStore((state) => state.saving)
+  const addTimelineClip = useTimelineStore((state) => state.addClip)
+  const moveTimelineClip = useTimelineStore((state) => state.moveClip)
+  const trimTimelineClip = useTimelineStore((state) => state.trimClip)
+  const splitTimelineClip = useTimelineStore((state) => state.splitClip)
+  const slipTimelineClip = useTimelineStore((state) => state.slipClip)
+  const renameTimelineTrack = useTimelineStore((state) => state.renameTrack)
+  const modifyTimelineTransition = useTimelineStore((state) => state.modifyTransition)
+  const removeTimelineClip = useTimelineStore((state) => state.removeClip)
+  const removeTimelineGap = useTimelineStore((state) => state.removeGap)
+  const removeTimelineTransition = useTimelineStore((state) => state.removeTransition)
+  const addTimelineEffect = useTimelineStore((state) => state.addEffect)
+  const removeTimelineEffect = useTimelineStore((state) => state.removeEffect)
+  const setTimelineVersion = useTimelineStore((state) => state.setVersion)
+  const setTimelineSnapshot = useTimelineStore((state) => state.setSnapshot)
+  const clearTimelineStore = useTimelineStore((state) => state.clear)
   const [chatInput, setChatInput] = useState('')
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [pendingPatches, setPendingPatches] = useState<EditPatchSummary[]>([])
   const [activityEvents, setActivityEvents] = useState<EditSessionActivityEvent[]>([])
   const [agentBusy, setAgentBusy] = useState(false)
-  const [gpuInfo, setGpuInfo] = useState<GpuInfo | null>(null)
-  const [renderState, setRenderState] = useState<RenderState>({})
-  const [renderLogs, setRenderLogs] = useState<string[]>([])
-  const [previewPath, setPreviewPath] = useState<string | null>(null)
-  const [previewKey, setPreviewKey] = useState(0)
+  const gpuInfo = useRenderStore((state) => state.gpuInfo)
+  const setGpuInfo = useRenderStore((state) => state.setGpuInfo)
+  const renderState = useRenderStore((state) => state.renderState)
+  const setRenderState = useRenderStore((state) => state.setRenderState)
+  const renderLogs = useRenderStore((state) => state.renderLogs)
+  const setRenderLogs = useRenderStore((state) => state.setRenderLogs)
+  const appendRenderLog = useRenderStore((state) => state.appendRenderLog)
+  const previewPath = useRenderStore((state) => state.previewPath)
+  const setPreviewPath = useRenderStore((state) => state.setPreviewPath)
+  const previewKey = useRenderStore((state) => state.previewKey)
+  const bumpPreviewKey = useRenderStore((state) => state.bumpPreviewKey)
+  const clearRenderStore = useRenderStore((state) => state.clear)
+  const playbackCurrentTime = usePlaybackStore((state) => state.currentTime)
+  const playbackDuration = usePlaybackStore((state) => state.duration)
+  const setPlaybackCurrentTime = usePlaybackStore((state) => state.setCurrentTime)
+  const seekPlaybackFrames = usePlaybackStore((state) => state.seekFrames)
+  const seekPlaybackSeconds = usePlaybackStore((state) => state.seekSeconds)
+  const togglePlayback = usePlaybackStore((state) => state.togglePlayback)
+  const clearPlaybackStore = usePlaybackStore((state) => state.clear)
   const [assetCache, setAssetCache] = useState<AssetCacheIndex>(() => loadAssetCache())
   const assetsRef = useRef<Asset[]>([])
   const fileInputRef = useRef<HTMLInputElement | null>(null)
@@ -308,11 +355,36 @@ const Editor = ({ project, config, onBack }: EditorProps) => {
     referenceAssetId: '',
   })
 
-  // UI state for collapsible panels
-  const [sidebarOpen, setSidebarOpen] = useState(true)
-  const [outputPanelOpen, setOutputPanelOpen] = useState(false)
-  const [activeTab, setActiveTab] = useState<'assets' | 'media' | 'audio' | 'graphics' | 'people'>('assets')
-  const [assetViewMode, setAssetViewMode] = useState<'grid' | 'list'>('grid')
+  const sidebarOpen = useUiStore((state) => state.sidebarOpen)
+  const toggleSidebar = useUiStore((state) => state.toggleSidebar)
+  const outputPanelOpen = useUiStore((state) => state.outputPanelOpen)
+  const setOutputPanelOpen = useUiStore((state) => state.setOutputPanelOpen)
+  const toggleOutputPanel = useUiStore((state) => state.toggleOutputPanel)
+  const activeTab = useUiStore((state) => state.activeAssetTab)
+  const setActiveTab = useUiStore((state) => state.setActiveAssetTab)
+  const assetViewMode = useUiStore((state) => state.assetViewMode)
+  const setAssetViewMode = useUiStore((state) => state.setAssetViewMode)
+  const inspectorOpen = useUiStore((state) => state.inspectorOpen)
+  const setInspectorOpen = useUiStore((state) => state.setInspectorOpen)
+  const selection = useUiStore((state) => state.selection)
+  const clearSelection = useUiStore((state) => state.clearSelection)
+  const setTimelineZoom = useUiStore((state) => state.setTimelineZoom)
+  const timelineZoom = useUiStore((state) => state.timelineZoom)
+  const setActiveTool = useUiStore((state) => state.setActiveTool)
+  const clearUiStore = useUiStore((state) => state.clear)
+
+  useEffect(() => {
+    clearTimelineStore()
+    clearRenderStore()
+    clearPlaybackStore()
+    clearUiStore()
+  }, [
+    clearPlaybackStore,
+    clearRenderStore,
+    clearTimelineStore,
+    clearUiStore,
+    project.project_id,
+  ])
 
   const mapSessionMessages = (session: EditSessionDetail): ChatMessage[] =>
     (session.messages || []).map((message, index) => ({
@@ -547,6 +619,549 @@ const Editor = ({ project, config, onBack }: EditorProps) => {
     [config, project.project_id, removeAssetCacheEntry],
   )
 
+  const resolveTimelineRate = useCallback(() => {
+    const metadataRate = timeline?.metadata?.default_rate
+    if (typeof metadataRate === 'number' && Number.isFinite(metadataRate) && metadataRate > 0) {
+      return metadataRate
+    }
+
+    const firstTrack = timeline?.tracks.children.find((child) => child.OTIO_SCHEMA === 'Track.1')
+    if (firstTrack && firstTrack.OTIO_SCHEMA === 'Track.1') {
+      const firstItem = firstTrack.children[0]
+      if (firstItem?.OTIO_SCHEMA === 'Clip.1' || firstItem?.OTIO_SCHEMA === 'Gap.1') {
+        return firstItem.source_range.duration.rate
+      }
+      if (firstItem?.OTIO_SCHEMA === 'Transition.1') {
+        return firstItem.in_offset.rate
+      }
+    }
+
+    return DEFAULT_TIMELINE_RATE
+  }, [timeline])
+
+  const ensureTimelineExists = useCallback(async () => {
+    if (timeline && typeof timelineVersion === 'number') {
+      return
+    }
+
+    const timelineName = `${project.project_name} Timeline`
+
+    try {
+      const created = await api.createTimeline(config, project.project_id, {
+        name: timelineName,
+      })
+      setTimelineSnapshot(created.timeline, created.version, created.checkpoint_id ?? null)
+      return
+    } catch {
+      const existing = await api.getTimeline(config, project.project_id)
+      setTimelineSnapshot(existing.timeline, existing.version, existing.checkpoint_id ?? null)
+    }
+  }, [
+    config,
+    project.project_id,
+    project.project_name,
+    setTimelineSnapshot,
+    timeline,
+    timelineVersion,
+  ])
+
+  const handleAddAssetToTimeline = useCallback(
+    async (asset: Asset) => {
+      try {
+        await ensureTimelineExists()
+
+        const rate = resolveTimelineRate()
+        const defaultDurationFrames = Math.max(1, Math.round(rate * 5))
+
+        await addTimelineClip(config, project.project_id, 0, {
+          asset_id: asset.asset_id,
+          source_range: makeTimeRange(0, defaultDurationFrames, rate),
+          name: asset.asset_name,
+        })
+      } catch (error) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: crypto.randomUUID(),
+            role: 'assistant',
+            content: `Could not add "${asset.asset_name}" to timeline: ${(error as Error).message}`,
+          },
+        ])
+      }
+    },
+    [addTimelineClip, config, ensureTimelineExists, project.project_id, resolveTimelineRate],
+  )
+
+  const handleAssetDragStart = useCallback(
+    (event: DragEvent<HTMLElement>, assetId: string) => {
+      event.dataTransfer.setData('application/x-auteur-asset-id', assetId)
+      event.dataTransfer.effectAllowed = 'copy'
+    },
+    [],
+  )
+
+  const handleDroppedAssetToTimeline = useCallback(
+    (assetId: string) => {
+      const droppedAsset = assetsRef.current.find((asset) => asset.asset_id === assetId)
+      if (!droppedAsset) {
+        return
+      }
+      void handleAddAssetToTimeline(droppedAsset)
+    },
+    [handleAddAssetToTimeline],
+  )
+
+  const handleMoveClipOnTimeline = useCallback(
+    async (payload: {
+      fromTrackIndex: number
+      clipIndex: number
+      toTrackIndex: number
+      toClipIndex: number
+    }) => {
+      try {
+        await moveTimelineClip(
+          config,
+          project.project_id,
+          payload.fromTrackIndex,
+          payload.clipIndex,
+          {
+            to_track_index: payload.toTrackIndex,
+            to_clip_index: payload.toClipIndex,
+          },
+        )
+      } catch (error) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: crypto.randomUUID(),
+            role: 'assistant',
+            content: `Could not move clip: ${(error as Error).message}`,
+          },
+        ])
+      }
+    },
+    [config, moveTimelineClip, project.project_id],
+  )
+
+  const handleTrimClipOnTimeline = useCallback(
+    async (payload: { trackIndex: number; clipIndex: number; newSourceRange: TimeRange }) => {
+      try {
+        await trimTimelineClip(
+          config,
+          project.project_id,
+          payload.trackIndex,
+          payload.clipIndex,
+          {
+            new_source_range: payload.newSourceRange,
+          },
+        )
+      } catch (error) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: crypto.randomUUID(),
+            role: 'assistant',
+            content: `Could not trim clip: ${(error as Error).message}`,
+          },
+        ])
+      }
+    },
+    [config, project.project_id, trimTimelineClip],
+  )
+
+  const handleSplitClipOnTimeline = useCallback(
+    async (payload: { trackIndex: number; clipIndex: number; splitOffset: RationalTime }) => {
+      try {
+        await splitTimelineClip(
+          config,
+          project.project_id,
+          payload.trackIndex,
+          payload.clipIndex,
+          {
+            split_offset: payload.splitOffset,
+          },
+        )
+      } catch (error) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: crypto.randomUUID(),
+            role: 'assistant',
+            content: `Could not split clip: ${(error as Error).message}`,
+          },
+        ])
+      }
+    },
+    [config, project.project_id, splitTimelineClip],
+  )
+
+  const handleSlipClipOnTimeline = useCallback(
+    async (payload: { trackIndex: number; clipIndex: number; offset: RationalTime }) => {
+      try {
+        await slipTimelineClip(
+          config,
+          project.project_id,
+          payload.trackIndex,
+          payload.clipIndex,
+          payload.offset,
+        )
+      } catch (error) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: crypto.randomUUID(),
+            role: 'assistant',
+            content: `Could not slip clip: ${(error as Error).message}`,
+          },
+        ])
+      }
+    },
+    [config, project.project_id, slipTimelineClip],
+  )
+
+  const handleRenameTrackOnTimeline = useCallback(
+    async (trackIndex: number, newName: string) => {
+      try {
+        await renameTimelineTrack(config, project.project_id, trackIndex, newName)
+      } catch (error) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: crypto.randomUUID(),
+            role: 'assistant',
+            content: `Could not rename track: ${(error as Error).message}`,
+          },
+        ])
+      }
+    },
+    [config, project.project_id, renameTimelineTrack],
+  )
+
+  const handleModifyTransitionOnTimeline = useCallback(
+    async (payload: {
+      trackIndex: number
+      transitionIndex: number
+      transitionType: TransitionType
+      inOffset: RationalTime
+      outOffset: RationalTime
+    }) => {
+      try {
+        await modifyTimelineTransition(
+          config,
+          project.project_id,
+          payload.trackIndex,
+          payload.transitionIndex,
+          {
+            transition_type: payload.transitionType,
+            in_offset: payload.inOffset,
+            out_offset: payload.outOffset,
+          },
+        )
+      } catch (error) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: crypto.randomUUID(),
+            role: 'assistant',
+            content: `Could not update transition: ${(error as Error).message}`,
+          },
+        ])
+      }
+    },
+    [config, modifyTimelineTransition, project.project_id],
+  )
+
+  const handleAddClipEffectOnTimeline = useCallback(
+    async (payload: { trackIndex: number; clipIndex: number; effectName: string }) => {
+      try {
+        await addTimelineEffect(
+          config,
+          project.project_id,
+          payload.trackIndex,
+          payload.clipIndex,
+          {
+            effect: {
+              OTIO_SCHEMA: 'Effect.1',
+              name: payload.effectName,
+              effect_name: payload.effectName,
+              metadata: {},
+            },
+          },
+        )
+      } catch (error) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: crypto.randomUUID(),
+            role: 'assistant',
+            content: `Could not add effect: ${(error as Error).message}`,
+          },
+        ])
+      }
+    },
+    [addTimelineEffect, config, project.project_id],
+  )
+
+  const handleRemoveClipEffectOnTimeline = useCallback(
+    async (payload: { trackIndex: number; clipIndex: number; effectIndex: number }) => {
+      try {
+        await removeTimelineEffect(
+          config,
+          project.project_id,
+          payload.trackIndex,
+          payload.clipIndex,
+          payload.effectIndex,
+        )
+      } catch (error) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: crypto.randomUUID(),
+            role: 'assistant',
+            content: `Could not remove effect: ${(error as Error).message}`,
+          },
+        ])
+      }
+    },
+    [config, project.project_id, removeTimelineEffect],
+  )
+
+  const refreshTimelineSnapshot = useCallback(
+    async (version?: number) => {
+      const response = await api.getTimeline(config, project.project_id, version)
+      setTimelineSnapshot(response.timeline, response.version, response.checkpoint_id ?? null)
+      return response
+    },
+    [config, project.project_id, setTimelineSnapshot],
+  )
+
+  const timelineTracks = useMemo(() => {
+    if (!timeline) {
+      return []
+    }
+    return timeline.tracks.children.filter(isTrackNode)
+  }, [timeline])
+
+  const selectedClipContext = useMemo(() => {
+    if (!selection || selection.type !== 'clip') {
+      return null
+    }
+
+    const track = timelineTracks[selection.trackIndex]
+    if (!track) {
+      return null
+    }
+
+    const item = track.children[selection.itemIndex]
+    if (!item || item.OTIO_SCHEMA !== 'Clip.1') {
+      return null
+    }
+
+    let startSeconds = 0
+    for (let index = 0; index < selection.itemIndex; index += 1) {
+      const candidate = track.children[index]
+      if (candidate?.OTIO_SCHEMA === 'Transition.1') {
+        continue
+      }
+      startSeconds += trackItemDurationSeconds(candidate)
+    }
+
+    const durationRate = item.source_range.duration.rate
+    const durationSeconds =
+      durationRate > 0 ? item.source_range.duration.value / durationRate : 0
+
+    return {
+      trackIndex: selection.trackIndex,
+      clipIndex: selection.itemIndex,
+      clip: item,
+      startSeconds,
+      durationSeconds,
+    }
+  }, [selection, timelineTracks])
+
+  const handleDeleteSelection = useCallback(async () => {
+    if (!selection) {
+      return
+    }
+
+    try {
+      if (selection.type === 'clip') {
+        await removeTimelineClip(config, project.project_id, selection.trackIndex, selection.itemIndex)
+        clearSelection()
+        return
+      }
+
+      if (selection.type === 'gap') {
+        await removeTimelineGap(config, project.project_id, selection.trackIndex, selection.itemIndex)
+        clearSelection()
+        return
+      }
+
+      if (selection.type === 'transition') {
+        await removeTimelineTransition(
+          config,
+          project.project_id,
+          selection.trackIndex,
+          selection.itemIndex,
+        )
+        clearSelection()
+      }
+    } catch (error) {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: crypto.randomUUID(),
+          role: 'assistant',
+          content: `Could not delete selection: ${(error as Error).message}`,
+        },
+      ])
+    }
+  }, [
+    clearSelection,
+    config,
+    project.project_id,
+    removeTimelineClip,
+    removeTimelineGap,
+    removeTimelineTransition,
+    selection,
+  ])
+
+  useEffect(() => {
+    const isTypingTarget = (target: EventTarget | null) => {
+      if (!(target instanceof HTMLElement)) {
+        return false
+      }
+
+      const tag = target.tagName.toLowerCase()
+      if (tag === 'input' || tag === 'textarea' || tag === 'select') {
+        return true
+      }
+
+      return target.isContentEditable
+    }
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (isTypingTarget(event.target)) {
+        return
+      }
+
+      if (event.code === 'Space') {
+        event.preventDefault()
+        togglePlayback()
+        return
+      }
+
+      if (event.code === 'ArrowLeft') {
+        event.preventDefault()
+        if (event.shiftKey) {
+          seekPlaybackSeconds(-1)
+        } else {
+          seekPlaybackFrames(-1)
+        }
+        return
+      }
+
+      if (event.code === 'ArrowRight') {
+        event.preventDefault()
+        if (event.shiftKey) {
+          seekPlaybackSeconds(1)
+        } else {
+          seekPlaybackFrames(1)
+        }
+        return
+      }
+
+      if (event.code === 'Home') {
+        event.preventDefault()
+        setPlaybackCurrentTime(makeRationalTime(0, playbackCurrentTime.rate || DEFAULT_TIMELINE_RATE))
+        return
+      }
+
+      if (event.code === 'End') {
+        event.preventDefault()
+        setPlaybackCurrentTime(playbackDuration)
+        return
+      }
+
+      if ((event.ctrlKey || event.metaKey) && (event.key === '=' || event.key === '+')) {
+        event.preventDefault()
+        setTimelineZoom(timelineZoom + 0.1)
+        return
+      }
+
+      if ((event.ctrlKey || event.metaKey) && event.key === '-') {
+        event.preventDefault()
+        setTimelineZoom(timelineZoom - 0.1)
+        return
+      }
+
+      if (event.key.toLowerCase() === 'v') {
+        event.preventDefault()
+        setActiveTool('select')
+        return
+      }
+
+      if (event.key.toLowerCase() === 'b') {
+        event.preventDefault()
+        setActiveTool('razor')
+        return
+      }
+
+      if (event.key.toLowerCase() === 'y') {
+        event.preventDefault()
+        setActiveTool('slip')
+        return
+      }
+
+      if (!event.ctrlKey && !event.metaKey && event.key.toLowerCase() === 's' && selectedClipContext) {
+        event.preventDefault()
+        const rate = selectedClipContext.clip.source_range.duration.rate
+        const playheadSeconds =
+          playbackCurrentTime.rate > 0
+            ? playbackCurrentTime.value / playbackCurrentTime.rate
+            : 0
+        const offsetSeconds = playheadSeconds - selectedClipContext.startSeconds
+        const splitFrames = Math.round(offsetSeconds * rate)
+
+        if (splitFrames > 0 && splitFrames < selectedClipContext.clip.source_range.duration.value) {
+          void handleSplitClipOnTimeline({
+            trackIndex: selectedClipContext.trackIndex,
+            clipIndex: selectedClipContext.clipIndex,
+            splitOffset: {
+              OTIO_SCHEMA: 'RationalTime.1',
+              value: splitFrames,
+              rate,
+            },
+          })
+        }
+        return
+      }
+
+      if (event.key === 'Delete' || event.key === 'Backspace') {
+        event.preventDefault()
+        void handleDeleteSelection()
+      }
+    }
+
+    window.addEventListener('keydown', onKeyDown)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown)
+    }
+  }, [
+    handleDeleteSelection,
+    handleSplitClipOnTimeline,
+    playbackCurrentTime,
+    playbackDuration,
+    seekPlaybackFrames,
+    seekPlaybackSeconds,
+    selectedClipContext,
+    setActiveTool,
+    setPlaybackCurrentTime,
+    setTimelineZoom,
+    timelineZoom,
+    togglePlayback,
+  ])
+
   useEffect(() => {
     let mounted = true
     fetchAssets().catch(() => {})
@@ -586,9 +1201,8 @@ const Editor = ({ project, config, onBack }: EditorProps) => {
     let active = true
     const loadTimeline = async () => {
       try {
-        const response = await api.getTimeline(config, project.project_id)
         if (active) {
-          setTimelineVersion(response.version ?? null)
+          await refreshTimelineSnapshot()
         }
       } catch (error) {
         if (active) {
@@ -600,7 +1214,7 @@ const Editor = ({ project, config, onBack }: EditorProps) => {
     return () => {
       active = false
     }
-  }, [config, project.project_id])
+  }, [refreshTimelineSnapshot, setTimelineVersion])
 
   useEffect(() => {
     let active = true
@@ -625,7 +1239,7 @@ const Editor = ({ project, config, onBack }: EditorProps) => {
     return () => {
       active = false
     }
-  }, [])
+  }, [setGpuInfo])
 
   useEffect(() => {
     setRenderSettings(buildDefaultRenderSettings(project.project_name))
@@ -683,7 +1297,7 @@ const Editor = ({ project, config, onBack }: EditorProps) => {
         ])
       }
     },
-    [config, project.project_id],
+    [config, project.project_id, setRenderState],
   )
 
   useEffect(() => {
@@ -722,7 +1336,7 @@ const Editor = ({ project, config, onBack }: EditorProps) => {
         outputPath: event.outputPath,
       }))
       setPreviewPath(event.outputPath)
-      setPreviewKey((prev) => prev + 1)
+      bumpPreviewKey()
       if (event.code === 0) {
         void uploadRenderOutput(event.jobId, event.outputPath)
       }
@@ -736,10 +1350,9 @@ const Editor = ({ project, config, onBack }: EditorProps) => {
       if (lines.length === 0) {
         return
       }
-      setRenderLogs((prev) => {
-        const next = [...prev, ...lines]
-        return next.length > 200 ? next.slice(next.length - 200) : next
-      })
+      for (const line of lines) {
+        appendRenderLog(line)
+      }
     })
 
     return () => {
@@ -747,7 +1360,17 @@ const Editor = ({ project, config, onBack }: EditorProps) => {
       unsubscribeComplete()
       unsubscribeLogs()
     }
-  }, [config, project.project_id, renderState.jobId, uploadRenderOutput])
+  }, [
+    appendRenderLog,
+    bumpPreviewKey,
+    config,
+    project.project_id,
+    renderState.jobId,
+    setOutputPanelOpen,
+    setPreviewPath,
+    setRenderState,
+    uploadRenderOutput,
+  ])
 
   const prepareLocalManifest = useCallback(
     async (
@@ -884,7 +1507,16 @@ const Editor = ({ project, config, onBack }: EditorProps) => {
       active = false
       window.clearInterval(interval)
     }
-  }, [config, project.project_id, project.project_name, prepareLocalManifest, renderState.status])
+  }, [
+    config,
+    prepareLocalManifest,
+    project.project_id,
+    project.project_name,
+    renderState.status,
+    setOutputPanelOpen,
+    setRenderLogs,
+    setRenderState,
+  ])
 
   const handleUploadClick = () => {
     fileInputRef.current?.click()
@@ -899,11 +1531,11 @@ const Editor = ({ project, config, onBack }: EditorProps) => {
     for (const file of Array.from(files)) {
       try {
         const response = await api.uploadAsset(config, project.project_id, file)
-      setAssets((prev) => {
-        const next = [response.asset, ...prev]
-        assetsRef.current = next
-        return next
-      })
+        setAssets((prev) => {
+          const next = [response.asset, ...prev]
+          assetsRef.current = next
+          return next
+        })
 
         const localPath = (file as File & { path?: string }).path
         if (localPath) {
@@ -1203,6 +1835,7 @@ const Editor = ({ project, config, onBack }: EditorProps) => {
           setPendingPatches(resultPatches)
           if (resultVersion) {
             setTimelineVersion(resultVersion)
+            refreshTimelineSnapshot(resultVersion).catch(() => {})
           }
           setMessages((prev) => [
             ...prev,
@@ -1257,6 +1890,7 @@ const Editor = ({ project, config, onBack }: EditorProps) => {
       )
       if (response.new_version) {
         setTimelineVersion(response.new_version)
+        refreshTimelineSnapshot(response.new_version).catch(() => {})
       }
       setPendingPatches([])
       fetchAssets(true).catch(() => {})
@@ -1411,119 +2045,21 @@ const Editor = ({ project, config, onBack }: EditorProps) => {
 
   return (
     <div className="flex h-screen flex-col bg-neutral-950">
-      {/* Header */}
-      <header className="flex h-12 shrink-0 items-center justify-between border-b border-neutral-800 px-4">
-        <div className="flex items-center gap-3">
-          <button
-            onClick={onBack}
-            className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200 transition-colors"
-          >
-            <Home className="h-4 w-4" />
-          </button>
-          <ChevronRight className="h-4 w-4 text-neutral-700" />
-          <div className="flex items-center gap-2">
-            <Film className="h-4 w-4 text-accent-400" />
-            <span className="text-sm font-medium text-neutral-200">
-              {project.project_name}
-            </span>
-          </div>
-          <span className="rounded bg-neutral-800 px-2 py-0.5 text-2xs font-mono text-neutral-500">
-            v{timelineVersion ?? '-'}
-          </span>
-        </div>
+      <HeaderBar
+        projectName={project.project_name}
+        timelineVersion={timelineVersion}
+        gpuAvailable={gpuInfo?.available ?? false}
+        gpuBackend={gpuInfo?.backend ?? 'none'}
+        onBack={onBack}
+        onOpenRenderSettings={() => setRenderSettingsOpen(true)}
+        onRender={handleRender}
+      />
 
-        <div className="flex items-center gap-2">
-          <span className="text-2xs text-neutral-500 mr-2">
-            {gpuInfo?.available
-              ? `GPU (${formatGpuBackendLabel(gpuInfo.backend)})`
-              : 'CPU Mode'}
-          </span>
-          <button
-            onClick={() => setRenderSettingsOpen(true)}
-            className="rounded-lg border border-neutral-700 bg-neutral-800 px-3 py-1.5 text-xs font-medium text-neutral-300 hover:border-neutral-600 hover:bg-neutral-700 transition-colors"
-          >
-            Render Settings
-          </button>
-          <button
-            onClick={handleRender}
-            className="flex items-center gap-2 rounded-lg bg-accent-500 px-4 py-1.5 text-sm font-medium text-white hover:bg-accent-600 transition-colors"
-          >
-            <Download className="h-4 w-4" />
-            Export
-          </button>
-        </div>
-      </header>
-
-      {/* Main content area */}
       <div className="flex flex-1 overflow-hidden">
-        {/* Main workspace (preview + assets) */}
         <div className="flex flex-1 flex-col overflow-hidden">
-          {/* Upper section: Preview */}
           <div className="flex flex-1 min-h-0">
-            {/* Video Preview - takes up most of the space */}
-            <div className="flex-1 flex flex-col bg-neutral-900 border-r border-neutral-800">
-              {/* Preview area */}
-              <div className="flex-1 flex items-center justify-center p-4 bg-neutral-950/50">
-                <div className="relative w-full h-full max-w-full max-h-full flex items-center justify-center">
-                  {previewUrl ? (
-                    <video
-                      key={previewKey}
-                      src={previewUrl}
-                      controls
-                      className="max-w-full max-h-full object-contain rounded-lg shadow-2xl"
-                    />
-                  ) : (
-                    <div className="flex flex-col items-center justify-center w-full h-full min-h-0 p-4">
-                      <div className="w-full max-w-2xl max-h-full aspect-video rounded-xl border-2 border-dashed border-neutral-600 flex flex-col items-center justify-center bg-neutral-900/80 gap-3">
-                        <Film className="h-12 w-12 text-neutral-500 shrink-0" />
-                        <span className="text-sm text-neutral-400">No preview available</span>
-                        <span className="text-xs text-neutral-500">
-                          Export or render a preview to see it here
-                        </span>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </div>
+            <PreviewPanel previewUrl={previewUrl} previewKey={previewKey} />
 
-              {/* Playback controls */}
-              <div className="shrink-0 border-t border-neutral-800 bg-neutral-900 px-4 py-3">
-                <div className="flex items-center gap-4">
-                  <div className="flex items-center gap-1">
-                    <button className="rounded p-1.5 text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200 transition-colors">
-                      <SkipBack className="h-4 w-4" />
-                    </button>
-                    <button className="rounded-lg bg-neutral-800 p-2 text-neutral-200 hover:bg-neutral-700 transition-colors">
-                      <Play className="h-4 w-4" />
-                    </button>
-                    <button className="rounded p-1.5 text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200 transition-colors">
-                      <SkipForward className="h-4 w-4" />
-                    </button>
-                  </div>
-
-                  <span className="text-xs tabular-nums text-neutral-500 w-16">00:00:00</span>
-
-                  <div className="flex-1 mx-2">
-                    <div className="h-1 w-full rounded-full bg-neutral-800 overflow-hidden cursor-pointer hover:h-1.5 transition-all">
-                      <div className="h-full w-0 rounded-full bg-accent-500" />
-                    </div>
-                  </div>
-
-                  <span className="text-xs tabular-nums text-neutral-500 w-16 text-right">--:--:--</span>
-
-                  <div className="flex items-center gap-2 ml-2">
-                    <button className="rounded p-1.5 text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200 transition-colors">
-                      <Volume2 className="h-4 w-4" />
-                    </button>
-                    <button className="rounded p-1.5 text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200 transition-colors">
-                      <Maximize2 className="h-4 w-4" />
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* Assets Panel - Right side */}
             <div className="w-80 flex flex-col bg-neutral-900 border-r border-neutral-800">
               {/* Assets header */}
               <div className="shrink-0 border-b border-neutral-800 p-3">
@@ -1934,6 +2470,8 @@ const Editor = ({ project, config, onBack }: EditorProps) => {
                         {assets.map((asset) => (
                           <div
                             key={asset.asset_id}
+                            draggable
+                            onDragStart={(event) => handleAssetDragStart(event, asset.asset_id)}
                             className="group rounded-lg border border-neutral-800 bg-neutral-850 overflow-hidden hover:border-neutral-700 transition-colors"
                           >
                             <div className="aspect-video bg-neutral-800 flex items-center justify-center relative">
@@ -1951,8 +2489,21 @@ const Editor = ({ project, config, onBack }: EditorProps) => {
                               <div className="truncate text-2xs font-medium text-neutral-300">
                                 {asset.asset_name}
                               </div>
-                              <div className="text-2xs text-neutral-600 mt-0.5">
-                                {asset.indexing_status ?? 'ready'}
+                              <div className="mt-1 flex items-center justify-between gap-2">
+                                <div className="text-2xs text-neutral-600">
+                                  {asset.indexing_status ?? 'ready'}
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    void handleAddAssetToTimeline(asset)
+                                  }}
+                                  disabled={timelineSaving}
+                                  className="inline-flex items-center gap-1 rounded border border-neutral-700 px-1.5 py-0.5 text-[10px] text-neutral-300 transition-colors hover:border-neutral-500 hover:bg-neutral-700 disabled:cursor-not-allowed disabled:opacity-50"
+                                >
+                                  <Plus className="h-2.5 w-2.5" />
+                                  Add
+                                </button>
                               </div>
                             </div>
                           </div>
@@ -1963,6 +2514,8 @@ const Editor = ({ project, config, onBack }: EditorProps) => {
                         {assets.map((asset) => (
                           <div
                             key={asset.asset_id}
+                            draggable
+                            onDragStart={(event) => handleAssetDragStart(event, asset.asset_id)}
                             className="group flex items-center gap-3 rounded-lg border border-neutral-800 bg-neutral-850 p-2 hover:border-neutral-700 transition-colors"
                           >
                             <div className="w-12 h-8 rounded bg-neutral-800 flex items-center justify-center shrink-0">
@@ -1976,6 +2529,16 @@ const Editor = ({ project, config, onBack }: EditorProps) => {
                                 {asset.indexing_status ?? 'ready'}
                               </div>
                             </div>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                void handleAddAssetToTimeline(asset)
+                              }}
+                              disabled={timelineSaving}
+                              className="rounded border border-neutral-700 px-2 py-1 text-[10px] text-neutral-300 transition-colors hover:border-neutral-500 hover:bg-neutral-700 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              Add
+                            </button>
                             <button
                               type="button"
                               aria-label={`Delete ${asset.asset_name}`}
@@ -1994,20 +2557,43 @@ const Editor = ({ project, config, onBack }: EditorProps) => {
             </div>
           </div>
 
+          <TimelinePanel
+            timeline={timeline}
+            onDropAsset={handleDroppedAssetToTimeline}
+            onMoveClip={handleMoveClipOnTimeline}
+            onTrimClip={handleTrimClipOnTimeline}
+            onSplitClip={handleSplitClipOnTimeline}
+          />
+
           {/* Output Panel (bottom, collapsible) */}
           <OutputPanel
             isOpen={outputPanelOpen}
-            onToggle={() => setOutputPanelOpen(!outputPanelOpen)}
+            onToggle={toggleOutputPanel}
             logs={renderLogs}
             renderStatus={renderState}
             onClear={() => setRenderLogs([])}
           />
         </div>
 
+        <InspectorPanel
+          isOpen={inspectorOpen}
+          onToggle={() => setInspectorOpen(!inspectorOpen)}
+          timeline={timeline}
+          selection={selection}
+          saving={timelineSaving}
+          onRenameTrack={handleRenameTrackOnTimeline}
+          onTrimClip={handleTrimClipOnTimeline}
+          onSlipClip={handleSlipClipOnTimeline}
+          onSplitClip={handleSplitClipOnTimeline}
+          onAddClipEffect={handleAddClipEffectOnTimeline}
+          onRemoveClipEffect={handleRemoveClipEffectOnTimeline}
+          onModifyTransition={handleModifyTransitionOnTimeline}
+        />
+
         {/* Chat Sidebar (right, collapsible) */}
         <ChatSidebar
           isOpen={sidebarOpen}
-          onToggle={() => setSidebarOpen(!sidebarOpen)}
+          onToggle={toggleSidebar}
           messages={messages}
           chatInput={chatInput}
           onChatInputChange={setChatInput}

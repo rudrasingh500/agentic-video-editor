@@ -15,6 +15,7 @@ from models.timeline_models import (
     AddTrackRequest,
     AddClipRequest,
     TrimClipRequest,
+    SplitClipRequest,
     MoveClipRequest,
     SlipClipRequest,
     AddGapRequest,
@@ -50,6 +51,7 @@ from operators.timeline_editor import (
     add_clip,
     remove_clip,
     trim_clip,
+    split_clip,
     slip_clip,
     move_clip,
     replace_clip_media,
@@ -574,6 +576,45 @@ async def clip_trim(
             track_index=track_index,
             clip_index=clip_index,
             new_source_range=request.new_source_range,
+            actor=get_actor(session),
+            expected_version=expected_version,
+        )
+
+        result = get_timeline_snapshot_by_project(db, project.project_id)
+
+        return TimelineMutationResponse(
+            ok=True,
+            checkpoint=checkpoint_to_summary(checkpoint),
+            timeline=result.timeline,
+        )
+    except Exception as e:
+        handle_timeline_error(e)
+
+
+@router.post(
+    "/tracks/{track_index}/clips/{clip_index}/split",
+    response_model=TimelineMutationResponse,
+)
+async def clip_split(
+    request: SplitClipRequest,
+    track_index: int = Path(..., ge=0),
+    clip_index: int = Path(..., ge=0),
+    project: Project = Depends(require_project),
+    db: Session = Depends(get_db),
+    session: SessionData = Depends(get_session),
+    expected_version: int = Depends(require_expected_version),
+):
+    try:
+        timeline_model = get_timeline_by_project(db, project.project_id)
+        if not timeline_model:
+            raise TimelineNotFoundError(project_id=project.project_id)
+
+        checkpoint = split_clip(
+            db=db,
+            timeline_id=timeline_model.timeline_id,
+            track_index=track_index,
+            clip_index=clip_index,
+            split_offset=request.split_offset,
             actor=get_actor(session),
             expected_version=expected_version,
         )

@@ -651,6 +651,10 @@ class TrimClipRequest(BaseModel):
     new_source_range: TimeRange
 
 
+class SplitClipRequest(BaseModel):
+    split_offset: RationalTime
+
+
 class MoveClipRequest(BaseModel):
     to_track_index: int
     to_clip_index: int

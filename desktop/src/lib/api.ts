@@ -15,6 +15,25 @@ import type {
   SnippetIdentityWithSnippets,
   SnippetMergeSuggestion,
 } from './types'
+import type {
+  AddClipRequest,
+  AddEffectRequest,
+  AddGapRequest,
+  AddMarkerRequest,
+  AddTrackRequest,
+  AddTransitionRequest,
+  CheckpointListResponse,
+  MoveClipRequest,
+  ModifyTransitionRequest,
+  NestClipsRequest,
+  RationalTime,
+  SplitClipRequest,
+  Timeline,
+  TimelineDiffResponse,
+  TimelineMutationResponse,
+  TimelineResponse,
+  TrimClipRequest,
+} from './timelineTypes'
 
 const normalizeBaseUrl = (baseUrl: string) => baseUrl.replace(/\/+$/, '')
 
@@ -120,6 +139,12 @@ const streamNdjson = async (
       // Ignore malformed tail.
     }
   }
+}
+
+const withExpectedVersion = (expectedVersion: number, headers?: HeadersInit): Headers => {
+  const next = new Headers(headers)
+  next.set('X-Expected-Version', String(expectedVersion))
+  return next
 }
 
 export const api = {
@@ -288,10 +313,442 @@ export const api = {
       config,
       `/projects/${projectId}/generations/${generationId}`,
     ),
-  getTimeline: (config: AppConfig, projectId: string) =>
-    apiFetch<{ ok: boolean; timeline: Record<string, unknown>; version: number }>(
+  createTimeline: (
+    config: AppConfig,
+    projectId: string,
+    payload: {
+      name: string
+      settings?: Record<string, unknown> | null
+      metadata?: Record<string, unknown>
+    },
+  ) =>
+    apiFetch<TimelineResponse>(config, `/projects/${projectId}/timeline`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  getTimeline: (config: AppConfig, projectId: string, version?: number) => {
+    const suffix = typeof version === 'number' ? `?version=${version}` : ''
+    return apiFetch<TimelineResponse>(config, `/projects/${projectId}/timeline${suffix}`)
+  },
+  getTimelineVersion: (config: AppConfig, projectId: string, version: number) =>
+    apiFetch<TimelineResponse>(config, `/projects/${projectId}/timeline/version/${version}`),
+  replaceTimeline: (
+    config: AppConfig,
+    projectId: string,
+    timeline: Timeline,
+    expectedVersion: number,
+    description: string = 'Replaced timeline snapshot',
+  ) =>
+    apiFetch<TimelineMutationResponse>(config, `/projects/${projectId}/timeline`, {
+      method: 'PUT',
+      body: JSON.stringify({ timeline, description }),
+      headers: withExpectedVersion(expectedVersion),
+    }),
+  listTimelineHistory: (
+    config: AppConfig,
+    projectId: string,
+    options?: { limit?: number; offset?: number; includeUnapproved?: boolean },
+  ) => {
+    const params = new URLSearchParams()
+    if (typeof options?.limit === 'number') {
+      params.set('limit', String(options.limit))
+    }
+    if (typeof options?.offset === 'number') {
+      params.set('offset', String(options.offset))
+    }
+    if (typeof options?.includeUnapproved === 'boolean') {
+      params.set('include_unapproved', options.includeUnapproved ? 'true' : 'false')
+    }
+    const query = params.toString()
+    const suffix = query ? `?${query}` : ''
+    return apiFetch<CheckpointListResponse>(
       config,
-      `/projects/${projectId}/timeline`,
+      `/projects/${projectId}/timeline/history${suffix}`,
+    )
+  },
+  rollbackTimelineVersion: (
+    config: AppConfig,
+    projectId: string,
+    targetVersion: number,
+    expectedVersion: number,
+  ) =>
+    apiFetch<TimelineMutationResponse>(
+      config,
+      `/projects/${projectId}/timeline/rollback/${targetVersion}`,
+      {
+        method: 'POST',
+        headers: withExpectedVersion(expectedVersion),
+      },
+    ),
+  diffTimelineVersions: (
+    config: AppConfig,
+    projectId: string,
+    fromVersion: number,
+    toVersion: number,
+  ) =>
+    apiFetch<TimelineDiffResponse>(
+      config,
+      `/projects/${projectId}/timeline/diff?from=${fromVersion}&to=${toVersion}`,
+    ),
+  addTimelineTrack: (
+    config: AppConfig,
+    projectId: string,
+    request: AddTrackRequest,
+    expectedVersion: number,
+  ) =>
+    apiFetch<TimelineMutationResponse>(config, `/projects/${projectId}/timeline/tracks`, {
+      method: 'POST',
+      body: JSON.stringify(request),
+      headers: withExpectedVersion(expectedVersion),
+    }),
+  removeTimelineTrack: (
+    config: AppConfig,
+    projectId: string,
+    trackIndex: number,
+    expectedVersion: number,
+  ) =>
+    apiFetch<TimelineMutationResponse>(
+      config,
+      `/projects/${projectId}/timeline/tracks/${trackIndex}`,
+      {
+        method: 'DELETE',
+        headers: withExpectedVersion(expectedVersion),
+      },
+    ),
+  renameTimelineTrack: (
+    config: AppConfig,
+    projectId: string,
+    trackIndex: number,
+    newName: string,
+    expectedVersion: number,
+  ) =>
+    apiFetch<TimelineMutationResponse>(
+      config,
+      `/projects/${projectId}/timeline/tracks/${trackIndex}?new_name=${encodeURIComponent(newName)}`,
+      {
+        method: 'PATCH',
+        headers: withExpectedVersion(expectedVersion),
+      },
+    ),
+  reorderTimelineTracks: (
+    config: AppConfig,
+    projectId: string,
+    newOrder: number[],
+    expectedVersion: number,
+  ) =>
+    apiFetch<TimelineMutationResponse>(
+      config,
+      `/projects/${projectId}/timeline/tracks/reorder`,
+      {
+        method: 'POST',
+        body: JSON.stringify(newOrder),
+        headers: withExpectedVersion(expectedVersion),
+      },
+    ),
+  clearTimelineTrack: (
+    config: AppConfig,
+    projectId: string,
+    trackIndex: number,
+    expectedVersion: number,
+  ) =>
+    apiFetch<TimelineMutationResponse>(
+      config,
+      `/projects/${projectId}/timeline/tracks/${trackIndex}/clear`,
+      {
+        method: 'POST',
+        headers: withExpectedVersion(expectedVersion),
+      },
+    ),
+  addTimelineClip: (
+    config: AppConfig,
+    projectId: string,
+    trackIndex: number,
+    request: AddClipRequest,
+    expectedVersion: number,
+  ) =>
+    apiFetch<TimelineMutationResponse>(
+      config,
+      `/projects/${projectId}/timeline/tracks/${trackIndex}/clips`,
+      {
+        method: 'POST',
+        body: JSON.stringify(request),
+        headers: withExpectedVersion(expectedVersion),
+      },
+    ),
+  removeTimelineClip: (
+    config: AppConfig,
+    projectId: string,
+    trackIndex: number,
+    clipIndex: number,
+    expectedVersion: number,
+  ) =>
+    apiFetch<TimelineMutationResponse>(
+      config,
+      `/projects/${projectId}/timeline/tracks/${trackIndex}/clips/${clipIndex}`,
+      {
+        method: 'DELETE',
+        headers: withExpectedVersion(expectedVersion),
+      },
+    ),
+  trimTimelineClip: (
+    config: AppConfig,
+    projectId: string,
+    trackIndex: number,
+    clipIndex: number,
+    request: TrimClipRequest,
+    expectedVersion: number,
+  ) =>
+    apiFetch<TimelineMutationResponse>(
+      config,
+      `/projects/${projectId}/timeline/tracks/${trackIndex}/clips/${clipIndex}`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify(request),
+        headers: withExpectedVersion(expectedVersion),
+      },
+    ),
+  splitTimelineClip: (
+    config: AppConfig,
+    projectId: string,
+    trackIndex: number,
+    clipIndex: number,
+    request: SplitClipRequest,
+    expectedVersion: number,
+  ) =>
+    apiFetch<TimelineMutationResponse>(
+      config,
+      `/projects/${projectId}/timeline/tracks/${trackIndex}/clips/${clipIndex}/split`,
+      {
+        method: 'POST',
+        body: JSON.stringify(request),
+        headers: withExpectedVersion(expectedVersion),
+      },
+    ),
+  moveTimelineClip: (
+    config: AppConfig,
+    projectId: string,
+    trackIndex: number,
+    clipIndex: number,
+    request: MoveClipRequest,
+    expectedVersion: number,
+  ) =>
+    apiFetch<TimelineMutationResponse>(
+      config,
+      `/projects/${projectId}/timeline/tracks/${trackIndex}/clips/${clipIndex}/move`,
+      {
+        method: 'POST',
+        body: JSON.stringify(request),
+        headers: withExpectedVersion(expectedVersion),
+      },
+    ),
+  slipTimelineClip: (
+    config: AppConfig,
+    projectId: string,
+    trackIndex: number,
+    clipIndex: number,
+    offset: RationalTime,
+    expectedVersion: number,
+  ) =>
+    apiFetch<TimelineMutationResponse>(
+      config,
+      `/projects/${projectId}/timeline/tracks/${trackIndex}/clips/${clipIndex}/slip`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ offset }),
+        headers: withExpectedVersion(expectedVersion),
+      },
+    ),
+  replaceTimelineClipMedia: (
+    config: AppConfig,
+    projectId: string,
+    trackIndex: number,
+    clipIndex: number,
+    newAssetId: string,
+    expectedVersion: number,
+  ) =>
+    apiFetch<TimelineMutationResponse>(
+      config,
+      `/projects/${projectId}/timeline/tracks/${trackIndex}/clips/${clipIndex}/replace-media?new_asset_id=${encodeURIComponent(newAssetId)}`,
+      {
+        method: 'POST',
+        headers: withExpectedVersion(expectedVersion),
+      },
+    ),
+  addTimelineGap: (
+    config: AppConfig,
+    projectId: string,
+    trackIndex: number,
+    request: AddGapRequest,
+    expectedVersion: number,
+  ) =>
+    apiFetch<TimelineMutationResponse>(
+      config,
+      `/projects/${projectId}/timeline/tracks/${trackIndex}/gaps`,
+      {
+        method: 'POST',
+        body: JSON.stringify(request),
+        headers: withExpectedVersion(expectedVersion),
+      },
+    ),
+  removeTimelineGap: (
+    config: AppConfig,
+    projectId: string,
+    trackIndex: number,
+    gapIndex: number,
+    expectedVersion: number,
+  ) =>
+    apiFetch<TimelineMutationResponse>(
+      config,
+      `/projects/${projectId}/timeline/tracks/${trackIndex}/gaps/${gapIndex}`,
+      {
+        method: 'DELETE',
+        headers: withExpectedVersion(expectedVersion),
+      },
+    ),
+  addTimelineTransition: (
+    config: AppConfig,
+    projectId: string,
+    trackIndex: number,
+    request: AddTransitionRequest,
+    expectedVersion: number,
+  ) =>
+    apiFetch<TimelineMutationResponse>(
+      config,
+      `/projects/${projectId}/timeline/tracks/${trackIndex}/transitions`,
+      {
+        method: 'POST',
+        body: JSON.stringify(request),
+        headers: withExpectedVersion(expectedVersion),
+      },
+    ),
+  removeTimelineTransition: (
+    config: AppConfig,
+    projectId: string,
+    trackIndex: number,
+    transitionIndex: number,
+    expectedVersion: number,
+  ) =>
+    apiFetch<TimelineMutationResponse>(
+      config,
+      `/projects/${projectId}/timeline/tracks/${trackIndex}/transitions/${transitionIndex}`,
+      {
+        method: 'DELETE',
+        headers: withExpectedVersion(expectedVersion),
+      },
+    ),
+  modifyTimelineTransition: (
+    config: AppConfig,
+    projectId: string,
+    trackIndex: number,
+    transitionIndex: number,
+    request: ModifyTransitionRequest,
+    expectedVersion: number,
+  ) =>
+    apiFetch<TimelineMutationResponse>(
+      config,
+      `/projects/${projectId}/timeline/tracks/${trackIndex}/transitions/${transitionIndex}`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify(request),
+        headers: withExpectedVersion(expectedVersion),
+      },
+    ),
+  nestTimelineItems: (
+    config: AppConfig,
+    projectId: string,
+    trackIndex: number,
+    request: NestClipsRequest,
+    expectedVersion: number,
+  ) =>
+    apiFetch<TimelineMutationResponse>(
+      config,
+      `/projects/${projectId}/timeline/tracks/${trackIndex}/nest`,
+      {
+        method: 'POST',
+        body: JSON.stringify(request),
+        headers: withExpectedVersion(expectedVersion),
+      },
+    ),
+  flattenTimelineStack: (
+    config: AppConfig,
+    projectId: string,
+    trackIndex: number,
+    stackIndex: number,
+    expectedVersion: number,
+  ) =>
+    apiFetch<TimelineMutationResponse>(
+      config,
+      `/projects/${projectId}/timeline/tracks/${trackIndex}/flatten/${stackIndex}`,
+      {
+        method: 'POST',
+        headers: withExpectedVersion(expectedVersion),
+      },
+    ),
+  addTimelineMarker: (
+    config: AppConfig,
+    projectId: string,
+    trackIndex: number,
+    itemIndex: number,
+    request: AddMarkerRequest,
+    expectedVersion: number,
+  ) =>
+    apiFetch<TimelineMutationResponse>(
+      config,
+      `/projects/${projectId}/timeline/tracks/${trackIndex}/items/${itemIndex}/markers`,
+      {
+        method: 'POST',
+        body: JSON.stringify(request),
+        headers: withExpectedVersion(expectedVersion),
+      },
+    ),
+  removeTimelineMarker: (
+    config: AppConfig,
+    projectId: string,
+    trackIndex: number,
+    itemIndex: number,
+    markerIndex: number,
+    expectedVersion: number,
+  ) =>
+    apiFetch<TimelineMutationResponse>(
+      config,
+      `/projects/${projectId}/timeline/tracks/${trackIndex}/items/${itemIndex}/markers/${markerIndex}`,
+      {
+        method: 'DELETE',
+        headers: withExpectedVersion(expectedVersion),
+      },
+    ),
+  addTimelineEffect: (
+    config: AppConfig,
+    projectId: string,
+    trackIndex: number,
+    itemIndex: number,
+    request: AddEffectRequest,
+    expectedVersion: number,
+  ) =>
+    apiFetch<TimelineMutationResponse>(
+      config,
+      `/projects/${projectId}/timeline/tracks/${trackIndex}/items/${itemIndex}/effects`,
+      {
+        method: 'POST',
+        body: JSON.stringify(request),
+        headers: withExpectedVersion(expectedVersion),
+      },
+    ),
+  removeTimelineEffect: (
+    config: AppConfig,
+    projectId: string,
+    trackIndex: number,
+    itemIndex: number,
+    effectIndex: number,
+    expectedVersion: number,
+  ) =>
+    apiFetch<TimelineMutationResponse>(
+      config,
+      `/projects/${projectId}/timeline/tracks/${trackIndex}/items/${itemIndex}/effects/${effectIndex}`,
+      {
+        method: 'DELETE',
+        headers: withExpectedVersion(expectedVersion),
+      },
     ),
   sendEditRequest: (
     config: AppConfig,
