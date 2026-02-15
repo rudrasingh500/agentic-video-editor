@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import copy
+import hashlib
 import json
 import logging
 import math
@@ -22,6 +23,17 @@ from graphics_generator import OverlayGenerator, OverlayAsset
 
 
 logger = logging.getLogger("ffmpeg-renderer")
+
+
+def _normalize_stream_type(value: Any) -> str | None:
+    text = str(value or "").strip().lower()
+    mapping = {
+        "video": "v",
+        "audio": "a",
+        "v": "v",
+        "a": "a",
+    }
+    return mapping.get(text)
 
 
 class RenderError(Exception):
@@ -497,7 +509,7 @@ class TimelineToFFmpeg:
         if segment.input_index is None:
             return None
 
-        if "a" not in self.input_streams.get(segment.input_index, set()):
+        if not self._has_audio_input(segment.input_index):
             return self._generate_gap_audio(segment, label)
 
         filters: list[str] = []
@@ -513,6 +525,12 @@ class TimelineToFFmpeg:
         filter_chain = ",".join(filters)
         self._audio_filters.append(f"[{input_label}]{filter_chain}[{label}]")
         return self._apply_audio_effects(label, segment)
+
+    def _has_audio_input(self, input_index: int) -> bool:
+        for stream_type in self.input_streams.get(input_index, set()):
+            if _normalize_stream_type(stream_type) == "a":
+                return True
+        return False
 
     def _apply_video_effects(self, input_label: str, segment: TrackSegment) -> str:
         current = input_label
@@ -2218,12 +2236,18 @@ class FFmpegRenderer:
     def _download_effect_asset(self, path: str) -> str:
         if path.startswith("gs://"):
             bucket_name, blob_path = self._parse_gcs_path(path, self.manifest.input_bucket)
-            local_path = self.temp_dir / "effects" / Path(blob_path).name
+            local_path = self._effect_cache_path(bucket_name, blob_path)
             local_path.parent.mkdir(parents=True, exist_ok=True)
             if not local_path.exists():
                 self._download_asset(bucket_name, blob_path, local_path)
             return str(local_path)
         return path
+
+    def _effect_cache_path(self, bucket_name: str, blob_path: str) -> Path:
+        source = f"{bucket_name}/{blob_path}".encode("utf-8")
+        digest = hashlib.sha256(source).hexdigest()[:16]
+        filename = Path(blob_path).name or "asset"
+        return self.temp_dir / "effects" / f"{digest}_{filename}"
 
 
     def _probe_streams(
@@ -2251,7 +2275,8 @@ class FFmpegRenderer:
                 result = subprocess.run(cmd, capture_output=True, text=True, check=True)
                 data = json.loads(result.stdout)
                 stream_types = {
-                    stream.get("codec_type") for stream in data.get("streams", [])
+                    _normalize_stream_type(stream.get("codec_type"))
+                    for stream in data.get("streams", [])
                 }
                 streams[idx] = {s for s in stream_types if s}
             except (FileNotFoundError, subprocess.CalledProcessError, json.JSONDecodeError):
@@ -2265,9 +2290,9 @@ class FFmpegRenderer:
         output = result.stderr or ""
         stream_types: set[str] = set()
         if "Video:" in output:
-            stream_types.add("video")
+            stream_types.add("v")
         if "Audio:" in output:
-            stream_types.add("audio")
+            stream_types.add("a")
         return stream_types
 
     def _download_asset(
