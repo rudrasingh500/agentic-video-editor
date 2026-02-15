@@ -592,6 +592,54 @@ class TestOutputOptions:
         assert "-movflags" in cmd.output_options
         assert "+faststart" in cmd.output_options
 
+    def test_prores_encoding_options(self, simple_timeline):
+        clip = simple_timeline.find_clips()[0]
+        asset_id = str(clip.media_reference.asset_id)
+        asset_map = {asset_id: "/inputs/clip1.mp4"}
+
+        preset = RenderPreset.prores_master_export()
+
+        converter = TimelineToFFmpeg(
+            simple_timeline, asset_map, preset, "/outputs/render.mov"
+        )
+        cmd = converter.build()
+
+        assert "prores_ks" in cmd.output_options
+        assert "-profile:v" in cmd.output_options
+        assert "yuv422p10le" in cmd.output_options
+
+    def test_vp9_encoding_options(self, simple_timeline):
+        clip = simple_timeline.find_clips()[0]
+        asset_id = str(clip.media_reference.asset_id)
+        asset_map = {asset_id: "/inputs/clip1.mp4"}
+
+        preset = RenderPreset.vp9_streaming_export()
+
+        converter = TimelineToFFmpeg(
+            simple_timeline, asset_map, preset, "/outputs/render.webm"
+        )
+        cmd = converter.build()
+
+        assert "libvpx-vp9" in cmd.output_options
+        assert "-cpu-used" in cmd.output_options
+        assert "-tile-columns" in cmd.output_options
+        assert "-movflags" not in cmd.output_options
+
+    def test_av1_encoding_options(self, simple_timeline):
+        clip = simple_timeline.find_clips()[0]
+        asset_id = str(clip.media_reference.asset_id)
+        asset_map = {asset_id: "/inputs/clip1.mp4"}
+
+        preset = RenderPreset.av1_streaming_export()
+
+        converter = TimelineToFFmpeg(
+            simple_timeline, asset_map, preset, "/outputs/render.mkv"
+        )
+        cmd = converter.build()
+
+        assert "libsvtav1" in cmd.output_options
+        assert "-svtav1-params" in cmd.output_options
+
 
 class TestCommandBuilding:
     def test_build_command_string(self, simple_timeline, draft_preset):
@@ -672,9 +720,32 @@ class TestRenderPresets:
         preset = RenderPreset.maximum_quality_export()
 
         assert preset.quality.value == "maximum"
-        assert preset.video.crf == 15
-        assert preset.video.preset == "veryslow"
-        assert preset.use_gpu is True
+        assert preset.video.codec.value == "h265"
+        assert preset.video.crf == 12
+        assert preset.video.preset == "slow"
+        assert preset.video.two_pass is True
+        assert preset.use_gpu is False
+
+    def test_prores_master_preset(self):
+        preset = RenderPreset.prores_master_export()
+
+        assert preset.video.codec.value == "prores"
+        assert preset.video.container.value == "mov"
+        assert preset.video.pixel_format == "yuv422p10le"
+
+    def test_vp9_streaming_preset(self):
+        preset = RenderPreset.vp9_streaming_export()
+
+        assert preset.video.codec.value == "vp9"
+        assert preset.video.container.value == "webm"
+        assert preset.video.two_pass is True
+
+    def test_av1_streaming_preset(self):
+        preset = RenderPreset.av1_streaming_export()
+
+        assert preset.video.codec.value == "av1"
+        assert preset.video.container.value == "mkv"
+        assert preset.video.pixel_format == "yuv420p10le"
 
 
 class TestAtempoChain:

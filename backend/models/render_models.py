@@ -32,11 +32,22 @@ class VideoCodec(str, Enum):
 
     H264 = "h264"
     H265 = "h265"
+    PRORES = "prores"
+    VP9 = "vp9"
+    AV1 = "av1"
+
+
+class OutputContainer(str, Enum):
+    MP4 = "mp4"
+    MOV = "mov"
+    MKV = "mkv"
+    WEBM = "webm"
 
 
 class AudioCodec(str, Enum):
     AAC = "aac"
     MP3 = "mp3"
+    OPUS = "opus"
 
 
 class RenderQuality(str, Enum):
@@ -48,6 +59,10 @@ class RenderQuality(str, Enum):
 
 class VideoSettings(BaseModel):
     codec: VideoCodec = Field(default=VideoCodec.H264, description="Video codec")
+    container: OutputContainer = Field(
+        default=OutputContainer.MP4,
+        description="Output container: mp4, mov, mkv, webm",
+    )
     width: int | None = Field(default=None, description="Output width (None = source)")
     height: int | None = Field(
         default=None, description="Output height (None = source)"
@@ -69,6 +84,13 @@ class VideoSettings(BaseModel):
         description="Encoding preset: ultrafast, superfast, veryfast, faster, fast, medium, slow, slower, veryslow",
     )
     pixel_format: str = Field(default="yuv420p", description="Pixel format")
+    two_pass: bool = Field(
+        default=False,
+        description="Use 2-pass encoding when bitrate is provided",
+    )
+    color_space: str = Field(default="bt709", description="Output colorspace")
+    color_primaries: str = Field(default="bt709", description="Output color primaries")
+    color_trc: str = Field(default="bt709", description="Output transfer characteristics")
 
 
 class AudioSettings(BaseModel):
@@ -96,10 +118,12 @@ class RenderPreset(BaseModel):
             quality=RenderQuality.DRAFT,
             video=VideoSettings(
                 codec=VideoCodec.H264,
+                container=OutputContainer.MP4,
                 width=1280,
                 height=720,
                 crf=28,
                 preset="veryfast",
+                bitrate="3M",
             ),
             audio=AudioSettings(bitrate="128k"),
             use_gpu=False,
@@ -112,8 +136,10 @@ class RenderPreset(BaseModel):
             quality=RenderQuality.STANDARD,
             video=VideoSettings(
                 codec=VideoCodec.H264,
+                container=OutputContainer.MP4,
                 crf=23,
                 preset="medium",
+                bitrate="8M",
             ),
             audio=AudioSettings(bitrate="192k"),
             use_gpu=False,
@@ -126,10 +152,12 @@ class RenderPreset(BaseModel):
             quality=RenderQuality.HIGH,
             video=VideoSettings(
                 codec=VideoCodec.H264,
+                container=OutputContainer.MP4,
                 crf=18,
                 preset="slow",
+                bitrate="15M",
             ),
-            audio=AudioSettings(bitrate="320k"),
+            audio=AudioSettings(bitrate="256k"),
             use_gpu=True,
         )
 
@@ -139,12 +167,70 @@ class RenderPreset(BaseModel):
             name="Maximum Quality Export",
             quality=RenderQuality.MAXIMUM,
             video=VideoSettings(
-                codec=VideoCodec.H264,
-                crf=15,
-                preset="veryslow",
+                codec=VideoCodec.H265,
+                container=OutputContainer.MP4,
+                crf=12,
+                preset="slow",
+                bitrate="25M",
+                pixel_format="yuv420p10le",
+                two_pass=True,
             ),
             audio=AudioSettings(bitrate="320k", sample_rate=48000),
-            use_gpu=True,
+            use_gpu=False,
+        )
+
+    @classmethod
+    def prores_master_export(cls) -> RenderPreset:
+        return cls(
+            name="ProRes Master Export",
+            quality=RenderQuality.MAXIMUM,
+            video=VideoSettings(
+                codec=VideoCodec.PRORES,
+                container=OutputContainer.MOV,
+                crf=None,
+                preset="slow",
+                bitrate="110M",
+                pixel_format="yuv422p10le",
+                two_pass=False,
+            ),
+            audio=AudioSettings(codec=AudioCodec.AAC, bitrate="320k", sample_rate=48000),
+            use_gpu=False,
+        )
+
+    @classmethod
+    def vp9_streaming_export(cls) -> RenderPreset:
+        return cls(
+            name="VP9 Streaming Export",
+            quality=RenderQuality.HIGH,
+            video=VideoSettings(
+                codec=VideoCodec.VP9,
+                container=OutputContainer.WEBM,
+                crf=30,
+                preset="medium",
+                bitrate="8M",
+                pixel_format="yuv420p",
+                two_pass=True,
+            ),
+            audio=AudioSettings(codec=AudioCodec.OPUS, bitrate="160k", sample_rate=48000),
+            use_gpu=False,
+        )
+
+    @classmethod
+    def av1_streaming_export(cls) -> RenderPreset:
+        return cls(
+            name="AV1 Streaming Export",
+            quality=RenderQuality.HIGH,
+            video=VideoSettings(
+                codec=VideoCodec.AV1,
+                container=OutputContainer.MKV,
+                crf=29,
+                preset="slow",
+                bitrate="6M",
+                pixel_format="yuv420p10le",
+                two_pass=False,
+            ),
+            audio=AudioSettings(codec=AudioCodec.OPUS, bitrate="160k", sample_rate=48000),
+            use_gpu=False,
         )
 
 
@@ -261,6 +347,10 @@ class RenderManifest(BaseModel):
     end_frame: int | None = None
     callback_url: str | None = Field(
         default=None, description="URL to POST status updates"
+    )
+    output_variants: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Optional additional output variants for multi-resolution exports",
     )
     execution_mode: RenderExecutionMode = Field(
         default=RenderExecutionMode.CLOUD, description="Execution mode"

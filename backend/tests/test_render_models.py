@@ -6,6 +6,7 @@ from models.render_models import (
     AudioCodec,
     AudioSettings,
     CancelRenderRequest,
+    OutputContainer,
     RenderJobListResponse,
     RenderJobResponse,
     RenderJobStatus,
@@ -27,30 +28,39 @@ class TestVideoSettings:
         settings = VideoSettings()
 
         assert settings.codec == VideoCodec.H264
+        assert settings.container == OutputContainer.MP4
         assert settings.width is None
         assert settings.height is None
         assert settings.crf == 23
         assert settings.preset == "medium"
         assert settings.pixel_format == "yuv420p"
+        assert settings.two_pass is False
+        assert settings.color_space == "bt709"
+        assert settings.color_primaries == "bt709"
+        assert settings.color_trc == "bt709"
 
     def test_custom_settings(self):
         settings = VideoSettings(
             codec=VideoCodec.H265,
+            container=OutputContainer.MKV,
             width=1920,
             height=1080,
             framerate=30.0,
             bitrate="10M",
             crf=18,
             preset="slow",
+            two_pass=True,
         )
 
         assert settings.codec == VideoCodec.H265
+        assert settings.container == OutputContainer.MKV
         assert settings.width == 1920
         assert settings.height == 1080
         assert settings.framerate == 30.0
         assert settings.bitrate == "10M"
         assert settings.crf == 18
         assert settings.preset == "slow"
+        assert settings.two_pass is True
 
     def test_crf_validation(self):
         settings = VideoSettings(crf=0)
@@ -108,6 +118,8 @@ class TestRenderPreset:
         assert preset.video.height == 720
         assert preset.video.crf == 28
         assert preset.video.preset == "veryfast"
+        assert preset.video.bitrate == "3M"
+        assert preset.video.container == OutputContainer.MP4
         assert preset.audio.bitrate == "128k"
         assert preset.use_gpu is False
 
@@ -118,6 +130,7 @@ class TestRenderPreset:
         assert preset.quality == RenderQuality.STANDARD
         assert preset.video.crf == 23
         assert preset.video.preset == "medium"
+        assert preset.video.bitrate == "8M"
         assert preset.audio.bitrate == "192k"
         assert preset.use_gpu is False
 
@@ -128,7 +141,8 @@ class TestRenderPreset:
         assert preset.quality == RenderQuality.HIGH
         assert preset.video.crf == 18
         assert preset.video.preset == "slow"
-        assert preset.audio.bitrate == "320k"
+        assert preset.video.bitrate == "15M"
+        assert preset.audio.bitrate == "256k"
         assert preset.use_gpu is True
 
     def test_maximum_quality_factory(self):
@@ -136,9 +150,51 @@ class TestRenderPreset:
 
         assert preset.name == "Maximum Quality Export"
         assert preset.quality == RenderQuality.MAXIMUM
-        assert preset.video.crf == 15
-        assert preset.video.preset == "veryslow"
-        assert preset.use_gpu is True
+        assert preset.video.codec == VideoCodec.H265
+        assert preset.video.crf == 12
+        assert preset.video.preset == "slow"
+        assert preset.video.bitrate == "25M"
+        assert preset.video.pixel_format == "yuv420p10le"
+        assert preset.video.two_pass is True
+        assert preset.use_gpu is False
+
+    def test_prores_master_factory(self):
+        preset = RenderPreset.prores_master_export()
+
+        assert preset.name == "ProRes Master Export"
+        assert preset.video.codec == VideoCodec.PRORES
+        assert preset.video.container == OutputContainer.MOV
+        assert preset.video.crf is None
+        assert preset.video.bitrate == "110M"
+        assert preset.video.pixel_format == "yuv422p10le"
+        assert preset.video.two_pass is False
+        assert preset.audio.codec == AudioCodec.AAC
+        assert preset.use_gpu is False
+
+    def test_vp9_streaming_factory(self):
+        preset = RenderPreset.vp9_streaming_export()
+
+        assert preset.name == "VP9 Streaming Export"
+        assert preset.video.codec == VideoCodec.VP9
+        assert preset.video.container == OutputContainer.WEBM
+        assert preset.video.crf == 30
+        assert preset.video.bitrate == "8M"
+        assert preset.video.two_pass is True
+        assert preset.audio.codec == AudioCodec.OPUS
+        assert preset.audio.bitrate == "160k"
+        assert preset.use_gpu is False
+
+    def test_av1_streaming_factory(self):
+        preset = RenderPreset.av1_streaming_export()
+
+        assert preset.name == "AV1 Streaming Export"
+        assert preset.video.codec == VideoCodec.AV1
+        assert preset.video.container == OutputContainer.MKV
+        assert preset.video.crf == 29
+        assert preset.video.bitrate == "6M"
+        assert preset.video.pixel_format == "yuv420p10le"
+        assert preset.audio.codec == AudioCodec.OPUS
+        assert preset.use_gpu is False
 
 
 class TestRenderRequest:
@@ -440,10 +496,20 @@ class TestEnums:
     def test_video_codecs(self):
         assert VideoCodec.H264.value == "h264"
         assert VideoCodec.H265.value == "h265"
+        assert VideoCodec.PRORES.value == "prores"
+        assert VideoCodec.VP9.value == "vp9"
+        assert VideoCodec.AV1.value == "av1"
 
     def test_audio_codecs(self):
         assert AudioCodec.AAC.value == "aac"
         assert AudioCodec.MP3.value == "mp3"
+        assert AudioCodec.OPUS.value == "opus"
+
+    def test_output_containers(self):
+        assert OutputContainer.MP4.value == "mp4"
+        assert OutputContainer.MOV.value == "mov"
+        assert OutputContainer.MKV.value == "mkv"
+        assert OutputContainer.WEBM.value == "webm"
 
     def test_quality_levels(self):
         assert RenderQuality.DRAFT.value == "draft"

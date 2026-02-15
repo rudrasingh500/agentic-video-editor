@@ -115,7 +115,8 @@ def create_render_job(
     if not output_filename:
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         job_type = request.job_type.value
-        output_filename = f"{job_type}_{timeline_version}_{timestamp}.mp4"
+        extension = _default_output_extension(preset)
+        output_filename = f"{job_type}_{timeline_version}_{timestamp}.{extension}"
 
     execution_mode = request.execution_mode
     if execution_mode is None:
@@ -204,6 +205,7 @@ def dispatch_render_job(
         start_frame=job.job_metadata.get("start_frame"),
         end_frame=job.job_metadata.get("end_frame"),
         callback_url=job.job_metadata.get("callback_url"),
+        output_variants=job.job_metadata.get("output_variants", []),
         execution_mode=RenderExecutionMode(execution_mode),
     )
 
@@ -330,6 +332,7 @@ def ensure_render_manifest(db: DBSession, job_id: UUID) -> str:
         start_frame=metadata.get("start_frame"),
         end_frame=metadata.get("end_frame"),
         callback_url=metadata.get("callback_url"),
+        output_variants=metadata.get("output_variants", []),
         execution_mode=RenderExecutionMode(execution_mode),
     )
 
@@ -575,6 +578,19 @@ def _calculate_total_frames(timeline: Timeline, preset: RenderPreset) -> int:
     duration_seconds = timeline.duration.to_seconds()
     framerate = preset.video.framerate or 24.0
     return int(duration_seconds * framerate)
+
+
+def _default_output_extension(preset: RenderPreset) -> str:
+    container = str(preset.video.container.value).lower()
+    if container in {"mp4", "mov", "mkv", "webm"}:
+        return container
+
+    codec = str(preset.video.codec.value).lower()
+    if codec == "prores":
+        return "mov"
+    if codec == "vp9":
+        return "webm"
+    return "mp4"
 
 
 def _estimate_timeout(timeline: Timeline, preset: RenderPreset) -> int:

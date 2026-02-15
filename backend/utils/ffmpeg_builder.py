@@ -604,8 +604,8 @@ class TimelineToFFmpeg:
             )
         else:
             self._video_filters.append(
-                f"color=c=black@0.0:s={width}x{height}:d={segment.duration}:r={framerate},"
-                f"format=rgba,setsar=1[{label}]"
+                f"color=c=black:s={width}x{height}:d={segment.duration}:r={framerate},"
+                f"setsar=1[{label}]"
             )
         return label
 
@@ -1438,44 +1438,138 @@ class TimelineToFFmpeg:
     def _build_output_options(self) -> list[str]:
         options: list[str] = []
 
-        if self.preset.use_gpu:
-            if self.preset.video.codec == VideoCodec.H264:
-                options.extend(["-c:v", "h264_nvenc"])
-            elif self.preset.video.codec == VideoCodec.H265:
-                options.extend(["-c:v", "hevc_nvenc"])
+        codec = self.preset.video.codec
+        container = self._resolve_output_container()
+        use_gpu = self.preset.use_gpu and codec in {VideoCodec.H264, VideoCodec.H265}
+        video_encoder = ""
+        gop_size = self._resolve_gop_size()
+
+        if use_gpu:
+            if codec == VideoCodec.H264:
+                video_encoder = "h264_nvenc"
+            elif codec == VideoCodec.H265:
+                video_encoder = "hevc_nvenc"
         else:
-            if self.preset.video.codec == VideoCodec.H264:
-                options.extend(["-c:v", "libx264"])
-            elif self.preset.video.codec == VideoCodec.H265:
-                options.extend(["-c:v", "libx265"])
+            if codec == VideoCodec.H264:
+                video_encoder = "libx264"
+            elif codec == VideoCodec.H265:
+                video_encoder = "libx265"
+            elif codec == VideoCodec.PRORES:
+                video_encoder = "prores_ks"
+            elif codec == VideoCodec.VP9:
+                video_encoder = "libvpx-vp9"
+            elif codec == VideoCodec.AV1:
+                video_encoder = "libsvtav1"
+
+        if not video_encoder:
+            raise ValueError(f"Unsupported codec configuration: {codec}")
+        options.extend(["-c:v", video_encoder])
 
         if self.preset.video.crf is not None:
-            if self.preset.use_gpu:
+            if use_gpu:
                 options.extend(["-cq", str(self.preset.video.crf)])
-            else:
+            elif video_encoder == "libvpx-vp9":
+                options.extend(["-crf", str(self.preset.video.crf), "-b:v", "0"])
+            elif video_encoder != "prores_ks":
                 options.extend(["-crf", str(self.preset.video.crf)])
 
         if self.preset.video.bitrate:
             options.extend(["-b:v", self.preset.video.bitrate])
 
-        if self.preset.use_gpu:
+        if use_gpu:
             nvenc_preset = self._map_nvenc_preset(self.preset.video.preset)
             options.extend(["-preset", nvenc_preset])
-        else:
+        elif video_encoder in {"libx264", "libx265"}:
             options.extend(["-preset", self.preset.video.preset])
+        elif video_encoder == "libvpx-vp9":
+            options.extend(["-cpu-used", str(self._map_vp9_cpu_used(self.preset.video.preset))])
+        elif video_encoder == "libsvtav1":
+            options.extend(["-preset", "6"])
 
-        options.extend(["-pix_fmt", self.preset.video.pixel_format])
+        if video_encoder == "libx264":
+            options.extend(["-profile:v", "high", "-g", str(gop_size)])
+        if video_encoder == "libx265":
+            options.extend([
+                "-x265-params",
+                "aq-mode=3:aq-strength=1.0:qcomp=0.7",
+                "-g",
+                str(gop_size),
+            ])
+            if container in {"mp4", "mov"}:
+                options.extend(["-tag:v", "hvc1"])
+        if video_encoder.endswith("_nvenc"):
+            options.extend(["-g", str(gop_size)])
 
-        if self.preset.audio.codec.value == "aac":
-            options.extend(["-c:a", "aac"])
-        elif self.preset.audio.codec.value == "mp3":
+        if codec == VideoCodec.PRORES:
+            options.extend(["-profile:v", "3"])
+            options.extend(["-vendor", "apl0"])
+            options.extend(["-bits_per_mb", "8000"])
+
+        if video_encoder == "libvpx-vp9":
+            options.extend(
+                [
+                    "-quality",
+                    "good",
+                    "-row-mt",
+                    "1",
+                    "-tile-columns",
+                    "2",
+                    "-frame-parallel",
+                    "1",
+                    "-auto-alt-ref",
+                    "1",
+                    "-lag-in-frames",
+                    "25",
+                    "-g",
+                    str(gop_size),
+                ]
+            )
+        if video_encoder == "libsvtav1":
+            options.extend(
+                [
+                    "-svtav1-params",
+                    "tune=0:enable-qm=1:qm-min=0:qm-max=8",
+                    "-g",
+                    str(gop_size),
+                ]
+            )
+
+        pixel_format = self.preset.video.pixel_format
+        if codec == VideoCodec.H265 and pixel_format == "yuv420p":
+            pixel_format = "yuv420p10le"
+        elif codec == VideoCodec.PRORES:
+            pixel_format = "yuv422p10le"
+        elif codec == VideoCodec.AV1 and pixel_format == "yuv420p":
+            pixel_format = "yuv420p10le"
+        options.extend(["-pix_fmt", pixel_format])
+
+        if self.preset.video.color_space:
+            options.extend(["-colorspace", self.preset.video.color_space])
+        if self.preset.video.color_primaries:
+            options.extend(["-color_primaries", self.preset.video.color_primaries])
+        if self.preset.video.color_trc:
+            options.extend(["-color_trc", self.preset.video.color_trc])
+
+        audio_codec = self.preset.audio.codec.value
+        if container == "webm" and audio_codec not in {"opus", "vorbis"}:
+            audio_codec = "opus"
+
+        if audio_codec == "aac":
+            options.extend(["-c:a", "aac", "-profile:a", "aac_low"])
+        elif audio_codec == "mp3":
             options.extend(["-c:a", "libmp3lame"])
+        elif audio_codec == "opus":
+            options.extend(["-c:a", "libopus", "-vbr", "on", "-compression_level", "10"])
 
-        options.extend(["-b:a", self.preset.audio.bitrate])
+        audio_bitrate = self.preset.audio.bitrate
+        if audio_codec == "opus" and (not audio_bitrate or not str(audio_bitrate).strip()):
+            audio_bitrate = "160k"
+        options.extend(["-b:a", audio_bitrate])
         options.extend(["-ar", str(self.preset.audio.sample_rate)])
         options.extend(["-ac", str(self.preset.audio.channels)])
 
-        options.extend(["-movflags", "+faststart"])
+        if container in {"mp4", "mov"}:
+            options.extend(["-movflags", "+faststart"])
 
         return options
 
@@ -1492,6 +1586,44 @@ class TimelineToFFmpeg:
             "veryslow": "slow",
         }
         return mapping.get(preset, "medium")
+
+    def _map_vp9_cpu_used(self, preset: str) -> int:
+        mapping = {
+            "ultrafast": 8,
+            "superfast": 7,
+            "veryfast": 6,
+            "faster": 5,
+            "fast": 4,
+            "medium": 3,
+            "slow": 2,
+            "slower": 1,
+            "veryslow": 0,
+        }
+        return mapping.get(preset, 3)
+
+    def _resolve_output_container(self) -> str:
+        container = str(self.preset.video.container.value).lower()
+        codec = self.preset.video.codec
+
+        if codec == VideoCodec.PRORES and container not in {"mov", "mkv"}:
+            return "mov"
+        if codec == VideoCodec.VP9 and container not in {"webm", "mkv"}:
+            return "webm"
+        if codec == VideoCodec.AV1 and container not in {"webm", "mkv", "mp4"}:
+            return "mkv"
+        if codec in {VideoCodec.H264, VideoCodec.H265} and container == "webm":
+            return "mp4"
+        return container
+
+    def _resolve_gop_size(self) -> int:
+        framerate = self.preset.video.framerate or self.timeline.metadata.get(
+            "default_rate", 24.0
+        )
+        try:
+            fps = float(framerate)
+        except (TypeError, ValueError):
+            fps = 24.0
+        return max(24, int(round(max(1.0, fps) * 2)))
 
 
 def build_render_command(

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import copy
 import json
 import logging
 import math
@@ -7,6 +8,8 @@ import platform
 import re
 import shutil
 import subprocess
+import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -39,6 +42,7 @@ class RenderManifest:
     start_frame: int | None = None
     end_frame: int | None = None
     callback_url: str | None = None
+    output_variants: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -121,6 +125,7 @@ class TimelineToFFmpeg:
         self._inputs = []
         self._input_index_map = {}
 
+        decode_options = self._input_decode_options()
         asset_ids = self._extract_asset_ids()
         for asset_id in asset_ids:
             path = self.asset_map.get(asset_id)
@@ -128,7 +133,12 @@ class TimelineToFFmpeg:
                 continue
             if asset_id not in self._input_index_map:
                 self._input_index_map[asset_id] = len(self._inputs)
-                self._inputs.append(InputSpec(path=path))
+                self._inputs.append(InputSpec(path=path, options=list(decode_options)))
+
+    def _input_decode_options(self) -> list[str]:
+        if not self.preset.get("use_gpu"):
+            return []
+        return ["-hwaccel", "auto"]
 
     def _extract_asset_ids(self) -> list[str]:
         ids: list[str] = []
@@ -370,6 +380,11 @@ class TimelineToFFmpeg:
                 effects_data.append({"type": "freeze"})
                 continue
             effect_type = effect.get("metadata", {}).get("type") or effect.get("effect_name")
+            if str(effect_type).lower() == "speed_ramp":
+                metadata = effect.get("metadata", {})
+                avg_speed = self._estimate_speed_ramp_factor(metadata)
+                if avg_speed > 0:
+                    speed_factor = avg_speed
             effects_data.append(
                 {
                     "type": str(effect_type),
@@ -379,6 +394,49 @@ class TimelineToFFmpeg:
             )
 
         return speed_factor, is_freeze, effects_data
+
+    def _estimate_speed_ramp_factor(self, metadata: dict[str, Any]) -> float:
+        keyframes = metadata.get("keyframes") or []
+        if not isinstance(keyframes, list) or not keyframes:
+            speed = metadata.get("speed")
+            if speed is None:
+                return 1.0
+            try:
+                return max(0.01, float(speed))
+            except (TypeError, ValueError):
+                return 1.0
+
+        points: list[tuple[float, float]] = []
+        for point in keyframes:
+            if not isinstance(point, dict):
+                continue
+            raw_t = point.get("time_ms", point.get("time", point.get("t", 0)))
+            raw_s = point.get("speed", point.get("value", 1.0))
+            try:
+                t = float(raw_t)
+                s = max(0.01, float(raw_s))
+            except (TypeError, ValueError):
+                continue
+            if t > 1000:
+                t = t / 1000.0
+            points.append((max(0.0, t), s))
+
+        if not points:
+            return 1.0
+
+        points.sort(key=lambda p: p[0])
+        total_input = 0.0
+        total_output = 0.0
+        for idx, (start_t, speed) in enumerate(points):
+            end_t = points[idx + 1][0] if idx + 1 < len(points) else start_t + 0.001
+            interval = max(0.0, end_t - start_t)
+            total_input += interval
+            total_output += interval / speed
+
+        if total_input <= 0 or total_output <= 0:
+            return points[-1][1]
+
+        return max(0.01, total_input / total_output)
 
     def _process_video_segment(
         self, segment: TrackSegment, track_idx: int, seg_idx: int
@@ -407,14 +465,19 @@ class TimelineToFFmpeg:
                 filters.append(
                     f"tpad=stop_mode=clone:stop_duration={stop_duration}"
                 )
-        elif segment.speed_factor != 1.0:
-            pts_factor = 1.0 / segment.speed_factor
-            filters.append(f"setpts={pts_factor}*PTS")
+        else:
+            has_speed_ramp = any(
+                str(effect.get("type", "")).lower() == "speed_ramp"
+                for effect in (segment.effects or [])
+            )
+            if segment.speed_factor != 1.0 and not has_speed_ramp:
+                pts_factor = 1.0 / segment.speed_factor
+                filters.append(f"setpts={pts_factor}*PTS")
 
         width = self._video_width()
         height = self._video_height()
         filters.append(
-            f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+            f"scale={width}:{height}:force_original_aspect_ratio=decrease:flags=lanczos,"
             f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2"
         )
         filters.append("setsar=1")
@@ -544,6 +607,23 @@ class TimelineToFFmpeg:
             if effect_type == "zoom":
                 current = self._apply_zoom(current, metadata, segment)
                 continue
+            if effect_type in {"video_fade", "fade"}:
+                apply_to = str(metadata.get("apply_to", "audio" if effect_type == "fade" else "video")).lower()
+                if apply_to in {"video", "both"} or effect_type == "video_fade":
+                    current = self._apply_video_fade(current, metadata, segment)
+                continue
+            if effect_type in {"rotate", "rotation"}:
+                current = self._apply_rotate(current, metadata)
+                continue
+            if effect_type == "flip":
+                current = self._apply_flip(current, metadata)
+                continue
+            if effect_type in {"chroma_key", "chromakey", "green_screen", "key"}:
+                current = self._apply_chroma_key(current, metadata)
+                continue
+            if effect_type == "speed_ramp":
+                current = self._apply_speed_ramp(current, metadata, segment)
+                continue
 
         return current
 
@@ -567,6 +647,18 @@ class TimelineToFFmpeg:
                 continue
             if effect_type == "fade":
                 current = self._apply_audio_fade(current, metadata)
+                continue
+            if effect_type in {"eq", "equalizer"}:
+                current = self._apply_audio_equalizer(current, metadata)
+                continue
+            if effect_type in {"noise_reduction", "denoise", "noise"}:
+                current = self._apply_audio_noise_reduction(current, metadata)
+                continue
+            if effect_type in {"compressor", "compression"}:
+                current = self._apply_audio_compressor(current, metadata)
+                continue
+            if effect_type in {"limiter", "limit"}:
+                current = self._apply_audio_limiter(current, metadata)
                 continue
 
         return current
@@ -750,6 +842,185 @@ class TimelineToFFmpeg:
         )
         return self._apply_simple_video_filter(input_label, expr)
 
+    def _apply_video_fade(
+        self, input_label: str, metadata: dict[str, Any], segment: TrackSegment
+    ) -> str:
+        fade_type = str(metadata.get("fade_type", "in")).lower()
+
+        in_start_ms = metadata.get("in_start_ms", metadata.get("start_ms", 0))
+        in_duration_ms = metadata.get("in_duration_ms", metadata.get("duration_ms", 500))
+        out_start_ms = metadata.get("out_start_ms")
+        out_duration_ms = metadata.get("out_duration_ms", metadata.get("duration_ms", 500))
+
+        try:
+            in_start = max(0.0, float(in_start_ms) / 1000.0)
+        except (TypeError, ValueError):
+            in_start = 0.0
+        try:
+            in_duration = max(0.001, float(in_duration_ms) / 1000.0)
+        except (TypeError, ValueError):
+            in_duration = 0.5
+        try:
+            out_duration = max(0.001, float(out_duration_ms) / 1000.0)
+        except (TypeError, ValueError):
+            out_duration = 0.5
+
+        if out_start_ms is None:
+            out_start = max(0.0, segment.duration - out_duration)
+        else:
+            try:
+                out_start = max(0.0, float(out_start_ms) / 1000.0)
+            except (TypeError, ValueError):
+                out_start = max(0.0, segment.duration - out_duration)
+
+        filters: list[str] = []
+        if fade_type in {"in", "both", "inout", "in_out"}:
+            filters.append(f"fade=t=in:st={in_start:.3f}:d={in_duration:.3f}")
+        if fade_type in {"out", "both", "inout", "in_out"}:
+            filters.append(f"fade=t=out:st={out_start:.3f}:d={out_duration:.3f}")
+
+        if not filters:
+            return input_label
+        return self._apply_simple_video_filter(input_label, ",".join(filters))
+
+    def _apply_rotate(self, input_label: str, metadata: dict[str, Any]) -> str:
+        angle_value = metadata.get("angle", metadata.get("degrees", 0))
+        try:
+            angle = float(angle_value)
+        except (TypeError, ValueError):
+            return input_label
+
+        normalized = angle % 360
+        if abs(normalized) < 1e-6:
+            return input_label
+
+        if abs(normalized - 90) < 1e-6:
+            return self._apply_simple_video_filter(input_label, "transpose=1")
+        if abs(normalized - 180) < 1e-6:
+            return self._apply_simple_video_filter(input_label, "hflip,vflip")
+        if abs(normalized - 270) < 1e-6:
+            return self._apply_simple_video_filter(input_label, "transpose=2")
+
+        fill = str(metadata.get("fillcolor", "black@0.0"))
+        expr = (
+            f"rotate={angle}*PI/180:ow=rotw({angle}*PI/180):"
+            f"oh=roth({angle}*PI/180):fillcolor={fill}"
+        )
+        return self._apply_simple_video_filter(input_label, expr)
+
+    def _apply_flip(self, input_label: str, metadata: dict[str, Any]) -> str:
+        direction = str(metadata.get("direction", "horizontal")).lower()
+        horizontal = bool(metadata.get("horizontal", direction in {"horizontal", "both"}))
+        vertical = bool(metadata.get("vertical", direction in {"vertical", "both"}))
+
+        if horizontal and vertical:
+            return self._apply_simple_video_filter(input_label, "hflip,vflip")
+        if horizontal:
+            return self._apply_simple_video_filter(input_label, "hflip")
+        if vertical:
+            return self._apply_simple_video_filter(input_label, "vflip")
+        return input_label
+
+    def _apply_chroma_key(self, input_label: str, metadata: dict[str, Any]) -> str:
+        color = str(metadata.get("color", "#00ff00")).strip()
+        if color.startswith("#"):
+            color = "0x" + color[1:]
+
+        try:
+            similarity = float(metadata.get("similarity", 0.15))
+        except (TypeError, ValueError):
+            similarity = 0.15
+        try:
+            blend = float(metadata.get("blend", 0.0))
+        except (TypeError, ValueError):
+            blend = 0.0
+
+        similarity = max(0.01, min(similarity, 1.0))
+        blend = max(0.0, min(blend, 1.0))
+        expr = f"chromakey={color}:{similarity:.3f}:{blend:.3f}"
+        return self._apply_simple_video_filter(input_label, expr)
+
+    def _apply_speed_ramp(
+        self, input_label: str, metadata: dict[str, Any], segment: TrackSegment
+    ) -> str:
+        expr = self._build_speed_ramp_setpts_expr(metadata, segment.source_duration)
+        if not expr:
+            return input_label
+        return self._apply_simple_video_filter(input_label, f"setpts='{expr}/TB'")
+
+    def _build_speed_ramp_setpts_expr(
+        self, metadata: dict[str, Any], duration_seconds: float
+    ) -> str | None:
+        keyframes = metadata.get("keyframes") or []
+        if not isinstance(keyframes, list) or not keyframes:
+            return None
+
+        points: list[tuple[float, float]] = []
+        for item in keyframes:
+            if not isinstance(item, dict):
+                continue
+            raw_t = item.get("time_ms", item.get("time", item.get("t")))
+            raw_s = item.get("speed", item.get("value", 1.0))
+            if raw_t is None:
+                continue
+            try:
+                t = float(raw_t)
+                speed = max(0.01, float(raw_s))
+            except (TypeError, ValueError):
+                continue
+
+            if duration_seconds > 0 and t > max(10.0, duration_seconds * 2.0):
+                t = t / 1000.0
+            points.append((max(0.0, t), speed))
+
+        if not points:
+            return None
+
+        points.sort(key=lambda p: p[0])
+        first_speed = points[0][1]
+        if points[0][0] > 0:
+            points.insert(0, (0.0, first_speed))
+
+        if duration_seconds > 0:
+            last_speed = points[-1][1]
+            if points[-1][0] < duration_seconds:
+                points.append((duration_seconds, last_speed))
+            elif points[-1][0] > duration_seconds:
+                points[-1] = (duration_seconds, last_speed)
+
+        deduped: list[tuple[float, float]] = []
+        for t, speed in points:
+            if deduped and abs(deduped[-1][0] - t) < 1e-6:
+                deduped[-1] = (t, speed)
+            else:
+                deduped.append((t, speed))
+        points = deduped
+
+        if len(points) == 1:
+            speed = max(0.01, points[0][1])
+            return f"T/{speed:.6f}"
+
+        cumulative: list[float] = [0.0]
+        for i in range(len(points) - 1):
+            start_t, speed = points[i]
+            end_t = points[i + 1][0]
+            interval = max(0.0, end_t - start_t)
+            cumulative.append(cumulative[-1] + (interval / max(0.01, speed)))
+
+        last_start, last_speed = points[-1]
+        expr = f"{cumulative[-1]:.6f}+(T-{last_start:.6f})/{max(0.01, last_speed):.6f}"
+        for i in range(len(points) - 2, -1, -1):
+            start_t, speed = points[i]
+            end_t = points[i + 1][0]
+            base = cumulative[i]
+            expr = (
+                f"if(lt(T,{end_t:.6f}),"
+                f"{base:.6f}+(T-{start_t:.6f})/{max(0.01, speed):.6f},"
+                f"{expr})"
+            )
+
+        return expr
+
     def _apply_glow(self, input_label: str, metadata: dict[str, Any]) -> str:
         strength = float(metadata.get("strength", 0.6))
         strength = max(0.0, min(1.0, strength))
@@ -911,6 +1182,60 @@ class TimelineToFFmpeg:
         start = start_ms / 1000.0
         duration = duration_ms / 1000.0
         expr = f"afade=t={fade_type}:st={start}:d={duration}"
+        return self._apply_simple_audio_filter(input_label, expr)
+
+    def _apply_audio_equalizer(self, input_label: str, metadata: dict[str, Any]) -> str:
+        bands = metadata.get("bands")
+        filters: list[str] = []
+        if isinstance(bands, list):
+            for band in bands:
+                if not isinstance(band, dict):
+                    continue
+                freq = band.get("frequency", band.get("freq", 1000))
+                gain = band.get("gain", 0)
+                width = band.get("width", 1.0)
+                try:
+                    f = max(20.0, float(freq))
+                    g = float(gain)
+                    w = max(0.1, float(width))
+                except (TypeError, ValueError):
+                    continue
+                filters.append(f"equalizer=f={f}:width_type=o:width={w}:g={g}")
+
+        if not filters:
+            return input_label
+        return self._apply_simple_audio_filter(input_label, ",".join(filters))
+
+    def _apply_audio_noise_reduction(
+        self, input_label: str, metadata: dict[str, Any]
+    ) -> str:
+        noise_floor = metadata.get("noise_floor", metadata.get("nf", -25))
+        reduction_type = str(metadata.get("type", "white")).lower()
+        nt = "w" if reduction_type in {"white", "w"} else "v"
+        try:
+            nf = float(noise_floor)
+        except (TypeError, ValueError):
+            nf = -25.0
+        expr = f"afftdn=nf={nf}:nt={nt}"
+        return self._apply_simple_audio_filter(input_label, expr)
+
+    def _apply_audio_compressor(self, input_label: str, metadata: dict[str, Any]) -> str:
+        threshold = metadata.get("threshold", 0.125)
+        ratio = metadata.get("ratio", 4)
+        attack = metadata.get("attack", 20)
+        release = metadata.get("release", 250)
+        makeup = metadata.get("makeup", 1)
+        expr = (
+            f"acompressor=threshold={threshold}:ratio={ratio}:"
+            f"attack={attack}:release={release}:makeup={makeup}"
+        )
+        return self._apply_simple_audio_filter(input_label, expr)
+
+    def _apply_audio_limiter(self, input_label: str, metadata: dict[str, Any]) -> str:
+        limit = metadata.get("limit", 0.95)
+        attack = metadata.get("attack", 5)
+        release = metadata.get("release", 50)
+        expr = f"alimiter=limit={limit}:attack={attack}:release={release}"
         return self._apply_simple_audio_filter(input_label, expr)
 
     def _get_overlay_generator(self) -> OverlayGenerator:
@@ -1456,6 +1781,7 @@ class FFmpegRenderer:
             start_frame=manifest_dict.get("start_frame"),
             end_frame=manifest_dict.get("end_frame"),
             callback_url=manifest_dict.get("callback_url"),
+            output_variants=manifest_dict.get("output_variants") or [],
         )
         self.temp_dir = Path(os.environ.get("RENDER_TEMP_DIR", "/tmp/render"))
         self.temp_dir.mkdir(parents=True, exist_ok=True)
@@ -1483,20 +1809,28 @@ class FFmpegRenderer:
         if progress_callback:
             progress_callback(5, "Resolved asset paths")
 
-        ffmpeg_cmd = self._build_ffmpeg_command(local_asset_map, input_streams)
-
-        if progress_callback:
-            progress_callback(10, "Built FFmpeg command")
-
-        logger.info("FFmpeg command: %s", self._format_command(ffmpeg_cmd))
-
-        output_path = Path(self._execute_ffmpeg(ffmpeg_cmd, progress_callback))
+        output_path = self._execute_render_command(
+            local_asset_map,
+            input_streams,
+            preset=self.manifest.preset,
+            output_path_value=self.manifest.output_path,
+            progress_callback=progress_callback,
+            progress_start=10,
+            progress_end=95,
+        )
         output_duration = self._probe_output_duration(output_path)
         if output_duration is not None:
             logger.info("Output duration: %.3fs", output_duration)
             if output_duration <= 0.05:
                 raise RenderError("FFmpeg produced zero-duration output")
-        output_url = self._upload_output(output_path)
+
+        _, output_key = self._resolve_output_targets(
+            self.manifest.output_path,
+            self.manifest.preset,
+        )
+        output_url = self._upload_output(output_path, output_key)
+
+        variant_outputs = self._render_output_variants(local_asset_map, input_streams)
 
         logger.info(f"Render complete: {output_path}")
 
@@ -1504,7 +1838,308 @@ class FFmpegRenderer:
             "output_path": str(output_path),
             "output_url": output_url,
             "output_size_bytes": output_path.stat().st_size if output_path.exists() else None,
+            "variant_outputs": variant_outputs,
         }
+
+    def _execute_render_command(
+        self,
+        local_asset_map: dict[str, str],
+        input_streams: dict[int, set[str]],
+        preset: dict[str, Any],
+        output_path_value: str,
+        progress_callback: Callable[[int, str | None], None] | None = None,
+        progress_start: int = 10,
+        progress_end: int = 95,
+    ) -> Path:
+        working_preset = copy.deepcopy(preset)
+        ffmpeg_cmd = self._build_ffmpeg_command(
+            local_asset_map,
+            input_streams,
+            preset_override=working_preset,
+            output_path_value=output_path_value,
+        )
+
+        if progress_callback:
+            progress_callback(progress_start, "Built FFmpeg command")
+        logger.info("FFmpeg command: %s", self._format_command(ffmpeg_cmd))
+
+        try:
+            output_path = self._execute_with_optional_two_pass(
+                ffmpeg_cmd,
+                working_preset,
+                progress_callback,
+                progress_start,
+                progress_end,
+            )
+            return Path(output_path)
+        except RenderError as exc:
+            if not working_preset.get("use_gpu") or not self._is_gpu_encoder_failure(str(exc)):
+                raise
+
+            logger.warning(
+                "GPU render failed, retrying on CPU encoder. Reason: %s",
+                exc,
+            )
+            fallback_preset = copy.deepcopy(working_preset)
+            fallback_preset["use_gpu"] = False
+            fallback_cmd = self._build_ffmpeg_command(
+                local_asset_map,
+                input_streams,
+                preset_override=fallback_preset,
+                output_path_value=output_path_value,
+            )
+            if progress_callback:
+                progress_callback(progress_start, "Retrying with CPU encoder")
+            logger.info("Fallback FFmpeg command: %s", self._format_command(fallback_cmd))
+            output_path = self._execute_with_optional_two_pass(
+                fallback_cmd,
+                fallback_preset,
+                progress_callback,
+                progress_start,
+                progress_end,
+            )
+            return Path(output_path)
+
+    def _execute_with_optional_two_pass(
+        self,
+        ffmpeg_cmd: list[str],
+        preset: dict[str, Any],
+        progress_callback: Callable[[int, str | None], None] | None,
+        progress_start: int,
+        progress_end: int,
+    ) -> str:
+        if not self._should_use_two_pass(preset, ffmpeg_cmd):
+            return self._execute_ffmpeg(
+                ffmpeg_cmd,
+                progress_callback,
+                progress_start=progress_start,
+                progress_end=progress_end,
+            )
+
+        passlog_base = str(
+            self.temp_dir / f"ffmpeg2pass-{self.manifest.job_id}-{int(time.time())}"
+        )
+        mid = progress_start + int((progress_end - progress_start) * 0.45)
+        pass1_cmd = self._build_first_pass_command(ffmpeg_cmd, passlog_base)
+        pass2_cmd = self._build_second_pass_command(ffmpeg_cmd, passlog_base)
+
+        try:
+            self._execute_ffmpeg(
+                pass1_cmd,
+                progress_callback,
+                progress_start=progress_start,
+                progress_end=mid,
+                finalize_message="Completed pass 1",
+            )
+            return self._execute_ffmpeg(
+                pass2_cmd,
+                progress_callback,
+                progress_start=mid,
+                progress_end=progress_end,
+            )
+        finally:
+            self._cleanup_two_pass_logs(passlog_base)
+
+    def _should_use_two_pass(self, preset: dict[str, Any], ffmpeg_cmd: list[str]) -> bool:
+        video = dict(preset.get("video", {}) or {})
+        codec = str(video.get("codec", "h264")).lower()
+        container = self._resolve_container(video, codec)
+        video = self._apply_codec_tuned_video_defaults(video, codec, container)
+        if not bool(video.get("two_pass", False)):
+            return False
+        if not video.get("bitrate"):
+            logger.warning("two_pass requested but no video bitrate is set; using single pass")
+            return False
+
+        encoder = self._extract_video_encoder(ffmpeg_cmd)
+        if encoder not in {"libx264", "libx265", "libvpx-vp9"}:
+            logger.warning(
+                "two_pass requested but encoder '%s' does not support configured two-pass flow; using single pass",
+                encoder,
+            )
+            return False
+        return True
+
+    def _extract_video_encoder(self, ffmpeg_cmd: list[str]) -> str | None:
+        for index, token in enumerate(ffmpeg_cmd[:-1]):
+            if token == "-c:v" and index + 1 < len(ffmpeg_cmd):
+                return ffmpeg_cmd[index + 1]
+        return None
+
+    def _build_first_pass_command(self, ffmpeg_cmd: list[str], passlog_base: str) -> list[str]:
+        base = self._strip_audio_args(ffmpeg_cmd)
+        output = "NUL" if os.name == "nt" else "/dev/null"
+        return base[:-1] + [
+            "-an",
+            "-pass",
+            "1",
+            "-passlogfile",
+            passlog_base,
+            "-f",
+            "null",
+            output,
+        ]
+
+    def _build_second_pass_command(self, ffmpeg_cmd: list[str], passlog_base: str) -> list[str]:
+        return ffmpeg_cmd[:-1] + ["-pass", "2", "-passlogfile", passlog_base, ffmpeg_cmd[-1]]
+
+    def _strip_audio_args(self, ffmpeg_cmd: list[str]) -> list[str]:
+        audio_value_flags = {"-c:a", "-b:a", "-ar", "-ac", "-profile:a"}
+        stripped: list[str] = []
+        i = 0
+        last_index = len(ffmpeg_cmd) - 1
+        while i < last_index:
+            token = ffmpeg_cmd[i]
+            if token in audio_value_flags:
+                i += 2
+                continue
+            if token == "-movflags":
+                i += 2
+                continue
+            if token == "-map" and i + 1 < last_index:
+                map_value = ffmpeg_cmd[i + 1]
+                map_lower = map_value.lower()
+                if map_lower.startswith("[a") or map_lower.endswith(":a") or map_lower == "0:a":
+                    i += 2
+                    continue
+                stripped.extend([token, map_value])
+                i += 2
+                continue
+            stripped.append(token)
+            i += 1
+
+        stripped.append(ffmpeg_cmd[-1])
+        return stripped
+
+    def _cleanup_two_pass_logs(self, passlog_base: str) -> None:
+        base_path = Path(passlog_base)
+        parent = base_path.parent
+        prefix = base_path.name
+        if not parent.exists():
+            return
+        for path in parent.glob(f"{prefix}*"):
+            if path.is_file():
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+
+    def _is_gpu_encoder_failure(self, error_text: str) -> bool:
+        text = error_text.lower()
+        keywords = [
+            "nvenc",
+            "amf",
+            "videotoolbox",
+            "no capable devices found",
+            "cannot load libcuda",
+            "cuda error",
+            "device not available",
+            "hardware device",
+            "unsupported device",
+        ]
+        return any(keyword in text for keyword in keywords)
+
+    def _render_output_variants(
+        self,
+        local_asset_map: dict[str, str],
+        input_streams: dict[int, set[str]],
+    ) -> list[dict[str, Any]]:
+        variants = self.manifest.output_variants or []
+        if not variants:
+            return []
+
+        results: list[dict[str, Any]] = []
+        for index, variant in enumerate(variants):
+            if not isinstance(variant, dict):
+                continue
+            variant_preset = self._merge_variant_preset(self.manifest.preset, variant)
+            variant_output_path = self._derive_variant_output_path(
+                self.manifest.output_path,
+                variant,
+                index,
+            )
+            logger.info(
+                "Rendering output variant %d/%d -> %s",
+                index + 1,
+                len(variants),
+                variant_output_path,
+            )
+            rendered_path = self._execute_render_command(
+                local_asset_map,
+                input_streams,
+                preset=variant_preset,
+                output_path_value=variant_output_path,
+                progress_callback=None,
+                progress_start=0,
+                progress_end=100,
+            )
+            _, output_key = self._resolve_output_targets(variant_output_path, variant_preset)
+            output_url = self._upload_output(rendered_path, output_key)
+            results.append(
+                {
+                    "output_path": str(rendered_path),
+                    "output_url": output_url,
+                    "output_size_bytes": rendered_path.stat().st_size if rendered_path.exists() else None,
+                    "preset": variant_preset,
+                }
+            )
+        return results
+
+    def _merge_variant_preset(
+        self,
+        base_preset: dict[str, Any],
+        variant: dict[str, Any],
+    ) -> dict[str, Any]:
+        merged = copy.deepcopy(base_preset)
+        merged.setdefault("video", {})
+        merged.setdefault("audio", {})
+
+        variant_video = variant.get("video")
+        if isinstance(variant_video, dict):
+            merged["video"].update({k: v for k, v in variant_video.items() if v is not None})
+        else:
+            reserved = {"audio", "label", "name", "use_gpu", "gpu_backend"}
+            merged["video"].update(
+                {
+                    k: v
+                    for k, v in variant.items()
+                    if k not in reserved and v is not None
+                }
+            )
+
+        variant_audio = variant.get("audio")
+        if isinstance(variant_audio, dict):
+            merged["audio"].update({k: v for k, v in variant_audio.items() if v is not None})
+
+        if "use_gpu" in variant:
+            merged["use_gpu"] = bool(variant.get("use_gpu"))
+        if "gpu_backend" in variant:
+            merged["gpu_backend"] = variant.get("gpu_backend")
+
+        return merged
+
+    def _derive_variant_output_path(
+        self,
+        base_output_path: str,
+        variant: dict[str, Any],
+        index: int,
+    ) -> str:
+        base = Path(base_output_path)
+        label = str(variant.get("label") or variant.get("name") or "").strip()
+        if not label:
+            video = variant.get("video") if isinstance(variant.get("video"), dict) else variant
+            height = video.get("height") if isinstance(video, dict) else None
+            width = video.get("width") if isinstance(video, dict) else None
+            if height:
+                label = f"{height}p"
+            elif width:
+                label = f"{width}w"
+            else:
+                label = f"variant{index + 1}"
+
+        safe_label = re.sub(r"[^A-Za-z0-9_-]", "_", label)
+        suffix = base.suffix or ".mp4"
+        return str(base.with_name(f"{base.stem}_{safe_label}{suffix}"))
 
 
     def _resolve_asset_paths(self) -> dict[str, str]:
@@ -1682,7 +2317,11 @@ class FFmpegRenderer:
         )
         return self._storage_client
 
-    def _upload_output(self, output_path: Path) -> str | None:
+    def _upload_output(
+        self,
+        output_path: Path,
+        output_key: str | None = None,
+    ) -> str | None:
         if not output_path.exists():
             raise RenderError(f"Render output not found: {output_path}")
 
@@ -1691,12 +2330,13 @@ class FFmpegRenderer:
             logger.info("Skipping GCS upload for local output bucket")
             return None
 
-        if Path(self.manifest.output_path).is_absolute():
+        upload_target = output_key or self.manifest.output_path
+        if Path(upload_target).is_absolute():
             logger.info("Skipping GCS upload for absolute output path")
             return None
 
         bucket_name, blob_path = self._parse_gcs_path(
-            self.manifest.output_path, output_bucket
+            upload_target, output_bucket
         )
         client = self._get_storage_client()
         bucket = client.bucket(bucket_name)
@@ -1715,20 +2355,19 @@ class FFmpegRenderer:
         self,
         asset_map: dict[str, str],
         input_streams: dict[int, set[str]],
+        preset_override: dict[str, Any] | None = None,
+        output_path_value: str | None = None,
     ) -> list[str]:
         timeline = self.manifest.timeline_snapshot
-        preset = self.manifest.preset
-
-        output_path = Path(self.manifest.output_path)
-        if not output_path.is_absolute():
-            output_path = self.outputs_dir / self.manifest.output_path
-        output_path.parent.mkdir(parents=True, exist_ok=True)
+        preset = preset_override or self.manifest.preset
+        output_value = output_path_value or self.manifest.output_path
+        output_path, _ = self._resolve_output_targets(output_value, preset)
 
 
         cmd = [self._ffmpeg_bin, "-y"]
 
         inputs, filter_complex, maps = self._build_filter_graph(
-            timeline, asset_map, input_streams
+            timeline, asset_map, input_streams, preset
         )
 
         for input_entry in inputs:
@@ -1752,11 +2391,12 @@ class FFmpegRenderer:
         timeline: dict[str, Any],
         asset_map: dict[str, str],
         input_streams: dict[int, set[str]],
+        preset: dict[str, Any],
     ) -> tuple[list[InputSpec], str, list[str]]:
         builder = TimelineToFFmpeg(
             timeline,
             asset_map,
-            self.manifest.preset,
+            preset,
             input_streams,
             temp_dir=self.temp_dir,
             job_id=self.manifest.job_id,
@@ -1767,6 +2407,50 @@ class FFmpegRenderer:
             maps = ["0:v", "0:a"]
 
         return inputs, filter_complex, maps
+
+    def _resolve_output_targets(
+        self,
+        output_path_value: str,
+        preset: dict[str, Any],
+    ) -> tuple[Path, str | None]:
+        video = preset.get("video", {})
+        codec = str(video.get("codec", "h264")).lower()
+        container = self._resolve_container(video, codec)
+        ext = f".{container}"
+
+        output_path = Path(output_path_value)
+        if output_path.suffix.lower() != ext:
+            output_path = output_path.with_suffix(ext)
+
+        if output_path.is_absolute():
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            return output_path, None
+
+        output_path = self.outputs_dir / output_path
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        upload_key = str(output_path.relative_to(self.outputs_dir)).replace("\\", "/")
+        return output_path, upload_key
+
+    def _resolve_container(self, video: dict[str, Any], codec: str) -> str:
+        requested = str(video.get("container", "")).strip().lower()
+        valid = {"mp4", "mov", "mkv", "webm"}
+        container = requested if requested in valid else ""
+
+        if codec == "prores":
+            if container not in {"mov", "mkv"}:
+                return "mov"
+            return container
+        if codec == "vp9":
+            if container not in {"webm", "mkv"}:
+                return "webm"
+            return container
+        if codec == "av1":
+            if container in {"webm", "mkv", "mp4"}:
+                return container
+            return "mkv"
+        if codec in {"h264", "h265"} and container == "webm":
+            return "mp4"
+        return container or "mp4"
 
     def _detect_available_gpu_encoders(self) -> dict[str, set[str]]:
         if self._available_gpu_encoders is not None:
@@ -1853,19 +2537,24 @@ class FFmpegRenderer:
         return None, None
 
     def _build_encoding_options(self, preset: dict[str, Any]) -> list[str]:
-        options = []
-        video = preset.get("video", {})
-        audio = preset.get("audio", {})
-        use_gpu = preset.get("use_gpu", False)
+        options: list[str] = []
+        video = dict(preset.get("video", {}) or {})
+        audio = dict(preset.get("audio", {}) or {})
+        use_gpu = bool(preset.get("use_gpu", False))
 
-        codec = video.get("codec", "h264")
+        codec = str(video.get("codec", "h264")).lower()
+        container = self._resolve_container(video, codec)
+        video = self._apply_codec_tuned_video_defaults(video, codec, container)
+        gop_size = self._resolve_gop_size(video)
         video_encoder = ""
         selected_backend: str | None = None
-        if use_gpu:
+
+        if use_gpu and codec in {"h264", "h265"}:
             selected_backend, video_encoder = self._select_gpu_backend_and_encoder(
                 preset,
                 codec,
             )
+            video_encoder = video_encoder or ""
             if video_encoder:
                 options.extend(["-c:v", video_encoder])
             else:
@@ -1874,69 +2563,313 @@ class FFmpegRenderer:
                     codec,
                 )
                 use_gpu = False
+        elif use_gpu and codec not in {"h264", "h265"}:
+            logger.warning(
+                "GPU encoding requested for codec '%s', but this codec uses CPU encoding. Falling back to CPU.",
+                codec,
+            )
+            use_gpu = False
 
         if not use_gpu:
-            if codec == "h264":
-                video_encoder = "libx264"
-                options.extend(["-c:v", video_encoder])
-            elif codec == "h265":
-                video_encoder = "libx265"
-                options.extend(["-c:v", video_encoder])
+            video_encoder = self._cpu_encoder_for_codec(codec)
+            if not video_encoder:
+                raise RenderError(f"Unsupported video codec: {codec}")
+            options.extend(["-c:v", video_encoder])
 
         if video_encoder:
             logger.info("Using video encoder: %s", video_encoder)
         if selected_backend:
             logger.info("Using GPU backend: %s", selected_backend)
 
+        bitrate = video.get("bitrate")
         crf = video.get("crf", 23)
-        if use_gpu and video_encoder and video_encoder.endswith("_nvenc"):
-            options.extend(["-cq", str(crf)])
-        elif not use_gpu:
-            options.extend(["-crf", str(crf)])
-        else:
-            logger.info(
-                "Skipping CRF/CQ option for encoder '%s' (backend-managed quality)",
-                video_encoder,
+        if bitrate:
+            bitrate_value = str(bitrate)
+            options.extend(["-b:v", bitrate_value])
+            if not use_gpu and video_encoder in {"libx264", "libx265"}:
+                buffer = self._double_bitrate(bitrate_value)
+                if buffer:
+                    options.extend(["-maxrate", bitrate_value, "-bufsize", buffer])
+        elif crf is not None:
+            if use_gpu and video_encoder.endswith("_nvenc"):
+                options.extend(["-cq", str(crf)])
+            elif not use_gpu and video_encoder == "libvpx-vp9":
+                options.extend(["-crf", str(crf), "-b:v", "0"])
+            elif not use_gpu and video_encoder != "prores_ks":
+                options.extend(["-crf", str(crf)])
+
+        enc_preset = str(video.get("preset", "medium"))
+        if use_gpu and video_encoder.endswith("_nvenc"):
+            options.extend(["-preset", self._map_nvenc_preset(enc_preset)])
+        elif video_encoder == "libsvtav1":
+            options.extend(["-preset", str(self._map_svtav1_preset(enc_preset))])
+        elif video_encoder in {"libx264", "libx265"}:
+            options.extend(["-preset", enc_preset])
+        elif video_encoder == "libvpx-vp9":
+            options.extend(["-cpu-used", str(self._map_vp9_cpu_used(enc_preset))])
+
+        if video_encoder == "prores_ks":
+            profile = self._normalize_prores_profile(video.get("prores_profile", "hq"))
+            options.extend(["-profile:v", profile])
+            if str(video.get("vendor", "apl0")):
+                options.extend(["-vendor", str(video.get("vendor", "apl0"))])
+        elif video_encoder == "libvpx-vp9":
+            options.extend(
+                [
+                    "-quality",
+                    str(video.get("vp9_quality", "good")),
+                    "-row-mt",
+                    str(video.get("vp9_row_mt", 1)),
+                    "-tile-columns",
+                    str(video.get("vp9_tile_columns", 2)),
+                    "-frame-parallel",
+                    str(video.get("vp9_frame_parallel", 1)),
+                    "-auto-alt-ref",
+                    str(video.get("vp9_auto_alt_ref", 1)),
+                    "-lag-in-frames",
+                    str(video.get("vp9_lag_in_frames", 25)),
+                    "-g",
+                    str(gop_size),
+                ]
+            )
+        elif video_encoder == "libsvtav1":
+            options.extend(
+                [
+                    "-svtav1-params",
+                    str(
+                        video.get(
+                            "svtav1_params",
+                            "tune=0:enable-qm=1:qm-min=0:qm-max=8",
+                        )
+                    ),
+                ]
             )
 
-        enc_preset = video.get("preset", "medium")
-        if use_gpu and video_encoder and video_encoder.endswith("_nvenc"):
-            nvenc_map = {
-                "ultrafast": "fast",
-                "superfast": "fast",
-                "veryfast": "fast",
-                "faster": "fast",
-                "fast": "fast",
-                "medium": "medium",
-                "slow": "slow",
-                "slower": "slow",
-                "veryslow": "slow",
-            }
-            enc_preset = nvenc_map.get(enc_preset, "medium")
-            options.extend(["-preset", enc_preset])
-        elif not use_gpu:
-            options.extend(["-preset", enc_preset])
-        else:
-            logger.info(
-                "Skipping -preset for encoder '%s' (unsupported encoder preset mapping)",
-                video_encoder,
-            )
+        if video_encoder == "libx264":
+            options.extend(["-profile:v", str(video.get("h264_profile", "high"))])
+            options.extend(["-g", str(gop_size)])
+        if video_encoder == "libx265":
+            x265_params = str(video.get("x265_params", "aq-mode=3:aq-strength=1.0:qcomp=0.7"))
+            options.extend(["-x265-params", x265_params])
+            options.extend(["-g", str(gop_size)])
+            if container in {"mp4", "mov"}:
+                options.extend(["-tag:v", "hvc1"])
+        if use_gpu and video_encoder.endswith("_nvenc"):
+            options.extend(["-g", str(gop_size)])
 
-        pix_fmt = video.get("pixel_format", "yuv420p")
+        default_pix_fmt = "yuv420p10le" if codec == "h265" else "yuv420p"
+        pix_fmt = str(video.get("pixel_format") or default_pix_fmt)
         options.extend(["-pix_fmt", pix_fmt])
 
-        audio_codec = audio.get("codec", "aac")
+        color_space = video.get("color_space", "bt709")
+        color_primaries = video.get("color_primaries", "bt709")
+        color_trc = video.get("color_trc", "bt709")
+        if color_space:
+            options.extend(["-colorspace", str(color_space)])
+        if color_primaries:
+            options.extend(["-color_primaries", str(color_primaries)])
+        if color_trc:
+            options.extend(["-color_trc", str(color_trc)])
+
+        audio_codec = str(audio.get("codec", "aac")).lower()
+        if container == "webm" and audio_codec not in {"opus", "vorbis"}:
+            logger.warning(
+                "Container webm is most compatible with Opus audio. Overriding requested codec '%s' to opus.",
+                audio_codec,
+            )
+            audio_codec = "opus"
+
         if audio_codec == "aac":
             options.extend(["-c:a", "aac"])
         elif audio_codec == "mp3":
             options.extend(["-c:a", "libmp3lame"])
+        elif audio_codec == "opus":
+            options.extend(["-c:a", "libopus", "-vbr", "on", "-compression_level", "10"])
+        else:
+            logger.warning("Unsupported audio codec '%s'. Falling back to AAC.", audio_codec)
+            options.extend(["-c:a", "aac"])
 
-        audio_bitrate = audio.get("bitrate", "192k")
-        options.extend(["-b:a", audio_bitrate])
+        audio_bitrate = str(audio.get("bitrate") or ("160k" if audio_codec == "opus" else "192k"))
+        sample_rate = int(audio.get("sample_rate", 48000) or 48000)
+        channels = int(audio.get("channels", 2) or 2)
+        options.extend(["-b:a", audio_bitrate, "-ar", str(sample_rate), "-ac", str(channels)])
 
-        options.extend(["-movflags", "+faststart"])
+        if audio_codec == "aac":
+            options.extend(["-profile:a", str(audio.get("aac_profile", "aac_low"))])
+
+        if container in {"mp4", "mov"}:
+            options.extend(["-movflags", "+faststart"])
 
         return options
+
+    def _apply_codec_tuned_video_defaults(
+        self,
+        video: dict[str, Any],
+        codec: str,
+        container: str,
+    ) -> dict[str, Any]:
+        tuned = dict(video)
+
+        def set_if_missing(key: str, value: Any) -> None:
+            current = tuned.get(key)
+            if current is None:
+                tuned[key] = value
+                return
+            if isinstance(current, str) and not current.strip():
+                tuned[key] = value
+
+        if codec == "h264":
+            set_if_missing("pixel_format", "yuv420p")
+            set_if_missing("preset", "medium")
+            set_if_missing("crf", 21)
+            set_if_missing("h264_profile", "high")
+        elif codec == "h265":
+            set_if_missing("pixel_format", "yuv420p10le")
+            set_if_missing("preset", "slow")
+            set_if_missing("crf", 19)
+            set_if_missing("x265_params", "aq-mode=3:aq-strength=1.0:qcomp=0.7")
+        elif codec == "prores":
+            set_if_missing("container", "mov")
+            set_if_missing("pixel_format", "yuv422p10le")
+            set_if_missing("prores_profile", "hq")
+            set_if_missing("vendor", "apl0")
+            set_if_missing("bitrate", "110M")
+            tuned["crf"] = None
+            tuned["two_pass"] = False
+        elif codec == "vp9":
+            set_if_missing("container", "webm")
+            set_if_missing("pixel_format", "yuv420p")
+            set_if_missing("preset", "medium")
+            set_if_missing("crf", 30)
+            set_if_missing("bitrate", "8M")
+            set_if_missing("vp9_quality", "good")
+            set_if_missing("vp9_row_mt", 1)
+            set_if_missing("vp9_tile_columns", 2)
+            set_if_missing("vp9_frame_parallel", 1)
+            set_if_missing("vp9_auto_alt_ref", 1)
+            set_if_missing("vp9_lag_in_frames", 25)
+            if "two_pass" not in tuned and tuned.get("bitrate"):
+                tuned["two_pass"] = True
+        elif codec == "av1":
+            set_if_missing("container", "mkv")
+            set_if_missing("pixel_format", "yuv420p10le")
+            set_if_missing("preset", "medium")
+            set_if_missing("crf", 29)
+            set_if_missing("bitrate", "6M")
+            set_if_missing("svtav1_params", "tune=0:enable-qm=1:qm-min=0:qm-max=8")
+
+        tuned["container"] = tuned.get("container") or container
+        return tuned
+
+    def _normalize_prores_profile(self, value: Any) -> str:
+        mapping = {
+            "proxy": "0",
+            "lt": "1",
+            "standard": "2",
+            "hq": "3",
+            "4444": "4",
+            "4444xq": "5",
+        }
+        text = str(value).strip().lower()
+        if text in mapping:
+            return mapping[text]
+        if text in {"0", "1", "2", "3", "4", "5"}:
+            return text
+        return "3"
+
+    def _map_vp9_cpu_used(self, preset: str) -> int:
+        mapping = {
+            "ultrafast": 8,
+            "superfast": 7,
+            "veryfast": 6,
+            "faster": 5,
+            "fast": 4,
+            "medium": 3,
+            "slow": 2,
+            "slower": 1,
+            "veryslow": 0,
+        }
+        return mapping.get(preset, 3)
+
+    def _cpu_encoder_for_codec(self, codec: str) -> str | None:
+        mapping = {
+            "h264": "libx264",
+            "h265": "libx265",
+            "prores": "prores_ks",
+            "vp9": "libvpx-vp9",
+            "av1": "libsvtav1",
+        }
+        return mapping.get(codec)
+
+    def _double_bitrate(self, bitrate: str) -> str | None:
+        match = re.fullmatch(r"\s*(\d+(?:\.\d+)?)([kKmMgG])\s*", bitrate)
+        if not match:
+            return None
+        value = float(match.group(1)) * 2
+        unit = match.group(2)
+        if value.is_integer():
+            value_str = str(int(value))
+        else:
+            value_str = f"{value:.2f}".rstrip("0").rstrip(".")
+        return f"{value_str}{unit}"
+
+    def _map_nvenc_preset(self, preset: str) -> str:
+        mapping = {
+            "ultrafast": "fast",
+            "superfast": "fast",
+            "veryfast": "fast",
+            "faster": "fast",
+            "fast": "fast",
+            "medium": "medium",
+            "slow": "slow",
+            "slower": "slow",
+            "veryslow": "slow",
+        }
+        return mapping.get(preset, "medium")
+
+    def _map_svtav1_preset(self, preset: str) -> int:
+        mapping = {
+            "ultrafast": 12,
+            "superfast": 11,
+            "veryfast": 10,
+            "faster": 9,
+            "fast": 8,
+            "medium": 6,
+            "slow": 4,
+            "slower": 3,
+            "veryslow": 2,
+        }
+        return mapping.get(preset, 6)
+
+    def _resolve_gop_size(self, video: dict[str, Any]) -> int:
+        raw_gop = video.get("gop_size")
+        if raw_gop is not None:
+            try:
+                return max(1, int(raw_gop))
+            except (TypeError, ValueError):
+                pass
+        fps = self._preset_framerate(video)
+        return max(24, int(round(fps * 2)))
+
+    def _preset_framerate(self, video: dict[str, Any]) -> float:
+        raw = video.get("framerate")
+        if raw is not None:
+            try:
+                value = float(raw)
+                if value > 0:
+                    return value
+            except (TypeError, ValueError):
+                pass
+        timeline_rate = self.manifest.timeline_snapshot.get("metadata", {}).get(
+            "default_rate", 24.0
+        )
+        try:
+            value = float(timeline_rate)
+            if value > 0:
+                return value
+        except (TypeError, ValueError):
+            pass
+        return 24.0
 
     def _build_trim_options(self, preset: dict[str, Any]) -> list[str]:
         start_frame = self.manifest.start_frame
@@ -1970,6 +2903,9 @@ class FFmpegRenderer:
         self,
         cmd: list[str],
         progress_callback: Callable[[int, str | None], None] | None = None,
+        progress_start: int = 10,
+        progress_end: int = 95,
+        finalize_message: str | None = "Finalizing output",
     ) -> str:
         output_path = cmd[-1]
 
@@ -1977,6 +2913,12 @@ class FFmpegRenderer:
 
         logger.info("Executing FFmpeg...")
         logger.debug(f"Command: {' '.join(cmd_with_progress)}")
+
+        timeout_seconds_raw = os.environ.get("FFMPEG_TIMEOUT_SECONDS", "7200")
+        try:
+            timeout_seconds = max(60, int(timeout_seconds_raw))
+        except ValueError:
+            timeout_seconds = 7200
 
         try:
             process = subprocess.Popen(
@@ -1988,39 +2930,62 @@ class FFmpegRenderer:
             )
 
             duration = None
-            last_progress = 10
+            last_progress = progress_start
             output_tail: list[str] = []
+            timed_out = False
+
+            def _kill_process_on_timeout() -> None:
+                nonlocal timed_out
+                timed_out = True
+                process.kill()
+
+            timer = threading.Timer(timeout_seconds, _kill_process_on_timeout)
+            timer.daemon = True
+            timer.start()
 
             if process.stdout is None:
                 raise RenderError("FFmpeg did not provide a stdout stream")
 
-            for line in process.stdout:
-                line = line.strip()
-                if line:
-                    output_tail.append(line)
-                    if len(output_tail) > 200:
-                        output_tail = output_tail[-200:]
+            try:
+                for line in process.stdout:
+                    line = line.strip()
+                    if line:
+                        output_tail.append(line)
+                        if len(output_tail) > 200:
+                            output_tail = output_tail[-200:]
 
-                if line.startswith("Duration:"):
-                    match = re.search(r"Duration: (\d+):(\d+):(\d+)", line)
-                    if match:
-                        h, m, s = map(int, match.groups())
-                        duration = h * 3600 + m * 60 + s
+                    if line.startswith("Duration:"):
+                        match = re.search(r"Duration: (\d+):(\d+):(\d+)", line)
+                        if match:
+                            h, m, s = map(int, match.groups())
+                            duration = h * 3600 + m * 60 + s
 
-                if line.startswith("out_time_ms="):
-                    try:
-                        time_ms = int(line.split("=")[1])
-                        time_sec = time_ms / 1000000
+                    if line.startswith("out_time_ms="):
+                        try:
+                            time_ms = int(line.split("=")[1])
+                            time_sec = time_ms / 1000000
 
-                        if duration and duration > 0:
-                            pct = min(95, 10 + int((time_sec / duration) * 85))
-                            if pct > last_progress and progress_callback:
-                                progress_callback(pct, None)
-                                last_progress = pct
-                    except (ValueError, IndexError):
-                        pass
+                            if duration and duration > 0:
+                                progress_span = max(1, progress_end - progress_start)
+                                pct = min(
+                                    progress_end,
+                                    progress_start + int((time_sec / duration) * progress_span),
+                                )
+                                if pct > last_progress and progress_callback:
+                                    progress_callback(pct, None)
+                                    last_progress = pct
+                        except (ValueError, IndexError):
+                            pass
 
-            process.wait()
+                process.wait()
+            finally:
+                timer.cancel()
+
+            if timed_out:
+                tail_text = "\n".join(output_tail[-40:])
+                raise RenderError(
+                    f"FFmpeg timed out after {timeout_seconds}s. Output tail:\n{tail_text}"
+                )
 
             if process.returncode != 0:
                 tail_text = "\n".join(output_tail[-40:])
@@ -2030,8 +2995,8 @@ class FFmpegRenderer:
             if output_tail:
                 logger.info("FFmpeg output (tail): %s", "\n".join(output_tail[-20:]))
 
-            if progress_callback:
-                progress_callback(95, "Finalizing output")
+            if progress_callback and finalize_message:
+                progress_callback(progress_end, finalize_message)
 
             return output_path
 

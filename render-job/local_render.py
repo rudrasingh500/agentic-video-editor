@@ -146,6 +146,7 @@ def build_manifest(
             "quality": "standard",
             "video": {
                 "codec": "h264",
+                "container": "mp4",
                 "width": None,
                 "height": None,
                 "framerate": None,
@@ -153,6 +154,10 @@ def build_manifest(
                 "crf": 23,
                 "preset": "medium",
                 "pixel_format": "yuv420p",
+                "two_pass": False,
+                "color_space": "bt709",
+                "color_primaries": "bt709",
+                "color_trc": "bt709",
             },
             "audio": {
                 "codec": "aac",
