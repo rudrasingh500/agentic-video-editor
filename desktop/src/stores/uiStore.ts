@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 
-export type AssetTab = 'assets' | 'media' | 'audio' | 'graphics' | 'people'
+export type AssetTab = 'assets' | 'media' | 'audio' | 'graphics'
 
 export type AssetViewMode = 'grid' | 'list'
 
@@ -59,9 +59,9 @@ const clampSnapStrength = (strength: number) => {
 }
 
 export const useUiStore = create<UiStoreState>((set) => ({
-  sidebarOpen: true,
+  sidebarOpen: false,
   outputPanelOpen: false,
-  inspectorOpen: true,
+  inspectorOpen: false,
   activeAssetTab: 'assets',
   assetViewMode: 'grid',
   activeTool: 'select',
@@ -104,15 +104,21 @@ export const useUiStore = create<UiStoreState>((set) => ({
     set({ timelineScrollX: nextX, timelineScrollY: nextY })
   },
 
-  setSelection: (selection) => set({ selection }),
+  setSelection: (selection) => {
+    const updates: Partial<UiStoreState> = { selection }
+    if (selection?.type === 'clip') {
+      updates.inspectorOpen = true
+    }
+    set(updates)
+  },
 
   clearSelection: () => set({ selection: null }),
 
   clear: () => {
     set({
-      sidebarOpen: true,
+  sidebarOpen: true,
       outputPanelOpen: false,
-      inspectorOpen: true,
+      inspectorOpen: false,
       activeAssetTab: 'assets',
       assetViewMode: 'grid',
       activeTool: 'select',

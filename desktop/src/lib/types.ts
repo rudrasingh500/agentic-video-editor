@@ -13,6 +13,10 @@ export type Asset = {
   indexing_status?: string
   indexing_error?: string | null
   indexing_attempts?: number
+  /** Absolute local file path (set for locally-imported assets). */
+  localPath?: string
+  /** Whether this asset has been synced (uploaded) to the backend. */
+  synced?: boolean
 }
 
 export type EditPatchSummary = {

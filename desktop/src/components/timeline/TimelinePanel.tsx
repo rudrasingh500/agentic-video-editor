@@ -226,6 +226,7 @@ type TimelinePanelProps = {
     clipIndex: number
     splitOffset: RationalTime
   }) => void
+  onAddTrack?: (kind: 'Video' | 'Audio') => void
 }
 
 const TimelinePanel = ({
@@ -234,6 +235,7 @@ const TimelinePanel = ({
   onMoveClip,
   onTrimClip,
   onSplitClip,
+  onAddTrack,
 }: TimelinePanelProps) => {
   const rulerCanvasRef = useRef<HTMLCanvasElement | null>(null)
   const viewportRef = useRef<HTMLDivElement | null>(null)
@@ -968,7 +970,7 @@ const TimelinePanel = ({
               return (
                 <div
                   key={`${layout.trackIndex}-${layout.track.name}`}
-                  className="relative h-11 border-b border-neutral-800"
+                  className="relative h-16 border-b border-neutral-800"
                   onDragOver={(event) => {
                     const clipPayload = extractClipPayload(event.dataTransfer)
                     if (!clipPayload) {
@@ -1182,7 +1184,7 @@ const TimelinePanel = ({
                               itemIndex: visualItem.itemIndex,
                             })
                           }}
-                          className={`group absolute top-1 h-9 overflow-hidden rounded text-left text-2xs text-neutral-200 transition-colors ${baseClass} ${
+                          className={`group absolute top-1 h-14 overflow-hidden rounded text-left text-2xs text-neutral-200 transition-colors ${baseClass} ${
                             itemSelected ? 'ring-2 ring-accent-400' : 'hover:brightness-110'
                           } ${
                             clipItem && activeTool === 'razor' ? 'cursor-cell hover:brightness-125' : ''
@@ -1286,6 +1288,29 @@ const TimelinePanel = ({
                 </div>
               )
             })
+          )}
+
+          {onAddTrack && (
+            <div className="flex items-center gap-1 border-b border-neutral-800 px-2 py-1.5">
+              <button
+                type="button"
+                onClick={() => onAddTrack('Video')}
+                className="flex items-center gap-1 rounded px-2 py-1 text-xs text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200"
+                title="Add video track"
+              >
+                <Plus size={12} />
+                Video Track
+              </button>
+              <button
+                type="button"
+                onClick={() => onAddTrack('Audio')}
+                className="flex items-center gap-1 rounded px-2 py-1 text-xs text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200"
+                title="Add audio track"
+              >
+                <Plus size={12} />
+                Audio Track
+              </button>
+            </div>
           )}
         </div>
       </div>

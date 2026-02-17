@@ -6,9 +6,10 @@ type ModalProps = {
   title?: string
   children: ReactNode
   onClose: () => void
+  maxWidth?: string
 }
 
-const Modal = ({ open, title, children, onClose }: ModalProps) => {
+const Modal = ({ open, title, children, onClose, maxWidth }: ModalProps) => {
   if (!open) {
     return null
   }
@@ -23,7 +24,7 @@ const Modal = ({ open, title, children, onClose }: ModalProps) => {
       />
 
       {/* Modal panel */}
-      <div className="relative z-10 w-full max-w-md rounded-xl border border-neutral-800 bg-neutral-900 shadow-panel animate-fade-in-up">
+      <div className={`relative z-10 w-full ${maxWidth ?? 'max-w-md'} rounded-xl border border-neutral-800 bg-neutral-900 shadow-panel animate-fade-in-up`}>
         {/* Header */}
         {title && (
           <div className="flex items-center justify-between border-b border-neutral-800 px-6 py-4">
