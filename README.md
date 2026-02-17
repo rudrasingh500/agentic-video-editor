@@ -1,112 +1,211 @@
-# Video Editor Rendering
+# Granite Video Editor
 
-This repository contains a FastAPI backend (`backend/`) and a render worker image (`render-job/`). The render worker can run in Cloud Run or locally (CPU/GPU) for validation.
+An AI-native video editor where natural language drives the entire editing workflow. Upload media, describe what you want, and an autonomous agent handles cuts, transitions, captions, color grading, B-roll placement, and rendering -- then verifies its own work by watching the output.
 
-## Local render (test assets)
+## Architecture
 
-Use the helper script to render the assets in `backend/test_assets` to `backend/test_outputs`:
+```
+desktop/          Electron + React + Tailwind UI
+    |
+    v  (REST / SSE)
+backend/          FastAPI API server
+    |--- agent/
+    |      |--- edit_agent/      LLM-driven editing orchestrator (Gemini 3 Pro)
+    |      |--- asset_processing/ Automated media analysis pipeline
+    |--- handlers/               REST endpoints
+    |--- operators/              Business logic + DB operations
+    |--- models/                 Pydantic schemas (OTIO-inspired timeline)
+    |--- database/               SQLAlchemy + Alembic (Postgres + pgvector)
+    |--- redis_client/           RQ job queue
+    |--- utils/                  GCS, embeddings, FFmpeg, Veo, generation providers
+    |
+    v  (Cloud Run / Docker)
+render-job/       Dockerized FFmpeg render worker (CPU + GPU)
+    |--- ffmpeg_renderer.py      Full render pipeline
+    |--- graphics_generator.py   Cairo/Pillow overlay compositing
+    |--- animation_engine.py     Keyframe animation + easing curves
+```
 
-```powershell
+## Key Features
+
+**AI Edit Agent** -- Send a message like *"add captions to the intro and crossfade into the B-roll"* and the agent plans a sequence of timeline operations, executes them against the OTIO-inspired timeline model, renders a preview, watches the result, and self-corrects if something looks wrong. The agent has access to 30+ tools spanning asset search, timeline manipulation, video generation, and quality checks.
+
+**Automated Asset Intelligence** -- Every uploaded asset (video, image, audio) is analyzed by an LLM pipeline that extracts summaries, tags, transcripts with speaker diarization, scene breakdowns, shot types, face/object detection, audio features (BPM, key, structure), and technical metadata. Results are embedded with OpenAI-compatible embeddings and stored in pgvector for semantic search.
+
+**Snippet & Identity System** -- Faces and objects are extracted as snippets with MediaPipe, linked into cross-asset identities via embedding similarity, and organized into character models. The agent can reference identities when generating new content to maintain visual consistency.
+
+**Generative Media** -- Image generation via Gemini 3 Pro and video generation via Google Veo 3.1 are integrated directly into the editing workflow. The agent can generate B-roll, title cards, or replace frames, with an explicit approve/deny gate before anything hits the timeline.
+
+**OTIO-Inspired Timeline** -- The timeline schema mirrors OpenTimelineIO with `RationalTime`, `TimeRange`, `Track`, `Clip`, `Gap`, `Transition`, `Stack`, and `Effect` primitives. Full version history with checkpoint snapshots, operation audit logs, diff comparison, and rollback.
+
+**Render Pipeline** -- Dockerized FFmpeg renderer with support for complex multi-track compositing, 70+ transition types, text/graphic overlays with Cairo, keyframe animations with easing curves, and GPU encoding (NVENC, AMD AMF, VideoToolbox). Runs locally or dispatches to Cloud Run.
+
+**Desktop App** -- Electron app with a timeline panel, waveform display (wavesurfer.js), drag-and-drop media management, asset inspector, people panel for identity management, chat sidebar for AI interaction, render settings, and real-time preview.
+
+## Prerequisites
+
+- Python 3.10+
+- Node.js 18+
+- Docker (for Postgres, Redis, and render jobs)
+- FFmpeg (bundled in render container, or install locally)
+
+## Setup
+
+### Backend
+
+```bash
+cd backend
+python -m venv .venv
+
+# Windows
+.venv\Scripts\activate
+# macOS/Linux
+source .venv/bin/activate
+
+pip install -r requirements.txt
+```
+
+Start Postgres and Redis:
+
+```bash
+docker compose -f docker-compose.yaml up -d
+```
+
+Run database migrations:
+
+```bash
+alembic -c database/alembic.ini upgrade head
+```
+
+### Desktop
+
+```bash
+cd desktop
+npm install
+```
+
+### Environment Variables
+
+Create a `.env` file in the project root:
+
+```env
+DATABASE_URL=postgresql://user:pass@localhost:5432/video_editor
+REDIS_AUTH_URL=redis://localhost:6379/0
+REDIS_RQ_URL=redis://localhost:6379/1
+
+GCS_BUCKET=your-bucket
+GCP_CREDENTIALS={"type": "service_account", ...}
+
+OPENROUTER_API_KEY=sk-or-...
+GOOGLE_API_KEY=...                          # For Veo video generation
+
+RENDER_EXECUTION_MODE=local                 # or "cloud"
+RENDER_WEBHOOK_SECRET=some-secret
+
+VITE_BACKEND_URL=http://localhost:8000
+VITE_DEV_TOKEN=dev-token
+VITE_RENDER_WEBHOOK_SECRET=some-secret
+```
+
+## Running
+
+### API Server
+
+```bash
+cd backend
+python main.py
+# or
+uvicorn main:app --reload
+```
+
+### RQ Worker (asset processing + background jobs)
+
+```bash
+cd backend
+python -m redis_client.worker
+```
+
+### Desktop App
+
+```bash
+cd desktop
+npm run dev
+```
+
+### Render Job (local, Docker)
+
+```bash
 # CPU
- docker build -t video-render-cpu .\render-job
- docker run --rm --entrypoint python `
-   -e RENDER_INPUT_DIR=/inputs `
-   -e RENDER_OUTPUT_DIR=/outputs `
-   -v "C:\Users\rudra\Documents\Granite\video_editor\backend\test_assets:/inputs" `
-   -v "C:\Users\rudra\Documents\Granite\video_editor\backend\test_outputs:/outputs" `
-   video-render-cpu `
-   local_render.py --input-dir /inputs --output-dir /outputs
+docker build -t video-render-cpu .\render-job
+docker run --rm --entrypoint python \
+  -v /path/to/inputs:/inputs \
+  -v /path/to/outputs:/outputs \
+  video-render-cpu \
+  local_render.py --input-dir /inputs --output-dir /outputs
 
-# GPU (auto backend)
-  docker build -f .\render-job\Dockerfile.gpu -t video-render-gpu .\render-job
-  docker run --rm --gpus all --entrypoint python `
-    -e RENDER_INPUT_DIR=/inputs `
-    -e RENDER_OUTPUT_DIR=/outputs `
-   -v "C:\Users\rudra\Documents\Granite\video_editor\backend\test_assets:/inputs" `
-   -v "C:\Users\rudra\Documents\Granite\video_editor\backend\test_outputs:/outputs" `
-    video-render-gpu `
-    local_render.py --input-dir /inputs --output-dir /outputs --use-gpu
-
-# GPU (force AMD AMF backend when available)
- docker run --rm --entrypoint python `
-   -e RENDER_INPUT_DIR=/inputs `
-   -e RENDER_OUTPUT_DIR=/outputs `
-   -v "C:\Users\rudra\Documents\Granite\video_editor\backend\test_assets:/inputs" `
-   -v "C:\Users\rudra\Documents\Granite\video_editor\backend\test_outputs:/outputs" `
-   video-render-cpu `
-   local_render.py --input-dir /inputs --output-dir /outputs --use-gpu --gpu-backend amd
+# GPU
+docker build -f .\render-job\Dockerfile.gpu -t video-render-gpu .\render-job
+docker run --rm --gpus all --entrypoint python \
+  -v /path/to/inputs:/inputs \
+  -v /path/to/outputs:/outputs \
+  video-render-gpu \
+  local_render.py --input-dir /inputs --output-dir /outputs --use-gpu
 ```
 
-`local_render.py` writes a manifest JSON next to each output so you can inspect the exact job payload.
-When `--use-gpu` is enabled, the renderer now supports NVIDIA NVENC, AMD AMF, and Apple VideoToolbox.
-If a requested GPU backend/codec is unavailable in your FFmpeg build, rendering falls back to CPU encoding.
+## Testing
 
-## Backend-configured local rendering (GCS-backed)
-
-The render API accepts execution mode so you can dispatch a job that runs locally while still using GCS for assets and outputs.
-
-### Request payload
-
-```json
-{
-  "execution_mode": "local",
-  "job_type": "export"
-}
+```bash
+cd backend
+python -m pytest                                          # all tests
+python -m pytest tests/test_ffmpeg_builder.py             # single file
+python -m pytest tests/test_ffmpeg_builder.py::test_name  # single test
 ```
 
-Notes:
-- `execution_mode`: `local` or `cloud`.
-- Assets and outputs live in GCS; the local runner downloads inputs and uploads outputs automatically.
+## Build
 
-### Running the manifest locally
+### Desktop Release
 
-Use `render-job/entrypoint.py` and point it at the manifest stored in GCS:
-
-```powershell
-$manifest = "gs://video-editor/your-project/manifests/<job-id>.json"
-$jobId = "<job-id>"
-
-# Option A: JSON in env var
-$creds = Get-Content -Raw "C:\\path\\to\\gcp-creds.json"
-
-docker run --rm --entrypoint python `
-  -e GCP_CREDENTIALS="$creds" `
-  video-render-cpu `
-  entrypoint.py --manifest $manifest --job-id $jobId
-
-# Option B: Mount the service account JSON
-$credsPath = "C:\\path\\to\\gcp-creds.json"
-
-docker run --rm --entrypoint python `
-  -e GOOGLE_APPLICATION_CREDENTIALS=/secrets/gcp.json `
-  -v "$credsPath:/secrets/gcp.json" `
-  video-render-cpu `
-  entrypoint.py --manifest $manifest --job-id $jobId
+```bash
+cd desktop
+npm run build
 ```
 
-The entrypoint accepts `gs://...` for Cloud storage manifests.
+This compiles TypeScript, bundles with Vite, packages the renderer bundle (FFmpeg + PyInstaller binary), and produces an Electron distributable.
 
-## Cloud Run rendering
+### Render Docker Images
 
-Cloud Run is the default execution mode. The backend uploads the manifest to GCS and dispatches the CPU or GPU job.
+```bash
+docker build -t video-render-cpu .\render-job
+docker build -f .\render-job\Dockerfile.gpu -t video-render-gpu .\render-job
+```
 
-## Backend environment defaults
+## API Surface
 
-You can set defaults without changing request payloads:
+| Group | Prefix | Description |
+|-------|--------|-------------|
+| Auth | `/auth` | Session creation and validation |
+| Projects | `/projects` | CRUD for editing projects |
+| Assets | `/projects/{id}/assets` | Upload, list, search media assets |
+| Timeline | `/projects/{id}/timeline` | Timeline CRUD, track/clip ops, checkpoints, diff |
+| Edit Agent | `/projects/{id}/edit` | Natural language editing (REST + SSE streaming) |
+| Render | `/projects/{id}/render` | Render job lifecycle, presets, webhooks |
+| Generation | `/projects/{id}/generation` | AI image/video generation requests |
+| Snippets | `/projects/{id}/snippets` | Face/object snippet and identity management |
+| Health | `/health` | Liveness check |
 
-- `RENDER_EXECUTION_MODE`: `cloud` (default) or `local`
+## Tech Stack
+
+| Layer | Technology |
+|-------|-----------|
+| API | FastAPI, Pydantic v2, SQLAlchemy, Alembic |
+| Database | PostgreSQL, pgvector, Redis |
+| AI | Gemini 3 Pro (editing + analysis + image gen), Veo 3.1 (video gen), OpenAI-compatible embeddings |
+| Job Queue | Redis Queue (RQ) |
+| Render | FFmpeg, Cairo, Pillow, PyInstaller |
+| Desktop | Electron, React 18, TypeScript, Tailwind CSS 4, Zustand, wavesurfer.js |
+| Storage | Google Cloud Storage |
+| Deploy | Railway (backend), Cloud Run (render), Electron Builder (desktop) |
 
 ## Third-Party Licenses
 
-This software uses code from FFmpeg (http://ffmpeg.org), licensed under the
-LGPLv2.1+. FFmpeg is used as an external command-line tool and is distributed
-unmodified. FFmpeg source code can be obtained from http://ffmpeg.org/download.html
-or from the FFMPEG_LICENSE.txt file included with this distribution.
-
-## Deployment and CI/CD
-
-See `DEPLOYMENT.md` for:
-
-- Railway backend deployment (API + worker + Postgres + Redis)
-- Backend CI workflow setup
-- Desktop release workflow with PyInstaller + ffmpeg bundling
+This software uses FFmpeg (http://ffmpeg.org), licensed under LGPLv2.1+. FFmpeg is used as an external CLI tool and distributed unmodified. See `render-job/FFMPEG_LICENSE.txt`.
